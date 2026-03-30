@@ -15,20 +15,7 @@ struct GeneralSettingsView: View {
         @Bindable var updater = self.updaterService
 
         Form {
-            // MARK: - Now Playing Section
 
-            Section {
-                Toggle("Show Now Playing Notifications", isOn: self.$settings.showNowPlayingNotifications)
-
-                Picker("Now Playing Controls", selection: self.$settings.mediaControlStyle) {
-                    ForEach(SettingsManager.MediaControlStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                .help("Choose which buttons appear in the Now Playing widget in Control Center")
-            } header: {
-                Text("Now Playing")
-            }
 
             // MARK: - General Section
 
@@ -91,6 +78,21 @@ struct GeneralSettingsView: View {
                 .padding(.vertical, 4)
             } header: {
                 Text("General")
+            }
+
+            // MARK: - Now Playing Section
+
+            Section {
+                Toggle("Show Now Playing Notifications", isOn: self.$settings.showNowPlayingNotifications)
+
+                Picker("Now Playing Controls", selection: self.$settings.mediaControlStyle) {
+                    ForEach(SettingsManager.MediaControlStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .help("Choose which buttons appear in the Now Playing widget in Control Center")
+            } header: {
+                Text("Now Playing")
             }
 
             // MARK: - Updates Section
