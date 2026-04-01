@@ -19,6 +19,16 @@
 
 set -euo pipefail
 
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+# Load optional local environment overrides (kept out of git).
+if [[ -f "$ROOT/Scripts/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/Scripts/.env"
+    set +a
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

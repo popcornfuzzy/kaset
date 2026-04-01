@@ -2,16 +2,16 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
     <channel>
         <title>Kaset Updates</title>
-        <link>https://github.com/sozercan/kaset/releases</link>
+        <link>https://github.com/popcornfuzzy/kaset/releases</link>
         <description>Most recent updates for Kaset, a native macOS YouTube Music client.</description>
         <language>en</language>
 
         <item>
             <title>Version 0.8.1</title>
-            <sparkle:releaseNotesLink>https://github.com/sozercan/kaset/releases/tag/v0.8.1</sparkle:releaseNotesLink>
+            <sparkle:releaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.8.1</sparkle:releaseNotesLink>
             <pubDate>Thu, 26 Mar 2026 07:47:13 +0000</pubDate>
             <enclosure
-                url="https://github.com/sozercan/kaset/releases/download/v0.8.1/kaset-v0.8.1.dmg"
+                url="https://github.com/popcornfuzzy/kaset/releases/download/v0.8.1/kaset-v0.8.1.dmg"
                 sparkle:version="14"
                 sparkle:shortVersionString="0.8.1"
                 length="7083090"

@@ -7,6 +7,14 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
+# Load optional local environment overrides (kept out of git).
+if [[ -f "$ROOT/Scripts/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/Scripts/.env"
+  set +a
+fi
+
 # Load version info
 source "$ROOT/version.env"
 
@@ -14,7 +22,9 @@ source "$ROOT/version.env"
 CONF=${1:-release}
 SIGNING_MODE=${KASET_SIGNING:-dev}
 APP_NAME="Kaset"
-BUNDLE_ID="com.sertacozercan.Kaset"
+BUNDLE_ID="${KASET_BUNDLE_ID:-com.sertacozercan.Kaset}"
+SU_FEED_URL="${KASET_SU_FEED_URL:-https://raw.githubusercontent.com/sozercan/kaset/main/appcast.xml}"
+SU_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_KEY:-qa2zoeXHqn+pluxQSGjn5HyIYA/iFtrEJz7S1BoslpI=}"
 BUILD_DIR="$ROOT/.build/app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 
@@ -174,9 +184,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 
     <!-- Sparkle Auto-Update Configuration -->
     <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/sozercan/kaset/main/appcast.xml</string>
+    <string>${SU_FEED_URL}</string>
     <key>SUPublicEDKey</key>
-    <string>qa2zoeXHqn+pluxQSGjn5HyIYA/iFtrEJz7S1BoslpI=</string>
+    <string>${SU_PUBLIC_ED_KEY}</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUScheduledCheckInterval</key>

@@ -134,9 +134,18 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Link(destination: URL(string: "https://github.com/popcornfuzzy/kaset")!) {
+                    HStack {
+                        Text("Your Fork")
+                        Spacer()
+                        Image(systemName: "arrow.up.forward.square")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Link(destination: URL(string: "https://github.com/sozercan/kaset")!) {
                     HStack {
-                        Text("GitHub")
+                        Text("Original Project")
                         Spacer()
                         Image(systemName: "arrow.up.forward.square")
                             .foregroundStyle(.secondary)
