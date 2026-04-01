@@ -9,7 +9,7 @@
             <sparkle:shortVersionString>0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.1/kaset-v0.1.dmg" length="4992951" type="application/octet-stream" sparkle:edSignature="VDWgaaMlwtkWy5VlWdfpdhXj2c101vmYvEUcRAew2fzn8uDke9C4xagNJMuGLUF2MQaF1p1YpBi1uZyoe1pJBQ=="/>
+            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.1/kaset-v0.1.dmg" length="4198400" type="application/octet-stream" sparkle:edSignature="hVWD9LiBSein8dPZM5XdgaujZlFRkuCY3hv02AUXq4NHxFEodxVfoBrm2ypsEd9Sup397wZ2SwgxpQv9YmPEDw=="/>
         </item>
     </channel>
 </rss>
