@@ -35,11 +35,6 @@ A native macOS YouTube Music client built with Swift and SwiftUI.
 
 Download the latest release from the [Releases](https://github.com/popcornfuzzy/kaset/releases) page.
 
-### Homebrew
-
-```bash
-brew install sozercan/repo/kaset
-```
 
 > **Note:** The app is not signed.
 > If you downloaded the app manually, you can clear extended attributes (including quarantine) with:
