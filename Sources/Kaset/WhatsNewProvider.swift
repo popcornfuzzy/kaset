@@ -5,13 +5,13 @@ import Foundation
 /// Provides "What's New" entries from GitHub release notes, with a static fallback.
 enum WhatsNewProvider {
     /// GitHub repo for fetching release notes.
-    private static let owner = "sozercan"
+    private static let owner = "popcornfuzzy"
     private static let repo = "kaset"
 
     /// Static fallback entries used when the network is unavailable.
     static let fallbackCollection: [WhatsNew] = [
         WhatsNew(
-            version: "1.0.0",
+            version: "0.1.0",
             title: "Welcome to Kaset",
             features: [
                 .init(
@@ -35,7 +35,7 @@ enum WhatsNewProvider {
                     subtitle: "Access your playlists and liked songs"
                 ),
             ],
-            learnMoreURL: URL(string: "https://github.com/sozercan/kaset/releases")
+            learnMoreURL: URL(string: "https://github.com/popcornfuzzy/kaset/releases")
         ),
     ]
 
@@ -110,8 +110,9 @@ enum WhatsNewProvider {
             }
         }
 
-        // Try latest release as last resort
-        return await Self.fetchLatestRelease(session: session)
+        // Do not fall back to "latest" for automatic display; we only want
+        // notes matching the currently running version (or minor release).
+        return nil
     }
 
     /// Fetches a release by tag — useful for testing a specific version.
@@ -123,12 +124,6 @@ enum WhatsNewProvider {
 
     private static func fetchRelease(tag: String, session: URLSession = .shared) async -> WhatsNew? {
         await self.fetchForTag(tag, session: session)
-    }
-
-    private static func fetchLatestRelease(session: URLSession = .shared) async -> WhatsNew? {
-        let urlString = "https://api.github.com/repos/\(Self.owner)/\(Self.repo)/releases/latest"
-        guard let url = URL(string: urlString) else { return nil }
-        return await Self.performRequest(url: url, session: session)
     }
 
     private static func performRequest(url: URL, session: URLSession = .shared) async -> WhatsNew? {
