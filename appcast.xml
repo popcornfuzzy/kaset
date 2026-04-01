@@ -7,13 +7,13 @@
         <language>en</language>
 
         <item>
-            <title>Version 0.8.1</title>
-            <sparkle:releaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.8.1</sparkle:releaseNotesLink>
+            <title>Version 0.1</title>
+            <sparkle:releaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.1</sparkle:releaseNotesLink>
             <pubDate>Thu, 26 Mar 2026 07:47:13 +0000</pubDate>
             <enclosure
-                url="https://github.com/popcornfuzzy/kaset/releases/download/v0.8.1/kaset-v0.8.1.dmg"
-                sparkle:version="14"
-                sparkle:shortVersionString="0.8.1"
+                url="https://github.com/popcornfuzzy/kaset/releases/download/v0.1/kaset-v0.1.dmg"
+                sparkle:version="1"
+                sparkle:shortVersionString="0.1"
                 length="7083090"
                 type="application/octet-stream"
                 sparkle:edSignature="ckr61+IC4qXUNtHF5lWChWoA2Mc6pGbqsuAeITpvFKe2HS/Nqw/S2OAmwMcg+G8OZJU3INcgVYrNbsceAgURBQ=="/>
