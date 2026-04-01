@@ -172,7 +172,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>CFBundleURLName</key>
-            <string>com.sertacozercan.kaset</string>
+        <string>${BUNDLE_ID}</string>
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>kaset</string>

@@ -33,7 +33,7 @@ A native macOS YouTube Music client built with Swift and SwiftUI.
 
 ### Download
 
-Download the latest release from the [Releases](https://github.com/sozercan/kaset/releases) page.
+Download the latest release from the [Releases](https://github.com/popcornfuzzy/kaset/releases) page.
 
 ### Homebrew
 

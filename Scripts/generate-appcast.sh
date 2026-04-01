@@ -19,6 +19,22 @@
 
 set -euo pipefail
 
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+# Load optional local environment overrides (kept out of git).
+if [[ -f "$ROOT/Scripts/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/Scripts/.env"
+    set +a
+fi
+
+# Load version info when available (used for URL defaults).
+if [[ -f "$ROOT/version.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$ROOT/version.env"
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -68,6 +84,22 @@ find_sparkle_bin() {
 # Main
 main() {
     local releases_dir="${1:-./releases}"
+    local release_version="${APPCAST_VERSION:-${MARKETING_VERSION:-}}"
+    local feed_link="${APPCAST_LINK:-https://github.com/popcornfuzzy/kaset/releases}"
+    local download_prefix="${APPCAST_DOWNLOAD_URL_PREFIX:-}"
+    local release_notes_url="${APPCAST_RELEASE_NOTES_URL:-}"
+
+    if [[ -z "$download_prefix" && -n "$release_version" ]]; then
+        download_prefix="https://github.com/popcornfuzzy/kaset/releases/download/v${release_version}/"
+    fi
+
+    if [[ -n "$download_prefix" && "$download_prefix" != */ ]]; then
+        download_prefix="${download_prefix}/"
+    fi
+
+    if [[ -z "$release_notes_url" && -n "$release_version" ]]; then
+        release_notes_url="https://github.com/popcornfuzzy/kaset/releases/tag/v${release_version}"
+    fi
     
     # Validate releases directory exists
     if [[ ! -d "$releases_dir" ]]; then
@@ -115,7 +147,18 @@ main() {
     
     # Run generate_appcast
     # Output goes to the releases directory, then we copy to repo root
-    "$generate_appcast_bin" "$releases_dir"
+    local generate_args=("$releases_dir")
+    if [[ -n "$download_prefix" ]]; then
+        generate_args=(--download-url-prefix "$download_prefix" "${generate_args[@]}")
+    fi
+    if [[ -n "$release_notes_url" ]]; then
+        generate_args=(--full-release-notes-url "$release_notes_url" "${generate_args[@]}")
+    fi
+    if [[ -n "$feed_link" ]]; then
+        generate_args=(--link "$feed_link" "${generate_args[@]}")
+    fi
+
+    "$generate_appcast_bin" "${generate_args[@]}"
     
     # Copy generated appcast to repo root if it was created in releases dir
     if [[ -f "$releases_dir/appcast.xml" ]]; then

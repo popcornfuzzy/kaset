@@ -20,6 +20,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TEMP_KEY_FILE=""
 
 # Load optional local environment overrides (kept out of git).
 if [[ -f "$ROOT/Scripts/.env" ]]; then
@@ -137,11 +138,10 @@ main() {
         sign_cmd+=("--ed-key-file" "$key_file")
     elif [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
         # Write key to temp file for security
-        local temp_key
-        temp_key=$(mktemp)
-        trap 'rm -f "$temp_key"' EXIT
-        echo "$SPARKLE_PRIVATE_KEY" > "$temp_key"
-        sign_cmd+=("--ed-key-file" "$temp_key")
+        TEMP_KEY_FILE=$(mktemp)
+        trap '[[ -n "${TEMP_KEY_FILE:-}" ]] && rm -f "$TEMP_KEY_FILE"' EXIT
+        echo "$SPARKLE_PRIVATE_KEY" > "$TEMP_KEY_FILE"
+        sign_cmd+=("--ed-key-file" "$TEMP_KEY_FILE")
     fi
     
     sign_cmd+=("$archive_path")
