@@ -12,7 +12,7 @@ struct QueueCellActions {
 // MARK: - QueueTableCellView
 
 @available(macOS 26.0, *)
-class QueueTableCellView: NSView {
+class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
     private var onPlay: (() -> Void)?
     private var onRevealRemove: (() -> Void)?
     private var isCurrentTrack: Bool = false
@@ -120,7 +120,8 @@ class QueueTableCellView: NSView {
         self.removeButton.setButtonType(.momentaryPushIn)
         self.removeButton.setContentHuggingPriority(.required, for: .horizontal)
         self.removeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        self.removeButton.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        self.removeButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        self.removeButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         // Spacer takes all flexible space so title/artist and duration stay consistently aligned across rows
         let spacerView = NSView()
@@ -146,6 +147,7 @@ class QueueTableCellView: NSView {
         ])
 
         let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(self.handleRowClick))
+        clickGesture.delegate = self
         addGestureRecognizer(clickGesture)
 
     }
@@ -266,6 +268,13 @@ class QueueTableCellView: NSView {
 
     @objc private func handleRowClick() {
         self.onPlay?()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+        guard gestureRecognizer is NSClickGestureRecognizer else { return true }
+        let location = self.convert(event.locationInWindow, from: nil)
+        let removeButtonFrame = self.convert(self.removeButton.bounds, from: self.removeButton)
+        return !removeButtonFrame.insetBy(dx: -4, dy: -4).contains(location)
     }
 
     override func prepareForReuse() {
