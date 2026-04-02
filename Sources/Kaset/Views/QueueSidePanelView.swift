@@ -120,6 +120,8 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 }
             }
 
+            tableView.syncRevealedDeleteUI()
+
             context.coordinator.syncAutoScroll(in: tableView)
         }
     }
@@ -321,7 +323,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.queue.count
         }
 
-        func tableView(_: NSTableView, viewFor _: NSTableColumn?, row: Int) -> NSView? {
+        func tableView(_ tableView: NSTableView, viewFor _: NSTableColumn?, row: Int) -> NSView? {
             let cellView = QueueTableCellView()
             let song = self.queue[row]
             cellView.configure(
@@ -331,9 +333,17 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 isPlaying: self.isPlaying,
                 actions: QueueCellActions(
                     onPlay: { [weak self] in self?.onSelect(row) },
-                    onRemove: { [weak self] in self?.onRemove(song.videoId) }
+                    onRevealRemove: { [weak self] in
+                        guard let self,
+                              let draggableTableView = tableView as? DraggableTableView
+                        else { return }
+                        draggableTableView.revealDeleteActionForRow(row)
+                    }
                 )
             )
+            if let draggableTableView = tableView as? DraggableTableView {
+                cellView.setInlineRemoveButtonHidden(draggableTableView.isDeleteActionRevealed(for: row))
+            }
             return cellView
         }
 
@@ -345,7 +355,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             guard let tableView = notification.object as? NSTableView else { return }
             let selectedRow = tableView.selectedRow
             if selectedRow >= 0 {
-                self.onSelect(selectedRow)
                 tableView.deselectAll(nil)
             }
         }
@@ -368,7 +377,10 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         }
 
         /// Drop Destination
-        func tableView(_: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+        func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+            if let draggableTableView = tableView as? DraggableTableView {
+                draggableTableView.handleDragAutoScroll(draggingLocationInWindow: info.draggingLocation)
+            }
             guard dropOperation == .above else { return [] }
             guard let str = info.draggingPasteboard.string(forType: dragType),
                   let srcRow = Int(str) else { return [] }
@@ -483,6 +495,98 @@ class DraggableTableView: NSTableView {
     private static let swipeRemoveCooldown: CFAbsoluteTime = 0.5
     /// Max horizontal drag (multiple of row width) for real-time feedback.
     private static let swipeMaxDragFactor: CGFloat = 1.2
+    /// Width of the revealed delete action area.
+    private static let swipeRevealWidth: CGFloat = 92
+    /// Edge zone used for auto-scroll while dragging rows.
+    private static let dragAutoScrollEdgeZone: CGFloat = 120
+    /// Minimum and maximum drag autoscroll speed in points per second.
+    private static let dragAutoScrollMinSpeed: CGFloat = 14
+    private static let dragAutoScrollMaxSpeed: CGFloat = 72
+
+    /// Currently revealed delete action state.
+    private var revealedDeleteRow: Int = -1
+    private var revealedDeleteDirection: CGFloat = 0
+    private var revealedDeleteInitialOriginX: CGFloat = 0
+    private weak var revealedDeleteBackgroundView: NSView?
+    private var lastDragAutoScrollTimestamp: CFAbsoluteTime?
+
+    /// Disable built-in autoscroll during drag (it is too aggressive and causes jump-to-end behavior).
+    override func autoscroll(with _: NSEvent) -> Bool {
+        false
+    }
+
+    /// Smooth drag autoscroll based on the live drag location from `validateDrop`.
+    func handleDragAutoScroll(draggingLocationInWindow: NSPoint) {
+        guard let scrollView = self.enclosingScrollView else { return }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        let deltaTime: CFTimeInterval
+        if let last = self.lastDragAutoScrollTimestamp {
+            // Clamp dt so variable callback frequency cannot cause sudden jump speeds.
+            deltaTime = min(max(now - last, 1.0 / 240.0), 1.0 / 30.0)
+        } else {
+            deltaTime = 1.0 / 120.0
+        }
+        self.lastDragAutoScrollTimestamp = now
+
+        let local = self.convert(draggingLocationInWindow, from: nil)
+        let visibleRect = self.visibleRect
+        let edgeZone = Self.dragAutoScrollEdgeZone
+        let topThreshold = visibleRect.maxY - edgeZone
+        let bottomThreshold = visibleRect.minY + edgeZone
+
+        let direction: CGFloat
+        let distanceToEdge: CGFloat
+
+        if local.y >= topThreshold {
+            direction = 1
+            distanceToEdge = max(0, visibleRect.maxY - local.y)
+        } else if local.y <= bottomThreshold {
+            direction = -1
+            distanceToEdge = max(0, local.y - visibleRect.minY)
+        } else {
+            self.lastDragAutoScrollTimestamp = nil
+            return
+        }
+
+        let clamped = min(max(distanceToEdge, 0), edgeZone)
+        let proximity = 1 - (clamped / edgeZone) // 0 = far from edge, 1 = at edge
+        let speed = Self.dragAutoScrollMinSpeed + (Self.dragAutoScrollMaxSpeed - Self.dragAutoScrollMinSpeed) * proximity
+        let step = speed * CGFloat(deltaTime)
+
+        let clipView = scrollView.contentView
+        let maxOriginY = max(0, self.bounds.height - clipView.bounds.height)
+        let targetY = min(max(0, clipView.bounds.origin.y + direction * step), maxOriginY)
+
+        guard abs(targetY - clipView.bounds.origin.y) > 0.01 else { return }
+
+        clipView.setBoundsOrigin(NSPoint(x: clipView.bounds.origin.x, y: targetY))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    func revealDeleteActionForRow(_ row: Int) {
+        guard let coord = self.coordinator,
+              row >= 0,
+              row != coord.currentIndex,
+              coord.queue[safe: row] != nil
+        else { return }
+        if self.revealedDeleteRow == row { return }
+        if let song = coord.queue[safe: row] {
+            self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
+        }
+    }
+
+    func isDeleteActionRevealed(for row: Int) -> Bool {
+        self.revealedDeleteRow == row
+    }
+
+    func syncRevealedDeleteUI() {
+        for row in 0 ..< self.numberOfRows {
+            if let cellView = self.view(atColumn: 0, row: row, makeIfNecessary: false) as? QueueTableCellView {
+                cellView.setInlineRemoveButtonHidden(self.isDeleteActionRevealed(for: row))
+            }
+        }
+    }
 
     override func awakeFromNib() {
         super.awakeFromNib()
@@ -508,6 +612,10 @@ class DraggableTableView: NSTableView {
     override func scrollWheel(with event: NSEvent) {
         let dx = event.scrollingDeltaX
         let dy = event.scrollingDeltaY
+
+        if event.phase == .began, self.revealedDeleteRow >= 0 {
+            self.clearRevealedDeleteAction(animated: true)
+        }
 
         if abs(dx) > 0 || abs(dy) > 0 {
             self.onUserScroll?()
@@ -548,6 +656,8 @@ class DraggableTableView: NSTableView {
 
     /// Handles the `.changed` phase of a trackpad swipe gesture, sliding the row in real time.
     private func handleSwipeChanged(dx: CGFloat, dy: CGFloat) {
+        guard self.revealedDeleteRow < 0 else { return }
+
         self.horizontalSwipeAccumulator += dx
         self.verticalSwipeAccumulator += dy
         // Real-time row slide: once horizontal movement passes commit threshold, move the row with the finger.
@@ -561,12 +671,14 @@ class DraggableTableView: NSTableView {
             guard let rowView = self.rowView(atRow: swipeRemoveTargetRow, makeIfNecessary: false) else {
                 return
             }
+            let rowSlotFrame = self.rect(ofRow: swipeRemoveTargetRow)
             if self.swipeTrackedInitialOriginX == nil {
-                self.swipeTrackedInitialOriginX = rowView.frame.origin.x
+                self.swipeTrackedInitialOriginX = rowSlotFrame.origin.x
             }
             let initialX = self.swipeTrackedInitialOriginX!
             let maxDrag = rowView.bounds.width * Self.swipeMaxDragFactor
-            let clamped = max(-maxDrag, min(maxDrag, self.horizontalSwipeAccumulator))
+            // Left-swipe only: never move row to the right.
+            let clamped = max(-maxDrag, min(0, self.horizontalSwipeAccumulator))
             var f = rowView.frame
             f.origin.x = initialX + clamped
             rowView.frame = f
@@ -599,35 +711,20 @@ class DraggableTableView: NSTableView {
             let passed = CFAbsoluteTimeGetCurrent() >= self.swipeRemoveCooldownUntil
                 && abs(accH) >= Self.swipeRemoveDeltaThreshold
                 && abs(accH) > abs(accV)
+                && accH < 0
                 && row != coord.currentIndex
 
             if passed {
-                let slideDirection: CGFloat = accH > 0 ? 1 : -1
-                let targetX = initialX + slideDirection * rowView.bounds.width
-                let videoId = song.videoId
-                self.swipeRemoveCooldownUntil = CFAbsoluteTimeGetCurrent() + Self.swipeRemoveCooldown
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.2
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    var f = rowView.frame
-                    f.origin.x = targetX
-                    rowView.animator().frame = f
-                    rowView.animator().alphaValue = 0
-                } completionHandler: {
-                    rowView.alphaValue = 1
-                    var f = rowView.frame
-                    f.origin.x = initialX
-                    rowView.frame = f
-                    coord.onRemove(videoId)
-                }
+                self.revealDeleteAction(for: row, direction: -1, initialX: initialX, song: song)
                 return true
             } else {
                 // Cancel: animate row back to initial position.
+                let rowSlotFrame = self.rect(ofRow: row)
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.2
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     var f = rowView.frame
-                    f.origin.x = initialX
+                    f.origin.x = rowSlotFrame.origin.x
                     rowView.animator().frame = f
                 } completionHandler: {}
                 return true
@@ -636,7 +733,8 @@ class DraggableTableView: NSTableView {
 
         if CFAbsoluteTimeGetCurrent() < self.swipeRemoveCooldownUntil { return false }
         guard abs(accH) >= Self.swipeRemoveDeltaThreshold,
-              abs(accH) > abs(accV)
+              abs(accH) > abs(accV),
+              accH < 0
         else { return false }
         guard let coord = coordinator else { return false }
         let row = self.swipeRemoveTargetRow >= 0 ? self.swipeRemoveTargetRow : rowAtEnd
@@ -644,10 +742,221 @@ class DraggableTableView: NSTableView {
         if row < 0 { return false }
         if row == coord.currentIndex { return false }
         guard let song = coord.queue[safe: row] else { return false }
-        let slideDirection: CGFloat = accH > 0 ? 1 : -1
-        self.swipeRemoveCooldownUntil = CFAbsoluteTimeGetCurrent() + Self.swipeRemoveCooldown
-        coord.removeRowWithAnimation(row: row, song: song, slideDirection: slideDirection)
+          self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
         return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if self.revealedDeleteRow >= 0 {
+            self.clearRevealedDeleteAction(animated: true)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func revealDeleteAction(for row: Int, direction: CGFloat, initialX _: CGFloat, song _: Song) {
+        guard let coord = self.coordinator,
+              let rowView = self.rowView(atRow: row, makeIfNecessary: false),
+              coord.queue[safe: row] != nil
+        else { return }
+
+        if self.revealedDeleteRow >= 0 {
+            self.clearRevealedDeleteAction(animated: false)
+        }
+
+        let deleteButton = NSButton(title: "Remove", target: self, action: #selector(self.handleRevealedDeleteButtonClick(_:)))
+        deleteButton.bezelStyle = .regularSquare
+        deleteButton.isBordered = false
+        deleteButton.setButtonType(.momentaryPushIn)
+        deleteButton.title = ""
+        deleteButton.tag = row
+        deleteButton.wantsLayer = true
+        deleteButton.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.9).cgColor
+        deleteButton.layer?.cornerRadius = 8
+        deleteButton.layer?.masksToBounds = true
+        deleteButton.alphaValue = 0
+
+        let buttonContent = NSStackView()
+        buttonContent.orientation = .horizontal
+        buttonContent.alignment = .centerY
+        buttonContent.spacing = 6
+        buttonContent.translatesAutoresizingMaskIntoConstraints = false
+
+        let iconView = NSImageView()
+        iconView.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove from Queue")
+        iconView.contentTintColor = .white
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.widthAnchor.constraint(equalToConstant: 12).isActive = true
+        iconView.heightAnchor.constraint(equalToConstant: 12).isActive = true
+
+        let label = NSTextField(labelWithString: "Remove")
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .white
+
+        buttonContent.addArrangedSubview(iconView)
+        buttonContent.addArrangedSubview(label)
+        deleteButton.addSubview(buttonContent)
+        NSLayoutConstraint.activate([
+            buttonContent.centerXAnchor.constraint(equalTo: deleteButton.centerXAnchor),
+            buttonContent.centerYAnchor.constraint(equalTo: deleteButton.centerYAnchor),
+        ])
+
+        let revealWidth = Self.swipeRevealWidth
+        let rowSlotFrame = self.rect(ofRow: row)
+        let actionX = direction < 0
+            ? rowSlotFrame.maxX - revealWidth
+            : rowSlotFrame.minX
+        deleteButton.frame = NSRect(x: actionX, y: rowSlotFrame.minY + 4, width: revealWidth, height: max(0, rowSlotFrame.height - 8))
+
+        self.addSubview(deleteButton, positioned: .below, relativeTo: rowView)
+
+        self.revealedDeleteRow = row
+        self.revealedDeleteDirection = direction
+        self.revealedDeleteInitialOriginX = rowSlotFrame.origin.x
+        self.revealedDeleteBackgroundView = deleteButton
+        self.syncRevealedDeleteUI()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            var frame = rowView.frame
+            frame.origin.x = rowSlotFrame.origin.x + (direction < 0 ? -revealWidth : revealWidth)
+            rowView.animator().frame = frame
+            deleteButton.animator().alphaValue = 1
+        }
+    }
+
+    @objc private func handleRevealedDeleteButtonClick(_ sender: NSButton) {
+        let row = sender.tag
+        guard row >= 0,
+              let coord = self.coordinator,
+              row != coord.currentIndex,
+              let song = coord.queue[safe: row],
+              let rowView = self.rowView(atRow: row, makeIfNecessary: false)
+        else {
+            self.clearRevealedDeleteAction(animated: true)
+            return
+        }
+
+        guard let swipeSnapshot = self.makeSwipeSnapshot(for: rowView) else {
+            self.clearRevealedDeleteAction(animated: true)
+            return
+        }
+
+        let direction = self.revealedDeleteDirection == 0 ? -1 : self.revealedDeleteDirection
+        let rowSlotFrame = self.rect(ofRow: row)
+        let initialX = rowSlotFrame.origin.x
+        let targetX = initialX + direction * (rowView.bounds.width + 56)
+        let actionView = self.revealedDeleteBackgroundView
+
+        var rowsToShift: [(NSView, CGFloat)] = []
+        if row + 1 < self.numberOfRows,
+           let nextRowView = self.rowView(atRow: row + 1, makeIfNecessary: false)
+        {
+            let verticalShift = rowView.frame.minY - nextRowView.frame.minY
+            for belowRow in (row + 1) ..< self.numberOfRows {
+                if let belowRowView = self.rowView(atRow: belowRow, makeIfNecessary: false) {
+                    rowsToShift.append((belowRowView, verticalShift))
+                }
+            }
+        }
+
+        // Hide the real row during animation so text never overlaps with adjacent rows.
+        rowView.isHidden = true
+        self.addSubview(swipeSnapshot, positioned: .above, relativeTo: rowView)
+
+        self.swipeRemoveCooldownUntil = CFAbsoluteTimeGetCurrent() + Self.swipeRemoveCooldown
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            var frame = swipeSnapshot.frame
+            frame.origin.x = targetX
+            swipeSnapshot.animator().frame = frame
+            actionView?.animator().alphaValue = 0
+            for (belowRowView, verticalShift) in rowsToShift {
+                var belowFrame = belowRowView.frame
+                belowFrame.origin.y += verticalShift
+                belowRowView.animator().frame = belowFrame
+            }
+        } completionHandler: {
+            var frame = rowView.frame
+            frame.origin.x = initialX
+            rowView.frame = frame
+            rowView.isHidden = false
+            swipeSnapshot.removeFromSuperview()
+            actionView?.removeFromSuperview()
+            self.revealedDeleteBackgroundView = nil
+            self.revealedDeleteRow = -1
+            self.revealedDeleteDirection = 0
+            self.revealedDeleteInitialOriginX = 0
+            self.syncRevealedDeleteUI()
+            coord.onRemove(song.videoId)
+        }
+    }
+
+    private func makeSwipeSnapshot(for rowView: NSView) -> NSImageView? {
+        let bounds = rowView.bounds
+        guard !bounds.isEmpty,
+              let rep = rowView.bitmapImageRepForCachingDisplay(in: bounds)
+        else { return nil }
+
+        rowView.cacheDisplay(in: bounds, to: rep)
+
+        let image = NSImage(size: bounds.size)
+        image.addRepresentation(rep)
+
+        let imageView = NSImageView(frame: rowView.frame)
+        imageView.image = image
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.wantsLayer = true
+        imageView.layer?.masksToBounds = true
+        return imageView
+    }
+
+    private func clearRevealedDeleteAction(animated: Bool) {
+        guard self.revealedDeleteRow >= 0,
+              let rowView = self.rowView(atRow: self.revealedDeleteRow, makeIfNecessary: false)
+        else {
+            self.revealedDeleteBackgroundView?.removeFromSuperview()
+            self.revealedDeleteBackgroundView = nil
+            self.revealedDeleteRow = -1
+            self.revealedDeleteDirection = 0
+            self.revealedDeleteInitialOriginX = 0
+            return
+        }
+
+        let rowSlotFrame = self.rect(ofRow: self.revealedDeleteRow)
+        let initialX = rowSlotFrame.origin.x
+        let actionView = self.revealedDeleteBackgroundView
+
+        let resetState = {
+            actionView?.removeFromSuperview()
+            self.revealedDeleteBackgroundView = nil
+            self.revealedDeleteRow = -1
+            self.revealedDeleteDirection = 0
+            self.revealedDeleteInitialOriginX = 0
+            self.syncRevealedDeleteUI()
+        }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                var frame = rowView.frame
+                frame.origin.x = initialX
+                rowView.animator().frame = frame
+                actionView?.animator().alphaValue = 0
+            } completionHandler: {
+                resetState()
+            }
+        } else {
+            var frame = rowView.frame
+            frame.origin.x = initialX
+            rowView.frame = frame
+            resetState()
+        }
     }
 }
 
@@ -676,7 +985,9 @@ private struct QueueSidePanelHeader: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .buttonBorderShape(.capsule)
             .help(String(localized: "Close side panel"))
             .accessibilityLabel(String(localized: "Close side panel"))
         }

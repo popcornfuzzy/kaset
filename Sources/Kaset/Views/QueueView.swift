@@ -67,7 +67,9 @@ struct QueueView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .buttonBorderShape(.capsule)
             .help(String(localized: "Open queue in side panel"))
             .accessibilityLabel(String(localized: "Open queue in side panel"))
         }

@@ -6,7 +6,7 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct QueueCellActions {
     let onPlay: () -> Void
-    let onRemove: () -> Void
+    let onRevealRemove: () -> Void
 }
 
 // MARK: - QueueTableCellView
@@ -14,9 +14,10 @@ struct QueueCellActions {
 @available(macOS 26.0, *)
 class QueueTableCellView: NSView {
     private var onPlay: (() -> Void)?
-    private var onRemove: (() -> Void)?
+    private var onRevealRemove: (() -> Void)?
     private var isCurrentTrack: Bool = false
     private var isPlaying: Bool = false
+    private var isInlineRemoveHidden = false
     private var indicatorLabel = NSTextField()
     private var waveformView: NSView?
     private let thumbnailImageView = NSImageView()
@@ -25,6 +26,7 @@ class QueueTableCellView: NSView {
     private let titleLabel = NSTextField()
     private let artistLabel = NSTextField()
     private let durationLabel = NSTextField()
+    private let removeButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -106,6 +108,20 @@ class QueueTableCellView: NSView {
         self.durationLabel.textColor = NSColor.tertiaryLabelColor
         self.durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal) // Don't compress duration
 
+        self.removeButton.title = ""
+        self.removeButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove from Queue")
+        self.removeButton.isBordered = false
+        self.removeButton.bezelStyle = .regularSquare
+        self.removeButton.controlSize = .small
+        self.removeButton.contentTintColor = .systemRed
+        self.removeButton.target = self
+        self.removeButton.action = #selector(self.handleRemoveClick)
+        self.removeButton.toolTip = "Remove from Queue"
+        self.removeButton.setButtonType(.momentaryPushIn)
+        self.removeButton.setContentHuggingPriority(.required, for: .horizontal)
+        self.removeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        self.removeButton.widthAnchor.constraint(equalToConstant: 16).isActive = true
+
         // Spacer takes all flexible space so title/artist and duration stay consistently aligned across rows
         let spacerView = NSView()
         spacerView.translatesAutoresizingMaskIntoConstraints = false
@@ -119,6 +135,7 @@ class QueueTableCellView: NSView {
         stackView.addArrangedSubview(infoStackView)
         stackView.addArrangedSubview(spacerView)
         stackView.addArrangedSubview(self.durationLabel)
+        stackView.addArrangedSubview(self.removeButton)
 
         addSubview(stackView)
         NSLayoutConstraint.activate([
@@ -128,8 +145,9 @@ class QueueTableCellView: NSView {
             stackView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
-        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(handleClick))
+        let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(self.handleRowClick))
         addGestureRecognizer(clickGesture)
+
     }
 
     override func layout() {
@@ -142,7 +160,7 @@ class QueueTableCellView: NSView {
 
     func configure(song: Song, index: Int, isCurrentTrack: Bool, isPlaying: Bool, actions: QueueCellActions) {
         self.onPlay = actions.onPlay
-        self.onRemove = actions.onRemove
+        self.onRevealRemove = actions.onRevealRemove
         self.isCurrentTrack = isCurrentTrack
         self.isPlaying = isPlaying
         self.updateAppearance(isCurrentTrack: isCurrentTrack, isPlaying: isPlaying, index: index)
@@ -160,6 +178,8 @@ class QueueTableCellView: NSView {
         } else {
             self.durationLabel.stringValue = ""
         }
+
+        self.applyInlineRemoveButtonState()
 
         let songId = song.id
         self.currentSongId = songId
@@ -222,12 +242,36 @@ class QueueTableCellView: NSView {
         }
     }
 
-    @objc private func handleClick() {
+    @objc private func handleRemoveClick() {
+        self.onRevealRemove?()
+    }
+
+    func setInlineRemoveButtonHidden(_ hidden: Bool) {
+        self.isInlineRemoveHidden = hidden
+        self.applyInlineRemoveButtonState()
+    }
+
+    private func applyInlineRemoveButtonState() {
+        if self.isInlineRemoveHidden {
+            self.removeButton.isHidden = true
+            self.removeButton.isEnabled = false
+            self.removeButton.alphaValue = 0
+            return
+        }
+
+        self.removeButton.isHidden = false
+        self.removeButton.isEnabled = !self.isCurrentTrack
+        self.removeButton.alphaValue = self.isCurrentTrack ? 0.35 : 1
+    }
+
+    @objc private func handleRowClick() {
         self.onPlay?()
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        self.isInlineRemoveHidden = false
+        self.applyInlineRemoveButtonState()
         self.imageLoadTask?.cancel()
         self.imageLoadTask = nil
         self.currentSongId = nil
