@@ -282,6 +282,23 @@ final class SingletonPlayerWebView {
         )
         configuration.userContentController.addUserScript(mediaControlBootstrapScript)
 
+        let adBlockingFlagScript = WKUserScript(
+            source: "window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(adBlockingFlagScript)
+
+        if SettingsManager.shared.safeAdBlockingEnabled {
+            // Strip ad payload fields from player responses before YouTube Music consumes them.
+            let adPruningScript = WKUserScript(
+                source: Self.adPruningScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            configuration.userContentController.addUserScript(adPruningScript)
+        }
+
         // Inject mediaSession override at document end without allowing duplicate RAF loops.
         let mediaOverrideScript = WKUserScript(
             source: Self.mediaControlOverrideScript,
@@ -331,6 +348,11 @@ final class SingletonPlayerWebView {
     /// Stops high frequency polling for synced lyrics
     func stopLyricsPoll() {
         self.webView?.evaluateJavaScript("if (window.stopLyricsPoll) { window.stopLyricsPoll(); }")
+    }
+
+    /// Updates runtime ad-blocking flag inside the persistent WebView without requiring a reload.
+    func setSafeAdBlockingEnabled(_ enabled: Bool) {
+        self.webView?.evaluateJavaScript("window.__kasetSafeAdBlockingEnabled = \(enabled ? "true" : "false");")
     }
 
     /// Load a video, stopping any currently playing audio first.
@@ -413,6 +435,15 @@ final class SingletonPlayerWebView {
                 return
             }
 
+            if type == "AD_STATE" {
+                guard SettingsManager.shared.safeAdBlockingEnabled else { return }
+                let isAd = body["isAd"] as? Bool ?? false
+                Task { @MainActor in
+                    self.playerService.updateAdPlaybackState(isAd)
+                }
+                return
+            }
+
             if type == "REMOTE_NEXT" {
                 Task { @MainActor in
                     await self.playerService.next()
@@ -462,6 +493,8 @@ final class SingletonPlayerWebView {
             let trackChanged = body["trackChanged"] as? Bool ?? false
             let likeStatusString = body["likeStatus"] as? String ?? "INDIFFERENT"
             let hasVideo = body["hasVideo"] as? Bool ?? false
+            let isAd = body["isAd"] as? Bool ?? false
+            let adBlockingEnabled = SettingsManager.shared.safeAdBlockingEnabled
 
             // Parse like status
             let likeStatus: LikeStatus = switch likeStatusString {
@@ -479,6 +512,8 @@ final class SingletonPlayerWebView {
                     progress: Double(progress),
                     duration: Double(duration)
                 )
+
+                self.playerService.updateAdPlaybackState(adBlockingEnabled ? isAd : false)
 
                 // Update video availability
                 self.playerService.updateVideoAvailability(hasVideo: hasVideo)
@@ -527,6 +562,7 @@ final class SingletonPlayerWebView {
                 (function() {
                     // Set target volume for enforcement
                     window.__kasetTargetVolume = \(savedVolume);
+                    window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");
                     // Set flag to prevent enforcement from reverting our change
                     window.__kasetIsSettingVolume = true;
 
@@ -584,6 +620,86 @@ final class SingletonPlayerWebView {
                 }
             }
         }
+    }
+
+    /// Removes known ad payload keys from YTM responses in a defensive, no-throw way.
+    private static var adPruningScript: String {
+        """
+        (function() {
+            'use strict';
+            if (window.__kasetAdPruningInstalled) return;
+            window.__kasetAdPruningInstalled = true;
+            if (typeof window.__kasetSafeAdBlockingEnabled !== 'boolean') {
+                window.__kasetSafeAdBlockingEnabled = true;
+            }
+
+            const AD_KEYS = new Set([
+                'playerAds',
+                'adPlacements',
+                'adSlots',
+                'adBreakHeartbeatParams'
+            ]);
+
+            function prune(node) {
+                if (window.__kasetSafeAdBlockingEnabled === false) return;
+                if (!node || typeof node !== 'object') return;
+                if (Array.isArray(node)) {
+                    for (const item of node) prune(item);
+                    return;
+                }
+                for (const key of Object.keys(node)) {
+                    if (AD_KEYS.has(key)) {
+                        delete node[key];
+                        continue;
+                    }
+                    prune(node[key]);
+                }
+            }
+
+            function patchJsonResponseBody(body) {
+                if (!body || typeof body !== 'object') return body;
+                try {
+                    const clone = typeof structuredClone === 'function'
+                        ? structuredClone(body)
+                        : JSON.parse(JSON.stringify(body));
+                    prune(clone);
+                    return clone;
+                } catch (_) {
+                    return body;
+                }
+            }
+
+            const originalJsonParse = JSON.parse;
+            JSON.parse = function(text, reviver) {
+                const parsed = originalJsonParse.call(this, text, reviver);
+                prune(parsed);
+                return parsed;
+            };
+
+            const originalFetch = window.fetch;
+            if (typeof originalFetch === 'function') {
+                window.fetch = async function(...args) {
+                    const response = await originalFetch.apply(this, args);
+                    if (!response || typeof response.clone !== 'function') return response;
+
+                    try {
+                        const contentType = response.headers.get('content-type') || '';
+                        if (!contentType.includes('application/json')) return response;
+
+                        const json = await response.clone().json();
+                        const pruned = patchJsonResponseBody(json);
+                        return new Response(JSON.stringify(pruned), {
+                            status: response.status,
+                            statusText: response.statusText,
+                            headers: response.headers
+                        });
+                    } catch (_) {
+                        return response;
+                    }
+                };
+            }
+        })();
+        """
     }
 }
 

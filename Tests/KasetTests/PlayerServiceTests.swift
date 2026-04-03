@@ -124,6 +124,17 @@ struct PlayerServiceTests {
         #expect(self.playerService.currentTrack?.thumbnailURL == nil)
     }
 
+    @Test("Update ad playback state")
+    func updateAdPlaybackState() {
+        #expect(self.playerService.isAdPlaying == false)
+
+        self.playerService.updateAdPlaybackState(true)
+        #expect(self.playerService.isAdPlaying == true)
+
+        self.playerService.updateAdPlaybackState(false)
+        #expect(self.playerService.isAdPlaying == false)
+    }
+
     @Test("Confirm playback started")
     func confirmPlaybackStarted() {
         self.playerService.showMiniPlayer = true

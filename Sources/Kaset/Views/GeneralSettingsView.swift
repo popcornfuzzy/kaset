@@ -48,6 +48,10 @@ struct GeneralSettingsView: View {
                 Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
                     .help("Fetch and display real-time synced lyrics when available")
 
+                // Safe Ad Blocking
+                Toggle("Enable Ad Blocking", isOn: self.$settings.safeAdBlockingEnabled)
+                    .help("Uses conservative player-level ad suppression hooks. Disable if playback becomes unstable.")
+
                 // Remember Playback Settings
                 Toggle("Remember Shuffle & Repeat", isOn: self.$settings.rememberPlaybackSettings)
                     .help("Save shuffle and repeat settings across app restarts")
@@ -160,6 +164,9 @@ struct GeneralSettingsView: View {
         .navigationTitle("General")
         .task {
             await self.updateCacheSize()
+        }
+        .onChange(of: self.settings.safeAdBlockingEnabled) { _, enabled in
+            SingletonPlayerWebView.shared.setSafeAdBlockingEnabled(enabled)
         }
     }
 

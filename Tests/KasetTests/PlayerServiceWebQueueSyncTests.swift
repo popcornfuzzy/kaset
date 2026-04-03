@@ -471,6 +471,45 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.title == "Song 3")
     }
 
+    @Test("Ad playback pauses queue metadata reconciliation")
+    func adPlaybackPausesQueueMetadataReconciliation() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+            Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updateTrackMetadata(
+            title: "Song 1",
+            artist: "",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        self.playerService.updateAdPlaybackState(true)
+        self.playerService.updateTrackMetadata(
+            title: "Ad Track",
+            artist: "Sponsor",
+            thumbnailUrl: "",
+            videoId: "ad-video"
+        )
+
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.currentTrack?.videoId == "v1")
+
+        self.playerService.updateAdPlaybackState(false)
+        self.playerService.updateTrackMetadata(
+            title: "Song 2",
+            artist: "",
+            thumbnailUrl: "",
+            videoId: "v2"
+        )
+
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.currentTrack?.videoId == "v2")
+    }
+
     @Test("Track end wraps to the first queue song when repeat all is enabled")
     func trackEndWrapsToStartWhenRepeatAllIsEnabled() async {
         let songs = [

@@ -150,6 +150,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether AirPlay is currently connected (playing to a wireless target).
     private(set) var isAirPlayConnected: Bool = false
 
+    /// Whether the Web player currently reports ad playback.
+    private(set) var isAdPlaying: Bool = false
+
     /// Whether the user has requested AirPlay this session (for persistence across track changes).
     private(set) var airPlayWasRequested: Bool = false
 
@@ -483,6 +486,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     func markPlaybackEnded() {
         self.state = .ended
+    }
+
+    func updateAdPlaybackState(_ isAdPlaying: Bool) {
+        guard self.isAdPlaying != isAdPlaying else { return }
+        self.isAdPlaying = isAdPlaying
+        self.logger.info("Ad playback state changed: \(isAdPlaying)")
     }
 
     /// Flag to track when a song is nearing its end.

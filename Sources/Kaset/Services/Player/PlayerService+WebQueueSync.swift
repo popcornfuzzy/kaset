@@ -451,6 +451,12 @@ extension PlayerService {
     /// Updates track metadata and enforces Kaset's queue when YouTube tries to diverge.
     func updateTrackMetadata(title: String, artist: String, thumbnailUrl: String, videoId observedVideoId: String?) {
         self.logger.debug("Track metadata updated: \(title) - \(artist)")
+
+        if self.isAdPlaying {
+            self.logger.debug("Ignoring metadata reconciliation while ad is active")
+            return
+        }
+
         let thumbnailURL = URL(string: thumbnailUrl)
         let artistObj = Artist(id: "unknown", name: artist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)

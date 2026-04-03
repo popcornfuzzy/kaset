@@ -13,6 +13,7 @@ extension SingletonPlayerWebView {
             let isPollingActive = false;
             let pollIntervalId = null;
             let lastUpdateTime = 0;
+            let lastAdState = null;
             const UPDATE_THROTTLE_MS = 500; // Throttle updates to max 2/sec
             const POLL_INTERVAL_MS = 1000; // Poll at 1Hz during playback (reduced from 250ms)
 
@@ -180,6 +181,36 @@ extension SingletonPlayerWebView {
                 }
             }
 
+            function isAdPlaybackActive() {
+                try {
+                    const moviePlayer = document.getElementById('movie_player');
+                    if (moviePlayer) {
+                        if (moviePlayer.classList && moviePlayer.classList.contains('ad-showing')) return true;
+                        if (typeof moviePlayer.getAdState === 'function' && moviePlayer.getAdState() === 1) return true;
+                        if (typeof moviePlayer.isAdPlaying === 'function' && moviePlayer.isAdPlaying()) return true;
+                    }
+
+                    const playerData = currentPlayerData();
+                    if (playerData && (playerData.isAd === true || playerData.adType)) {
+                        return true;
+                    }
+
+                    const adContainer = document.querySelector('.video-ads, .ytp-ad-module, ytmusic-player-ads');
+                    return !!adContainer;
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            function sendAdStateIfChanged(isAd) {
+                if (lastAdState === isAd) return;
+                lastAdState = isAd;
+                bridge.postMessage({
+                    type: 'AD_STATE',
+                    isAd: isAd
+                });
+            }
+
             let lyricsPollId = null;
             window.startLyricsPoll = function() {
                 if (lyricsPollId) return;
@@ -305,6 +336,9 @@ extension SingletonPlayerWebView {
                         else if (status === 'DISLIKE') likeStatus = 'DISLIKE';
                     }
 
+                    const isAd = isAdPlaybackActive();
+                    sendAdStateIfChanged(isAd);
+
                     // Check if track changed
                     const metadataChanged = title !== '' && (title !== lastTitle || artist !== lastArtist);
                     const videoIdChanged = videoId !== '' && videoId !== lastVideoId;
@@ -346,7 +380,8 @@ extension SingletonPlayerWebView {
                         thumbnailUrl: thumbnailUrl,
                         trackChanged: trackChanged,
                         likeStatus: likeStatus,
-                        hasVideo: hasVideo
+                        hasVideo: hasVideo,
+                        isAd: isAd
                     });
                 } catch (e) {}
             }

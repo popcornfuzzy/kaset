@@ -392,4 +392,7 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
 
     /// Updates the like status from WebView observation.
     func updateLikeStatus(_ status: LikeStatus)
+
+    /// Updates whether an ad is currently active in the Web player.
+    func updateAdPlaybackState(_ isAdPlaying: Bool)
 }
