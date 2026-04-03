@@ -89,6 +89,7 @@ struct ScrobbleServiceRow: View {
                     defer { self.isAuthenticating = false }
                     do {
                         try await self.service.authenticate()
+                        self.settings.setServiceEnabled(self.service.serviceName, true)
                     } catch {
                         DiagnosticsLogger.scrobbling.error("Auth failed for \(self.service.serviceName): \(error.localizedDescription)")
                     }

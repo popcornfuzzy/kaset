@@ -141,6 +141,12 @@ final class SettingsManager {
         self.enabledServices[serviceName] ?? false
     }
 
+    /// Whether the user has an explicit persisted preference for a service.
+    /// Distinguishes between "never configured" and "explicitly disabled".
+    func hasExplicitServicePreference(_ serviceName: String) -> Bool {
+        self.enabledServices[serviceName] != nil
+    }
+
     /// Sets the enabled state for a specific scrobbling service by name.
     func setServiceEnabled(_ serviceName: String, _ enabled: Bool) {
         self.enabledServices[serviceName] = enabled

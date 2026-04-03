@@ -134,6 +134,15 @@ final class ScrobblingCoordinator {
     func restoreAuthState() {
         for service in self.services {
             service.restoreSession()
+
+            // Re-enable restored sessions only for first run/migration scenarios where
+            // no explicit per-service preference exists yet (e.g., after reinstall).
+            if service.authState.isConnected,
+               !self.settingsManager.hasExplicitServicePreference(service.serviceName)
+            {
+                self.settingsManager.setServiceEnabled(service.serviceName, true)
+                self.logger.info("Enabled \(service.serviceName) scrobbling after restoring session")
+            }
         }
     }
 
@@ -194,8 +203,10 @@ final class ScrobblingCoordinator {
                 self.sendNowPlaying(track)
             }
 
-            // Check scrobble threshold
-            if !self.hasScrobbled, duration > 0 {
+            // Check scrobble threshold.
+            // Duration can be unknown (0) early in playback, so threshold logic
+            // must still run to allow min-seconds fallback.
+            if !self.hasScrobbled {
                 self.checkScrobbleThreshold(track: track, duration: duration)
             }
         } else if self.currentTrackVideoId != nil {
@@ -227,9 +238,7 @@ final class ScrobblingCoordinator {
         // Final threshold check before discarding accumulated play time
         if !self.hasScrobbled, let song = self.trackedSong {
             let duration = song.duration ?? self.playerService.duration
-            if duration > 0 {
-                self.checkScrobbleThreshold(track: song, duration: duration)
-            }
+            self.checkScrobbleThreshold(track: song, duration: duration)
         }
 
         self.logger.debug("Finalized track (accumulated: \(String(format: "%.1f", self.accumulatedPlayTime))s, scrobbled: \(self.hasScrobbled))")
@@ -273,8 +282,11 @@ final class ScrobblingCoordinator {
     // MARK: - Scrobble Threshold
 
     private func checkScrobbleThreshold(track: Song, duration: TimeInterval) {
-        // Last.fm requires tracks to be at least 30 seconds long
-        guard duration >= 30 else { return }
+        // Last.fm requires tracks to be at least 30 seconds long, but duration can be
+        // temporarily unknown (0) while metadata is still loading.
+        if duration > 0, duration < 30 {
+            return
+        }
 
         let percentThreshold = self.settingsManager.scrobblePercentThreshold
         let minSeconds = self.settingsManager.scrobbleMinSeconds
@@ -295,6 +307,13 @@ final class ScrobblingCoordinator {
             let scrobbleTrack = ScrobbleTrack(from: track, timestamp: startTime)
             self.queue.enqueue(scrobbleTrack)
             self.logger.info("Scrobble threshold met for: \(track.title) (accumulated: \(String(format: "%.1f", self.accumulatedPlayTime))s)")
+
+            // Try to flush immediately so Recent Tracks updates quickly instead of
+            // waiting for the next periodic 30s flush tick.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.flushQueue()
+            }
         }
     }
 

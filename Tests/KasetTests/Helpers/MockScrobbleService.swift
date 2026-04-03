@@ -4,7 +4,7 @@ import Foundation
 /// Mock implementation of ScrobbleServiceProtocol for testing.
 @MainActor
 final class MockScrobbleService: ScrobbleServiceProtocol {
-    let serviceName = "Mock"
+    let serviceName: String
 
     // MARK: - State
 
@@ -26,6 +26,11 @@ final class MockScrobbleService: ScrobbleServiceProtocol {
     var shouldThrowOnScrobble: Error?
     var scrobbleResults: [ScrobbleResult]?
     var validateSessionResult: Bool = true
+    var restoredAuthState: ScrobbleAuthState?
+
+    init(serviceName: String = "Mock") {
+        self.serviceName = serviceName
+    }
 
     // MARK: - Protocol Methods
 
@@ -44,6 +49,9 @@ final class MockScrobbleService: ScrobbleServiceProtocol {
 
     func restoreSession() {
         self.restoreSessionCalled = true
+        if let restoredAuthState {
+            self.authState = restoredAuthState
+        }
     }
 
     func updateNowPlaying(_ track: ScrobbleTrack) async throws {
@@ -83,6 +91,7 @@ final class MockScrobbleService: ScrobbleServiceProtocol {
         self.shouldThrowOnScrobble = nil
         self.scrobbleResults = nil
         self.validateSessionResult = true
+        self.restoredAuthState = nil
         self.authState = .disconnected
     }
 

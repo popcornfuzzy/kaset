@@ -178,6 +178,37 @@ struct ScrobblingCoordinatorTests {
         #expect(!thresholdMet)
     }
 
+    @Test("Unknown duration can still scrobble after minimum seconds")
+    func unknownDurationUsesMinSecondsFallback() {
+        // Duration not yet available from player metadata (represented as 0).
+        let duration = 0.0
+        let minSeconds: TimeInterval = 240
+        let accumulated: TimeInterval = 241
+
+        let thresholdMet: Bool = if duration > 0 {
+            accumulated >= duration * 0.5 || accumulated >= minSeconds
+        } else {
+            accumulated >= minSeconds
+        }
+
+        #expect(thresholdMet)
+    }
+
+    @Test("Unknown duration below minimum seconds does not scrobble")
+    func unknownDurationBelowMinSecondsDoesNotScrobble() {
+        let duration = 0.0
+        let minSeconds: TimeInterval = 240
+        let accumulated: TimeInterval = 120
+
+        let thresholdMet: Bool = if duration > 0 {
+            accumulated >= duration * 0.5 || accumulated >= minSeconds
+        } else {
+            accumulated >= minSeconds
+        }
+
+        #expect(!thresholdMet)
+    }
+
     // MARK: - Play Time Accumulation Logic
 
     @Test("Normal play accumulates correctly")
@@ -455,5 +486,50 @@ struct ScrobblingCoordinatorTests {
 
         let thresholdMet = accumulated >= duration * percentThreshold || accumulated >= minSeconds
         #expect(thresholdMet, "Threshold should be met at exactly 50% of duration")
+    }
+
+    // MARK: - Last.fm restore behavior
+
+    @Test("RestoreAuthState enables connected service when no explicit preference exists")
+    func restoreAuthStateAutoEnablesConnectedServiceWithoutPreference() {
+        let serviceName = "Mock-\(UUID().uuidString)"
+        let mockService = MockScrobbleService(serviceName: serviceName)
+        mockService.restoredAuthState = .connected(username: "testuser")
+
+        let playerService = PlayerService()
+        let settings = SettingsManager.shared
+        #expect(!settings.hasExplicitServicePreference(serviceName))
+
+        let coordinator = ScrobblingCoordinator(
+            playerService: playerService,
+            settingsManager: settings,
+            services: [mockService]
+        )
+
+        coordinator.restoreAuthState()
+
+        #expect(settings.isServiceEnabled(serviceName))
+    }
+
+    @Test("RestoreAuthState does not override explicit disabled preference")
+    func restoreAuthStateDoesNotOverrideExplicitDisabledPreference() {
+        let serviceName = "Mock-\(UUID().uuidString)"
+        let mockService = MockScrobbleService(serviceName: serviceName)
+        mockService.restoredAuthState = .connected(username: "testuser")
+
+        let playerService = PlayerService()
+        let settings = SettingsManager.shared
+        settings.setServiceEnabled(serviceName, false)
+        #expect(settings.hasExplicitServicePreference(serviceName))
+
+        let coordinator = ScrobblingCoordinator(
+            playerService: playerService,
+            settingsManager: settings,
+            services: [mockService]
+        )
+
+        coordinator.restoreAuthState()
+
+        #expect(settings.isServiceEnabled(serviceName) == false)
     }
 }
