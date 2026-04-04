@@ -194,6 +194,17 @@ struct PlaylistDetailView: View {
                 .controlSize(.large)
                 .disabled(detail.tracks.isEmpty)
 
+                // Shuffle button
+                Button {
+                    let fallbackAlbum = self.makeFallbackAlbum(from: detail)
+                    self.playShuffled(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
+                } label: {
+                    Image(systemName: "shuffle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(detail.tracks.isEmpty)
+
                 // Play Next button
                 Button {
                     let fallbackAlbum = self.makeFallbackAlbum(from: detail)
@@ -431,6 +442,15 @@ struct PlaylistDetailView: View {
         let cleanedTracks = self.cleanTracks(tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum)
         Task {
             await self.playerService.playQueue(cleanedTracks, startingAt: 0)
+        }
+    }
+
+    private func playShuffled(_ tracks: [Song], fallbackArtist: String? = nil, fallbackAlbum: Album? = nil) {
+        guard !tracks.isEmpty else { return }
+        let cleanedTracks = self.cleanTracks(tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum)
+        let shuffledTracks = cleanedTracks.shuffled()
+        Task {
+            await self.playerService.playQueue(shuffledTracks, startingAt: 0)
         }
     }
 

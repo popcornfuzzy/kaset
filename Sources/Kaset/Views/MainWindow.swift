@@ -45,7 +45,6 @@ struct MainWindow: View {
     @State private var moodsAndGenresViewModel: MoodsAndGenresViewModel?
     @State private var newReleasesViewModel: NewReleasesViewModel?
     @State private var podcastsViewModel: PodcastsViewModel?
-    @State private var likedMusicViewModel: LikedMusicViewModel?
     @State private var libraryViewModel: LibraryViewModel?
 
     /// Column visibility state for NavigationSplitView - persisted to fix restoration from dock.
@@ -61,8 +60,18 @@ struct MainWindow: View {
         _moodsAndGenresViewModel = State(initialValue: MoodsAndGenresViewModel(client: client))
         _newReleasesViewModel = State(initialValue: NewReleasesViewModel(client: client))
         _podcastsViewModel = State(initialValue: PodcastsViewModel(client: client))
-        _likedMusicViewModel = State(initialValue: LikedMusicViewModel(client: client))
         _libraryViewModel = State(initialValue: LibraryViewModel(client: client))
+    }
+
+    private var likedMusicPlaylist: Playlist {
+        Playlist(
+            id: "LM",
+            title: String(localized: "Liked Music"),
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: nil,
+            author: nil
+        )
     }
 
     /// Access to the app delegate for persistent WebView.
@@ -238,15 +247,12 @@ struct MainWindow: View {
         .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
             guard let event else { return }
 
-            // Global sync 1: keep PlayerService.currentTrackLikeStatus in sync
+            // Keep PlayerService.currentTrackLikeStatus in sync.
             if let currentVideoId = self.playerService.currentTrack?.videoId,
                event.videoId == currentVideoId
             {
                 self.playerService.currentTrackLikeStatus = event.status
             }
-
-            // Global sync 2: keep Liked Music list in sync regardless of which tab is active
-            self.likedMusicViewModel?.handleLikeStatusChange(event)
         }
     }
 
@@ -353,7 +359,10 @@ struct MainWindow: View {
             case .podcasts:
                 if let vm = podcastsViewModel { PodcastsView(viewModel: vm) }
             case .likedMusic:
-                if let vm = likedMusicViewModel { LikedMusicView(viewModel: vm) }
+                PlaylistDetailView(
+                    playlist: self.likedMusicPlaylist,
+                    viewModel: PlaylistDetailViewModel(playlist: self.likedMusicPlaylist, client: self.client)
+                )
             case .library:
                 if let vm = libraryViewModel { LibraryView(viewModel: vm) }
             }
@@ -450,7 +459,6 @@ struct MainWindow: View {
             group.addTask { await self.moodsAndGenresViewModel?.refresh() }
             group.addTask { await self.newReleasesViewModel?.refresh() }
             group.addTask { await self.podcastsViewModel?.refresh() }
-            group.addTask { await self.likedMusicViewModel?.refresh() }
             group.addTask { await self.libraryViewModel?.refresh() }
         }
     }
