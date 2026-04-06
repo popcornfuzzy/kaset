@@ -389,8 +389,8 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.videoId == "unexpected")
     }
 
-    @Test("Autoplay after native queue end starts mirroring YouTube autoplay track sequence")
-    func autoplayAfterQueueEndStartsMirroringYouTubeTrackSequence() async {
+    @Test("Autoplay after native queue end keeps native queue until seeded sync is available")
+    func autoplayAfterQueueEndKeepsNativeQueueUntilSeedSync() async {
         let songs = [
             Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
             Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
@@ -410,11 +410,11 @@ struct PlayerServiceWebQueueSyncTests {
 
         try? await Task.sleep(for: .milliseconds(120))
 
-        #expect(self.playerService.isYouTubeAutoplayActive == false)
-        #expect(self.playerService.currentIndex == 0)
-        #expect(self.playerService.queue.first?.videoId == "unexpected")
-        #expect(self.playerService.queue.count == 1)
-        #expect(self.playerService.queueHighlightIndex == 0)
+        #expect(self.playerService.isYouTubeAutoplayActive == true)
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.queue.first?.videoId == "v1")
+        #expect(self.playerService.queue.count == 2)
+        #expect(self.playerService.queueHighlightIndex == nil)
         #expect(self.playerService.isYouTubeAutoplayIndicatorVisible == true)
     }
 
@@ -471,8 +471,8 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.isYouTubeAutoplayIndicatorVisible == true)
     }
 
-    @Test("Autoplay drift appends observed YouTube track order into queue")
-    func autoplayDriftAppendsObservedYouTubeTrackOrderIntoQueue() async {
+    @Test("Autoplay drift realigns to observed in-queue song without appending")
+    func autoplayDriftRealignsToObservedInQueueSongWithoutAppending() async {
         let songs = [
             Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
             Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v2"),
@@ -493,7 +493,7 @@ struct PlayerServiceWebQueueSyncTests {
         try? await Task.sleep(for: .milliseconds(120))
 
         #expect(self.playerService.currentIndex == 2)
-        #expect(self.playerService.queue.count == 4)
+        #expect(self.playerService.queue.count == 3)
         #expect(self.playerService.queue.last?.videoId == "v3")
         #expect(self.playerService.currentTrack?.videoId == "v3")
     }

@@ -177,20 +177,46 @@ extension PlayerService {
             return
         }
 
-        let autoplaySong = self.makeObservedTrack(
-            title: title,
-            artist: artist,
-            thumbnailUrl: thumbnailUrl,
-            videoId: observedVideoId
-        )
+        guard let client = self.ytMusicClient else {
+            return
+        }
 
-        self.clearForwardSkipNavigationStack()
-        self.queue = [autoplaySong]
-        self.currentIndex = 0
-        self.mixContinuationToken = nil
-        self.saveQueueForPersistence()
-        self.deactivateYouTubeAutoplayOutsideQueueState()
-        self.logger.info("Started mirroring YouTube autoplay queue with observed track \(observedVideoId)")
+        do {
+            let seededQueue = try await client.getRadioQueue(videoId: observedVideoId)
+
+            guard self.isYouTubeAutoplayActive,
+                  self.youTubeAutoplaySeedVideoId == observedVideoId
+            else {
+                return
+            }
+
+            let autoplaySong = self.makeObservedTrack(
+                title: title,
+                artist: artist,
+                thumbnailUrl: thumbnailUrl,
+                videoId: observedVideoId
+            )
+
+            var syncedQueue = seededQueue
+            if syncedQueue.isEmpty {
+                syncedQueue = [autoplaySong]
+            } else if !syncedQueue.contains(where: { $0.videoId == observedVideoId }) {
+                syncedQueue.insert(autoplaySong, at: 0)
+            }
+
+            let syncedIndex = syncedQueue.firstIndex(where: { $0.videoId == observedVideoId }) ?? 0
+
+            self.clearForwardSkipNavigationStack()
+            self.queue = syncedQueue
+            self.currentIndex = syncedIndex
+            self.currentTrack = self.queue[safe: syncedIndex] ?? autoplaySong
+            self.mixContinuationToken = nil
+            self.saveQueueForPersistence()
+            self.deactivateYouTubeAutoplayOutsideQueueState()
+            self.logger.info("Synced seed-based autoplay queue with \(self.queue.count) songs")
+        } catch {
+            self.logger.warning("Failed to sync seed-based autoplay queue: \(error.localizedDescription)")
+        }
     }
 
     private func suppressUnexpectedAutoplayAfterQueueEndIfNeeded(
