@@ -7,6 +7,7 @@ extension PlayerService {
     /// Plays a queue of songs starting at the specified index.
     func playQueue(_ songs: [Song], startingAt index: Int = 0) async {
         guard !songs.isEmpty else { return }
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let safeIndex = max(0, min(index, songs.count - 1))
@@ -24,6 +25,7 @@ extension PlayerService {
     /// The queue will be populated with similar songs from YouTube Music's radio feature.
     func playWithRadio(song: Song) async {
         self.logger.info("Playing with radio: \(song.title)")
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
 
@@ -48,6 +50,7 @@ extension PlayerService {
     ///   - startVideoId: Optional video ID to start with. If nil, API picks a random starting point.
     func playWithMix(playlistId: String, startVideoId: String?) async {
         self.logger.info("Playing mix playlist: \(playlistId), startVideoId: \(startVideoId ?? "nil (random)")")
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
 
@@ -192,6 +195,7 @@ extension PlayerService {
 
     /// Clears the entire queue and current track (for "Clear" in side panel). Records state for undo.
     func clearQueueEntirely() {
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         self.mixContinuationToken = nil
@@ -203,6 +207,7 @@ extension PlayerService {
 
     /// Clears the playback queue except for the currently playing track.
     func clearQueue() {
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         // Clear mix continuation since queue is being manually cleared
@@ -224,6 +229,7 @@ extension PlayerService {
     /// Plays a song from the queue at the specified index.
     func playFromQueue(at index: Int) async {
         guard index >= 0, index < self.queue.count else { return }
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.currentIndex = index
         if let song = queue[safe: index] {
@@ -238,6 +244,7 @@ extension PlayerService {
     /// - Parameter songs: The songs to insert into the queue.
     func insertNextInQueue(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
+        self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let insertIndex = min(self.currentIndex + 1, self.queue.count)

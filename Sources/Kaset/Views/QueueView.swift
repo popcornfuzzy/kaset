@@ -226,10 +226,23 @@ private struct QueueRowView: View {
                         .lineLimit(1)
                         .foregroundStyle(self.isCurrentTrack ? .red : .primary)
 
-                    Text(self.song.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : self.song.artistsDisplay)
-                        .font(.system(size: 11))
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        if self.playerService.isYouTubeAutoplayIndicatorVisible {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 8, weight: .semibold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(Color.red.opacity(0.14))
+                                .foregroundStyle(.red)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .accessibilityLabel(String(localized: "Autoplay"))
+                        }
+
+                        Text(self.song.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : self.song.artistsDisplay)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()

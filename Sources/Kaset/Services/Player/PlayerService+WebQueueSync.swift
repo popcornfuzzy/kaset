@@ -93,6 +93,106 @@ extension PlayerService {
         )
     }
 
+    private func makeObservedTrack(
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        videoId: String
+    ) -> Song {
+        let thumbnailURL = URL(string: thumbnailUrl)
+        let artistObj = Artist(id: "unknown", name: artist)
+        return Song(
+            id: videoId,
+            title: title,
+            artists: [artistObj],
+            album: nil,
+            duration: self.duration > 0 ? self.duration : nil,
+            thumbnailURL: thumbnailURL,
+            videoId: videoId
+        )
+    }
+
+    private func isAtNativeQueueBoundaryForAutoplay() -> Bool {
+        !self.queue.isEmpty && !self.canAdvanceNativeQueueAfterTrackEnd
+    }
+
+    private func handleYouTubeAutoplayOutsideNativeQueue(
+        observedVideoId: String,
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        trackChanged: Bool,
+        fromNearEndTransition: Bool = false
+    ) -> Bool {
+        guard self.isAtNativeQueueBoundaryForAutoplay(),
+              fromNearEndTransition || self.state == .ended || self.isAwaitingYouTubeAutoplayAfterQueueEnd
+        else {
+            return false
+        }
+
+        if trackChanged {
+            self.resetTrackStatus()
+        }
+
+        self.activateYouTubeAutoplay(videoId: observedVideoId)
+        self.currentTrack = self.makeObservedTrack(
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            videoId: observedVideoId
+        )
+        self.logger.info("YouTube autoplay started outside native queue with \(observedVideoId)")
+        Task {
+            await self.syncYouTubeAutoplayQueueIfPossible(
+                observedVideoId: observedVideoId,
+                title: title,
+                artist: artist,
+                thumbnailUrl: thumbnailUrl
+            )
+        }
+        return true
+    }
+
+    private func syncYouTubeAutoplayQueueIfPossible(
+        observedVideoId: String,
+        title: String,
+        artist: String,
+        thumbnailUrl: String
+    ) async {
+        guard self.isYouTubeAutoplayActive,
+              self.youTubeAutoplaySeedVideoId == observedVideoId,
+              !self.isFetchingYouTubeAutoplayQueue
+        else {
+            return
+        }
+
+        self.isFetchingYouTubeAutoplayQueue = true
+        defer {
+            self.isFetchingYouTubeAutoplayQueue = false
+        }
+
+        guard self.isYouTubeAutoplayActive,
+              self.youTubeAutoplaySeedVideoId == observedVideoId
+        else {
+            return
+        }
+
+        let autoplaySong = self.makeObservedTrack(
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            videoId: observedVideoId
+        )
+
+        self.clearForwardSkipNavigationStack()
+        self.queue = [autoplaySong]
+        self.currentIndex = 0
+        self.mixContinuationToken = nil
+        self.saveQueueForPersistence()
+        self.deactivateYouTubeAutoplayOutsideQueueState()
+        self.logger.info("Started mirroring YouTube autoplay queue with observed track \(observedVideoId)")
+    }
+
     private func suppressUnexpectedAutoplayAfterQueueEndIfNeeded(
         trackChanged: Bool,
         observedVideoId: String?,
@@ -241,12 +341,19 @@ extension PlayerService {
             return true
         }
 
-        self.markPlaybackEnded()
-        self.logger.info("Unexpected autoplay detected at end of native queue; pausing playback")
-        Task {
-            await self.pause()
+        guard let observedVideoId = self.normalizedObservedVideoId(observedVideoId) else {
+            self.markPlaybackEnded()
+            return true
         }
-        return true
+
+        return self.handleYouTubeAutoplayOutsideNativeQueue(
+            observedVideoId: observedVideoId,
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            trackChanged: trackChanged,
+            fromNearEndTransition: true
+        )
     }
 
     /// Last-line repeat-one enforcement: WebView metadata is lossy/out-of-order; earlier handlers can miss a frame.
@@ -331,6 +438,9 @@ extension PlayerService {
         if let matchingIndex = self.queue.firstIndex(where: { $0.videoId == observedVideoId }),
            let matchingSong = self.queue[safe: matchingIndex]
         {
+            if !self.isYouTubeAutoplayIndicatorVisible {
+                self.clearYouTubeAutoplayState()
+            }
             let queueIndexChanged = matchingIndex != self.currentIndex
             if queueIndexChanged {
                 self.currentIndex = matchingIndex
@@ -350,6 +460,38 @@ extension PlayerService {
                 return true
             }
             return false
+        }
+
+        if self.isYouTubeAutoplayIndicatorVisible,
+           self.repeatMode == .off,
+           !self.shuffleEnabled,
+           !self.queue.isEmpty
+        {
+            let autoplaySong = self.makeObservedTrack(
+                title: title,
+                artist: artist,
+                thumbnailUrl: thumbnailUrl,
+                videoId: observedVideoId
+            )
+            if trackChanged {
+                self.resetTrackStatus()
+            }
+            self.currentTrack = autoplaySong
+            self.queue.append(autoplaySong)
+            self.currentIndex = self.queue.count - 1
+            self.saveQueueForPersistence()
+            self.logger.info("Mirrored next YouTube autoplay track into queue at index \(self.currentIndex)")
+            return true
+        }
+
+        if self.handleYouTubeAutoplayOutsideNativeQueue(
+            observedVideoId: observedVideoId,
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            trackChanged: trackChanged
+        ) {
+            return true
         }
 
         self.logger.info(
@@ -432,13 +574,14 @@ extension PlayerService {
         }
 
         guard self.canAdvanceNativeQueueAfterTrackEnd else {
-            self.shouldSuppressAutoplayAfterQueueEnd = true
+            self.shouldSuppressAutoplayAfterQueueEnd = false
+            self.isAwaitingYouTubeAutoplayAfterQueueEnd = true
             self.markPlaybackEnded()
-            self.logger.info("Reached end of native queue; not yielding to YouTube autoplay")
-            await self.pause()
+            self.logger.info("Reached end of native queue; allowing YouTube autoplay handoff")
             return
         }
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
         if self.repeatMode == .one {
             self.logger.info("Track ended with repeat one; replaying current queue song")
             await self.replayCurrentQueueSongForRepeatOneAfterTrackEnd()
@@ -502,6 +645,12 @@ extension PlayerService {
             trackChanged: trackChanged
         ) {
             return
+        }
+
+        if self.queue.contains(where: { $0.videoId == resolvedVideoId }) {
+            if self.isYouTubeAutoplayActive {
+                self.deactivateYouTubeAutoplayOutsideQueueState()
+            }
         }
 
         if self.finalRepeatOneSafetyNetIfNeeded(

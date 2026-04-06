@@ -365,8 +365,8 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.artistsDisplay == "Artist 2")
     }
 
-    @Test("Unexpected autoplay at end of queue is stopped")
-    func unexpectedAutoplayAtEndOfQueueIsStopped() async {
+    @Test("Unexpected autoplay at end of queue is marked and native highlight is cleared")
+    func unexpectedAutoplayAtEndOfQueueIsMarkedAndHighlightIsCleared() async {
         let songs = [
             Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
             Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
@@ -383,13 +383,14 @@ struct PlayerServiceWebQueueSyncTests {
             videoId: "unexpected"
         )
 
-        #expect(self.playerService.state == .ended)
+        #expect(self.playerService.isYouTubeAutoplayActive == true)
+        #expect(self.playerService.queueHighlightIndex == nil)
         #expect(self.playerService.currentIndex == 1)
-        #expect(self.playerService.currentTrack?.videoId == "v2")
+        #expect(self.playerService.currentTrack?.videoId == "unexpected")
     }
 
-    @Test("Autoplay after native queue end is suppressed")
-    func autoplayAfterQueueEndIsSuppressed() async {
+    @Test("Autoplay after native queue end starts mirroring YouTube autoplay track sequence")
+    func autoplayAfterQueueEndStartsMirroringYouTubeTrackSequence() async {
         let songs = [
             Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
             Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
@@ -407,9 +408,94 @@ struct PlayerServiceWebQueueSyncTests {
             videoId: "unexpected"
         )
 
-        #expect(self.playerService.state == .ended)
+        try? await Task.sleep(for: .milliseconds(120))
+
+        #expect(self.playerService.isYouTubeAutoplayActive == false)
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.queue.first?.videoId == "unexpected")
+        #expect(self.playerService.queue.count == 1)
+        #expect(self.playerService.queueHighlightIndex == 0)
+        #expect(self.playerService.isYouTubeAutoplayIndicatorVisible == true)
+    }
+
+    @Test("Next at queue end requests immediate YouTube autoplay handoff")
+    func nextAtQueueEndRequestsImmediateYouTubeAutoplayHandoff() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.clearQueue()
+        #expect(self.playerService.queue.count == 1)
+
+        await self.playerService.next()
+
+        #expect(self.playerService.isAwaitingYouTubeAutoplayAfterQueueEnd == true)
+    }
+
+    @Test("Awaiting autoplay state survives intermediate metadata updates")
+    func awaitingAutoplayStateSurvivesIntermediateMetadataUpdates() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.clearQueue()
+        await self.playerService.next()
+        #expect(self.playerService.isAwaitingYouTubeAutoplayAfterQueueEnd == true)
+
+        // WebView can emit stale/in-between metadata before autoplay track appears.
+        self.playerService.updateTrackMetadata(
+            title: "Song 1",
+            artist: "",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.isAwaitingYouTubeAutoplayAfterQueueEnd == true)
+    }
+
+    @Test("Autoplay indicator remains visible across automatic queue next")
+    func autoplayIndicatorRemainsVisibleAcrossAutomaticQueueNext() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+            Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v2"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.isYouTubeAutoplayIndicatorVisible = true
+
+        await self.playerService.next()
+
         #expect(self.playerService.currentIndex == 1)
-        #expect(self.playerService.currentTrack?.videoId == "v2")
+        #expect(self.playerService.isYouTubeAutoplayIndicatorVisible == true)
+    }
+
+    @Test("Autoplay drift appends observed YouTube track order into queue")
+    func autoplayDriftAppendsObservedYouTubeTrackOrderIntoQueue() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+            Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v2"),
+            Song(id: "3", title: "Song 3", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v3"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.isYouTubeAutoplayIndicatorVisible = true
+        self.playerService.isKasetInitiatedPlayback = false
+
+        self.playerService.updateTrackMetadata(
+            title: "Song 3",
+            artist: "",
+            thumbnailUrl: "",
+            videoId: "v3"
+        )
+
+        try? await Task.sleep(for: .milliseconds(120))
+
+        #expect(self.playerService.currentIndex == 2)
+        #expect(self.playerService.queue.count == 4)
+        #expect(self.playerService.queue.last?.videoId == "v3")
+        #expect(self.playerService.currentTrack?.videoId == "v3")
     }
 
     @Test("Unexpected mid-track autoplay is corrected after playback confirmation")

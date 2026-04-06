@@ -21,7 +21,7 @@ struct QueueSidePanelView: View {
             } else {
                 QueueListControllerRepresentable(
                     queue: self.playerService.queue,
-                    currentIndex: self.playerService.currentIndex,
+                    currentIndex: self.playerService.queueHighlightIndex ?? -1,
                     isPlaying: self.playerService.isPlaying,
                     favoritesManager: self.favoritesManager,
                     onSelect: { index in
@@ -34,7 +34,7 @@ struct QueueSidePanelView: View {
                     },
                     onRemove: { videoId in
                         Task {
-                            await self.playerService.removeFromQueue(videoIds: Set([videoId]))
+                            self.playerService.removeFromQueue(videoIds: Set([videoId]))
                         }
                     },
                     onStartRadio: { song in

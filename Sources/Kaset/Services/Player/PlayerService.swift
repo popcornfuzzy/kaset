@@ -296,6 +296,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         guard let state = self.queueUndoHistory.popLast() else { return }
         let (previousQueue, previousIndex) = state
         self.queueRedoHistory.append((self.queue, self.currentIndex))
+        self.clearYouTubeAutoplayState()
         self.queue = previousQueue
         self.currentIndex = min(previousIndex, max(0, previousQueue.count - 1))
         self.saveQueueForPersistence()
@@ -308,6 +309,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         guard let state = self.queueRedoHistory.popLast() else { return }
         let (nextQueue, nextIndex) = state
         self.queueUndoHistory.append((self.queue, self.currentIndex))
+        self.clearYouTubeAutoplayState()
         self.queue = nextQueue
         self.currentIndex = min(nextIndex, max(0, nextQueue.count - 1))
         self.saveQueueForPersistence()
@@ -380,6 +382,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.logger.debug("play() called with videoId: \(videoId)")
         self.logger.info("Playing video: \(videoId)")
         self.clearRestoredPlaybackSessionState()
+        self.deactivateYouTubeAutoplayOutsideQueueState()
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
@@ -425,6 +428,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.logger.info("Playing song: \(song.title)")
         self.logger.debug("Web load strategy: \(String(describing: webLoadStrategy))")
         self.clearRestoredPlaybackSessionState()
+        self.deactivateYouTubeAutoplayOutsideQueueState()
         // Brief `.loading` until the observer reports playback; in-place restarts may flash loading briefly.
         self.state = .loading
         self.songNearingEnd = false
@@ -503,6 +507,51 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Flag to suppress YouTube autoplay after the native queue has finished.
     var shouldSuppressAutoplayAfterQueueEnd: Bool = false
+
+    /// Indicates playback currently runs on a YouTube autoplay track outside Kaset's native queue.
+    var isYouTubeAutoplayActive: Bool = false
+
+    /// Seed video id for the currently observed YouTube autoplay run.
+    var youTubeAutoplaySeedVideoId: String?
+
+    /// Guards asynchronous queue synchronization while YouTube autoplay is active.
+    var isFetchingYouTubeAutoplayQueue: Bool = false
+
+    /// True while Kaset is waiting for YouTube autoplay metadata right after native queue completion.
+    var isAwaitingYouTubeAutoplayAfterQueueEnd: Bool = false
+
+    /// UI badge state for indicating the current playback session originated from YouTube autoplay.
+    var isYouTubeAutoplayIndicatorVisible: Bool = false
+
+    /// Queue row index that should be highlighted in queue UI.
+    var queueHighlightIndex: Int? {
+        guard !self.isYouTubeAutoplayActive, self.queue.indices.contains(self.currentIndex) else {
+            return nil
+        }
+        return self.currentIndex
+    }
+
+    /// Marks that playback transitioned into YouTube autoplay outside Kaset's queue.
+    func activateYouTubeAutoplay(videoId: String) {
+        self.isYouTubeAutoplayActive = true
+        self.isYouTubeAutoplayIndicatorVisible = true
+        self.youTubeAutoplaySeedVideoId = videoId
+        self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
+    }
+
+    /// Clears only the outside-native-queue autoplay mismatch state.
+    func deactivateYouTubeAutoplayOutsideQueueState() {
+        self.isYouTubeAutoplayActive = false
+        self.youTubeAutoplaySeedVideoId = nil
+        self.isFetchingYouTubeAutoplayQueue = false
+        self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
+    }
+
+    /// Clears YouTube autoplay state when Kaset regains queue ownership.
+    func clearYouTubeAutoplayState() {
+        self.deactivateYouTubeAutoplayOutsideQueueState()
+        self.isYouTubeAutoplayIndicatorVisible = false
+    }
 
     /// Grace period instant - don't auto-close video window shortly after opening (uses monotonic clock)
     private var videoWindowOpenedAt: ContinuousClock.Instant?
@@ -680,6 +729,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
                     }
                     self.saveQueueForPersistence()
                 }
+            } else if self.pendingPlayVideoId != nil {
+                // User pressed Next at queue end (for example after clearQueue keeps only current song).
+                // Hand off to YouTube autoplay immediately instead of waiting for natural track end.
+                self.shouldSuppressAutoplayAfterQueueEnd = false
+                self.isAwaitingYouTubeAutoplayAfterQueueEnd = true
+                SingletonPlayerWebView.shared.next()
             }
             // At end of queue with repeat off and no continuation, don't do anything
             return
@@ -834,6 +889,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     func stop() async {
         self.logger.debug("Stopping playback")
         self.clearRestoredPlaybackSessionState()
+        self.clearYouTubeAutoplayState()
         await self.evaluatePlayerCommand("pauseVideo()")
         self.state = .idle
         self.songNearingEnd = false
