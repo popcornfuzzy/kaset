@@ -214,7 +214,6 @@ struct MiniPlayerWebView: NSViewRepresentable {
 ///
 /// Extensions provide:
 /// - Playback controls (SingletonPlayerWebView+PlaybackControls.swift)
-/// - Video mode CSS injection (SingletonPlayerWebView+VideoMode.swift)
 /// - Observer script (SingletonPlayerWebView+ObserverScript.swift)
 @MainActor
 final class SingletonPlayerWebView {
@@ -224,13 +223,6 @@ final class SingletonPlayerWebView {
     var currentVideoId: String?
     var coordinator: Coordinator?
     let logger = DiagnosticsLogger.player
-
-    /// Current display mode for the WebView.
-    enum DisplayMode {
-        case hidden // 1x1 for audio-only
-        case miniPlayer // 160x90 toast
-        case video // Full size in video window
-    }
 
     /// How `loadVideo` behaves when Swift already tracks a `videoId` (repeat-one vs queue drift recovery).
     enum VideoLoadStrategy: Equatable {
@@ -242,7 +234,6 @@ final class SingletonPlayerWebView {
         case forceFullPageWhenSameVideoId
     }
 
-    var displayMode: DisplayMode = .hidden
     private var mediaControlUsesNextPrev: Bool
 
     private init() {
@@ -333,11 +324,10 @@ final class SingletonPlayerWebView {
         webView.removeFromSuperview()
         container.addSubview(webView)
 
-        // Use autoresizing to match container size (consistent with waitForValidBoundsAndInject)
+        // Use autoresizing to match container size.
         webView.translatesAutoresizingMaskIntoConstraints = true
         webView.frame = container.bounds
         webView.autoresizingMask = [.width, .height]
-        // Note: Don't inject CSS here - updateDisplayMode() handles it after layout completes
     }
 
     /// Starts high frequency polling for synced lyrics
@@ -535,17 +525,6 @@ final class SingletonPlayerWebView {
                         thumbnailUrl: thumbnailUrl,
                         videoId: observedVideoId
                     )
-
-                    // Close video window on track change, but skip during grace period
-                    // (grace period prevents false positives during initial video mode setup)
-                    // Note: trackChanged detection now uses videoId changes too, so this
-                    // can fire before the player bar text has caught up to the new track.
-                    if self.playerService.showVideo, !self.playerService.isVideoGracePeriodActive {
-                        DiagnosticsLogger.player.info(
-                            "trackChanged to '\(title)' while video shown - closing video window"
-                        )
-                        self.playerService.showVideo = false
-                    }
                 }
             }
         }

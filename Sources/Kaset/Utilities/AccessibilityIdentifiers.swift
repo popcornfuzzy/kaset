@@ -166,11 +166,4 @@ enum AccessibilityID {
             "likedMusicView.song.\(index)"
         }
     }
-
-    // MARK: - Video Window
-
-    enum VideoWindow {
-        static let container = "videoWindow"
-        static let videoContent = "videoWindow.content"
-    }
 }

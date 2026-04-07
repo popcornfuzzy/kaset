@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - MainWindow
@@ -83,15 +84,31 @@ struct MainWindow: View {
         @Bindable var player = self.playerService
 
         ZStack(alignment: .bottomTrailing) {
-            Group {
-                if self.authService.state.isInitializing {
-                    // Show loading while checking login status to avoid onboarding flash
-                    self.initializingView
-                } else if self.authService.state.isLoggedIn {
-                    self.mainContent
-                } else {
-                    OnboardingView()
+            if self.playerService.showFullscreenNowPlaying {
+                Group {
+                    if self.authService.state.isInitializing {
+                        self.initializingView
+                    } else if self.authService.state.isLoggedIn {
+                        self.mainContent
+                    } else {
+                        OnboardingView()
+                    }
                 }
+                .hidden()
+                .allowsHitTesting(false)
+            } else {
+                Group {
+                    if self.authService.state.isInitializing {
+                        // Show loading while checking login status to avoid onboarding flash
+                        self.initializingView
+                    } else if self.authService.state.isLoggedIn {
+                        self.mainContent
+                    } else {
+                        OnboardingView()
+                    }
+                }
+                .allowsHitTesting(true)
+                .animation(.easeInOut(duration: 0.2), value: self.playerService.showFullscreenNowPlaying)
             }
 
             // Persistent WebView - always present once a video has been requested
@@ -99,15 +116,18 @@ struct MainWindow: View {
             // Compact size (120x68) for first-time interaction, then hidden (1x1)
             if let videoId = playerService.pendingPlayVideoId {
                 ZStack(alignment: .topTrailing) {
-                    PersistentPlayerView(videoId: videoId, isExpanded: self.playerService.showMiniPlayer)
-                        .frame(
-                            width: self.playerService.showMiniPlayer ? 120 : 1,
-                            height: self.playerService.showMiniPlayer ? 68 : 1
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .opacity(self.playerService.showMiniPlayer ? 0.95 : 0)
+                    PersistentPlayerView(
+                        videoId: videoId,
+                        isExpanded: !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
+                    )
+                    .frame(
+                        width: self.playerService.showFullscreenNowPlaying ? 1 : (self.playerService.showMiniPlayer ? 120 : 1),
+                        height: self.playerService.showFullscreenNowPlaying ? 1 : (self.playerService.showMiniPlayer ? 68 : 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .opacity((!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 0.95 : 0)
 
-                    if self.playerService.showMiniPlayer {
+                    if !self.playerService.showFullscreenNowPlaying, self.playerService.showMiniPlayer {
                         Button {
                             self.playerService.confirmPlaybackStarted()
                         } label: {
@@ -121,13 +141,17 @@ struct MainWindow: View {
                         .padding(3)
                     }
                 }
-                .shadow(color: self.playerService.showMiniPlayer ? .black.opacity(0.2) : .clear, radius: 6, y: 3)
-                .padding(.trailing, self.playerService.showMiniPlayer ? 12 : 0)
-                .padding(.bottom, self.playerService.showMiniPlayer ? 76 : 0)
-                .allowsHitTesting(self.playerService.showMiniPlayer)
+                .shadow(
+                    color: (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? .black.opacity(0.2) : .clear,
+                    radius: 6,
+                    y: 3
+                )
+                .padding(.trailing, (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 12 : 0)
+                .padding(.bottom, (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 76 : 0)
+                .allowsHitTesting(!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer)
                 // Hiding must not interpolate frame/opacity (no “shrink”); showing can ease in.
                 .transaction { transaction in
-                    if !self.playerService.showMiniPlayer {
+                    if self.playerService.showFullscreenNowPlaying || !self.playerService.showMiniPlayer {
                         transaction.animation = nil
                     } else {
                         transaction.animation = .easeInOut(duration: 0.2)
@@ -145,7 +169,7 @@ struct MainWindow: View {
         }
         .overlay {
             // Command bar overlay - dismisses when clicking outside
-            if self.isCommandBarPresented {
+            if self.isCommandBarPresented, !self.playerService.showFullscreenNowPlaying {
                 ZStack {
                     // Background tap area to dismiss
                     Rectangle()
@@ -171,8 +195,31 @@ struct MainWindow: View {
         }
         .overlay(alignment: .top) {
             // Error toast for account switching failures
-            AccountErrorToast()
-                .padding(.top, 60)
+            if !self.playerService.showFullscreenNowPlaying {
+                AccountErrorToast()
+                    .padding(.top, 60)
+            }
+        }
+        .overlay {
+            if self.playerService.showFullscreenNowPlaying {
+                FullscreenNowPlayingView(client: self.client)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(10)
+            }
+        }
+        .toolbarVisibility(
+            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
+            for: .automatic
+        )
+        .toolbarBackgroundVisibility(
+            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
+            for: .windowToolbar
+        )
+        .onAppear {
+            self.updateWindowTitleVisibility(for: self.playerService.showFullscreenNowPlaying)
+        }
+        .onChange(of: self.playerService.showFullscreenNowPlaying) { _, isShown in
+            self.updateWindowTitleVisibility(for: isShown)
         }
         .onChange(of: self.showCommandBar.wrappedValue) { _, newValue in
             if newValue {
@@ -204,17 +251,6 @@ struct MainWindow: View {
             // Auto-hide the WebView once playback starts
             if isPlaying, self.playerService.showMiniPlayer {
                 self.playerService.confirmPlaybackStarted()
-            }
-        }
-        .onChange(of: self.playerService.showVideo) { _, showVideo in
-            DiagnosticsLogger.player.debug("showVideo onChange triggered: \(showVideo)")
-            if showVideo {
-                VideoWindowController.shared.show(
-                    playerService: self.playerService,
-                    webKitManager: self.webKitManager
-                )
-            } else {
-                VideoWindowController.shared.close()
             }
         }
         .onChange(of: self.accountService.currentAccount?.id) { _, newAccountId in
@@ -256,6 +292,17 @@ struct MainWindow: View {
         }
     }
 
+    private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {
+        guard let window = NSApplication.shared.keyWindow
+            ?? NSApplication.shared.windows.first(where: { $0.isMainWindow })
+            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain })
+        else {
+            return
+        }
+
+        window.titleVisibility = isFullscreenNowPlaying ? .hidden : .visible
+    }
+
     // MARK: - Main Content
 
     private var mainContent: some View {
@@ -277,9 +324,15 @@ struct MainWindow: View {
             // Right sidebar overlay - either lyrics or queue (mutually exclusive)
             self.rightSidebarOverlay(client: self.client)
         }
-        .animation(.easeInOut(duration: 0.25), value: self.playerService.showLyrics)
-        .animation(.easeInOut(duration: 0.25), value: self.playerService.showQueue)
         .frame(minWidth: 900, minHeight: 600)
+        .toolbarVisibility(
+            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
+            for: .automatic
+        )
+        .toolbarBackgroundVisibility(
+            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
+            for: .automatic
+        )
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -295,12 +348,14 @@ struct MainWindow: View {
                 .requiresIntelligence()
             }
         }
+        .toolbar(removing: .sidebarToggle)
     }
 
     /// Right sidebar overlay showing either lyrics or queue as glass panels (mutually exclusive).
     @ViewBuilder
     private func rightSidebarOverlay(client: any YTMusicClientProtocol) -> some View {
-        let showRightSidebar = self.playerService.showLyrics || self.playerService.showQueue
+        let showRightSidebar = (self.playerService.showLyrics || self.playerService.showQueue)
+            && !self.playerService.showFullscreenNowPlaying
 
         if showRightSidebar {
             VStack {

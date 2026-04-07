@@ -308,11 +308,8 @@ struct KasetApp: App {
             return
         }
 
-        // Fallback: find any main-capable window that's not the video window
+        // Fallback: find any main-capable window
         for window in NSApplication.shared.windows where window.canBecomeMain {
-            if window.identifier?.rawValue == AccessibilityID.VideoWindow.container {
-                continue
-            }
             window.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return

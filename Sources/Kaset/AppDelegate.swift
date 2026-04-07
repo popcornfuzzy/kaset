@@ -83,16 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_: Notification) {
         // When app becomes active (e.g., dock icon clicked), ensure main window is visible.
-        // This handles the case where video window is visible but main window is hidden.
         self.showMainWindowIfNeeded()
     }
 
     private func setupWindowDelegate() {
         for window in NSApplication.shared.windows where window.canBecomeMain {
-            // Skip if this is the video window (has specific identifier)
-            if window.identifier?.rawValue == AccessibilityID.VideoWindow.container {
-                continue
-            }
             window.delegate = self
             // Enable automatic window frame persistence using autosave name
             // This ensures window size/position is restored across app launches
@@ -202,11 +197,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Last resort: find any main-capable window that's not the video window
+        // Last resort: find any main-capable window
         for window in NSApplication.shared.windows where window.canBecomeMain {
-            if window.identifier?.rawValue == AccessibilityID.VideoWindow.container {
-                continue
-            }
             self.mainWindow = window
             if !window.isVisible {
                 window.makeKeyAndOrderFront(nil)

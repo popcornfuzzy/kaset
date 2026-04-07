@@ -123,6 +123,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showLyrics, self.showQueue {
                 self.showQueue = false
             }
+            // Mutual exclusivity: opening lyrics exits fullscreen now playing
+            if self.showLyrics, self.showFullscreenNowPlaying {
+                self.showFullscreenNowPlaying = false
+            }
         }
     }
 
@@ -136,16 +140,26 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showQueue, self.showLyrics {
                 self.showLyrics = false
             }
+            // Mutual exclusivity: opening queue exits fullscreen now playing
+            if self.showQueue, self.showFullscreenNowPlaying {
+                self.showFullscreenNowPlaying = false
+            }
+        }
+    }
+
+    /// Whether the full-window now playing experience is visible.
+    var showFullscreenNowPlaying: Bool = false {
+        didSet {
+            if self.showFullscreenNowPlaying {
+                self.showLyrics = false
+                self.showQueue = false
+            }
         }
     }
 
     /// Whether the current track has video available.
+    /// Kept for metadata compatibility with the web observer.
     var currentTrackHasVideo: Bool = false
-
-    /// Whether video mode is active (user has opened video window).
-    /// Note: We don't auto-close based on currentTrackHasVideo here because
-    /// the detection can be unreliable when video mode CSS is active.
-    var showVideo: Bool = false
 
     /// Whether AirPlay is currently connected (playing to a wireless target).
     private(set) var isAirPlayConnected: Bool = false
@@ -553,53 +567,19 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.isYouTubeAutoplayIndicatorVisible = false
     }
 
-    /// Grace period instant - don't auto-close video window shortly after opening (uses monotonic clock)
-    private var videoWindowOpenedAt: ContinuousClock.Instant?
-
     /// Debounces repeat-one recovery `play()` when YouTube sends bursty metadata (safety net in `PlayerService+WebQueueSync`).
     /// Internal so the WebQueueSync extension can throttle; not part of the public API.
     var lastRepeatOneRecoveryInstant: ContinuousClock.Instant?
 
     /// Updates whether the current track has video available.
-    /// Note: This only affects the UI (enabling/disabling the video button).
-    /// It does NOT auto-close an open video window, since hasVideo detection
-    /// can be unreliable when the video element has been extracted by video mode CSS.
+    /// Kept as metadata for current track capabilities.
     func updateVideoAvailability(hasVideo: Bool) {
         let previousValue = self.currentTrackHasVideo
         self.currentTrackHasVideo = hasVideo
 
-        // Don't auto-close the video window based on hasVideo detection.
-        // The detection is unreliable when video mode is active because:
-        // 1. The video element has been extracted from its original DOM location
-        // 2. The Song/Video toggle buttons may be hidden by our CSS
-        // 3. Resize or other layout changes can temporarily break detection
-        //
-        // Instead, we rely on trackChanged detection in the Coordinator to close
-        // the video window when a new track starts.
-
         if previousValue != hasVideo {
             self.logger.debug("Video availability updated: \(hasVideo)")
         }
-    }
-
-    /// Called when video window opens to start grace period
-    func videoWindowDidOpen() {
-        self.videoWindowOpenedAt = ContinuousClock.now
-        self.logger.debug("videoWindowDidOpen: grace period started")
-    }
-
-    /// Called when video window closes to clear grace period
-    func videoWindowDidClose() {
-        self.videoWindowOpenedAt = nil
-        self.logger.debug("videoWindowDidClose: grace period cleared")
-    }
-
-    /// Returns true if video window was recently opened (within grace period)
-    /// This is used to ignore spurious trackChanged events during video mode setup
-    var isVideoGracePeriodActive: Bool {
-        guard let openedAt = self.videoWindowOpenedAt else { return false }
-        // 3 second grace period to allow video mode setup to complete
-        return ContinuousClock.now - openedAt < .seconds(3)
     }
 
     /// Toggles play/pause.
