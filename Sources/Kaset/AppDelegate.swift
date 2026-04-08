@@ -149,7 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Task {
-            await playerService.next()
+            await playerService.nextFromRemoteControl()
         }
     }
 
@@ -160,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Task {
-            await playerService.previous()
+            await playerService.previousFromRemoteControl()
         }
     }
 

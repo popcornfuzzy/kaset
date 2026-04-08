@@ -583,6 +583,23 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.title == "Song 3")
     }
 
+    @Test("Duplicate remote next commands within debounce window are ignored")
+    func duplicateRemoteNextCommandsAreIgnored() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+            Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
+            Song(id: "3", title: "Song 3", artists: [], album: nil, duration: 220, thumbnailURL: nil, videoId: "v3"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        await self.playerService.nextFromRemoteControl()
+        await self.playerService.nextFromRemoteControl()
+
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.pendingPlayVideoId == "v2")
+    }
+
     @Test("Ad playback pauses queue metadata reconciliation")
     func adPlaybackPausesQueueMetadataReconciliation() async {
         let songs = [

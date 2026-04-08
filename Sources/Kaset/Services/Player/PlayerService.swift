@@ -8,6 +8,11 @@ import os
 @MainActor
 @Observable
 final class PlayerService: NSObject, PlayerServiceProtocol {
+    enum RemoteSkipDirection {
+        case next
+        case previous
+    }
+
     /// Shared instance for AppleScript access.
     ///
     /// **Safety Invariant:** This property is set exactly once during app initialization
@@ -571,6 +576,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Internal so the WebQueueSync extension can throttle; not part of the public API.
     var lastRepeatOneRecoveryInstant: ContinuousClock.Instant?
 
+    /// Last accepted remote next/previous command for deduplicating dual command paths
+    /// (MPRemoteCommandCenter and Web mediaSession).
+    var lastRemoteSkipInstant: ContinuousClock.Instant?
+    var lastRemoteSkipDirection: RemoteSkipDirection?
+
     /// Updates whether the current track has video available.
     /// Kept as metadata for current track capabilities.
     func updateVideoAvailability(hasVideo: Bool) {
@@ -726,6 +736,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
     }
 
+    /// Skips to next track from external remote controls (Now Playing / media keys).
+    func nextFromRemoteControl() async {
+        guard self.shouldAcceptRemoteSkip(.next) else {
+            self.logger.debug("Ignoring duplicate remote next command")
+            return
+        }
+        await self.next()
+    }
+
     /// Goes to previous track.
     func previous() async {
         self.logger.debug("Going to previous track")
@@ -774,6 +793,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         } else {
             SingletonPlayerWebView.shared.previous()
         }
+    }
+
+    /// Goes to previous track from external remote controls (Now Playing / media keys).
+    func previousFromRemoteControl() async {
+        guard self.shouldAcceptRemoteSkip(.previous) else {
+            self.logger.debug("Ignoring duplicate remote previous command")
+            return
+        }
+        await self.previous()
     }
 
     /// Seeks to a specific time.
@@ -917,5 +945,20 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
                 }
             }
         }
+    }
+
+    private func shouldAcceptRemoteSkip(_ direction: RemoteSkipDirection) -> Bool {
+        let now = ContinuousClock.now
+        if let lastInstant = self.lastRemoteSkipInstant,
+           let lastDirection = self.lastRemoteSkipDirection,
+           lastDirection == direction,
+           now - lastInstant < .milliseconds(350)
+        {
+            return false
+        }
+
+        self.lastRemoteSkipInstant = now
+        self.lastRemoteSkipDirection = direction
+        return true
     }
 }

@@ -436,14 +436,14 @@ final class SingletonPlayerWebView {
 
             if type == "REMOTE_NEXT" {
                 Task { @MainActor in
-                    await self.playerService.next()
+                    await self.playerService.nextFromRemoteControl()
                 }
                 return
             }
 
             if type == "REMOTE_PREVIOUS" {
                 Task { @MainActor in
-                    await self.playerService.previous()
+                    await self.playerService.previousFromRemoteControl()
                 }
                 return
             }

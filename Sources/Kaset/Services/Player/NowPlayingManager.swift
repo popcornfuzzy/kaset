@@ -96,7 +96,7 @@ final class NowPlayingManager {
         commandCenter.nextTrackCommand.isEnabled = true
         commandCenter.nextTrackCommand.addTarget { _ in
             Task { @MainActor in
-                await player.next()
+                await player.nextFromRemoteControl()
             }
             return .success
         }
@@ -105,7 +105,7 @@ final class NowPlayingManager {
         commandCenter.previousTrackCommand.isEnabled = true
         commandCenter.previousTrackCommand.addTarget { _ in
             Task { @MainActor in
-                await player.previous()
+                await player.previousFromRemoteControl()
             }
             return .success
         }
