@@ -151,6 +151,7 @@ extension PlayerService {
         }
 
         self.activateYouTubeAutoplay(videoId: observedVideoId)
+        self.pendingPlayVideoId = observedVideoId
         self.currentTrack = self.makeObservedTrack(
             title: title,
             artist: artist,
@@ -226,6 +227,7 @@ extension PlayerService {
             self.queue = syncedQueue
             self.currentIndex = syncedIndex
             self.currentTrack = self.queue[safe: syncedIndex] ?? autoplaySong
+            self.pendingPlayVideoId = self.currentTrack?.videoId ?? observedVideoId
             self.mixContinuationToken = nil
             self.saveQueueForPersistence()
             self.deactivateYouTubeAutoplayOutsideQueueState()
@@ -358,6 +360,7 @@ extension PlayerService {
             }
 
             self.currentIndex = expectedNextIndex
+            self.pendingPlayVideoId = expectedNextTrack.videoId
             self.logger.info("Track advanced to queue index \(expectedNextIndex)")
             self.saveQueueForPersistence()
 
@@ -489,6 +492,7 @@ extension PlayerService {
             let queueIndexChanged = matchingIndex != self.currentIndex
             if queueIndexChanged {
                 self.currentIndex = matchingIndex
+                self.pendingPlayVideoId = matchingSong.videoId
                 self.logger.info("Observed playback moved to queue index \(matchingIndex), realigning native queue")
                 self.saveQueueForPersistence()
             }

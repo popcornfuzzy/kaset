@@ -391,6 +391,19 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.pendingPlayVideoId == "v2")
     }
 
+    @Test("Playback state marks near-end even when updates are sparse")
+    func playbackStateMarksNearEndWithSparseUpdates() async {
+        self.playerService.songNearingEnd = false
+
+        self.playerService.updatePlaybackState(
+            isPlaying: true,
+            progress: 177,
+            duration: 180
+        )
+
+        #expect(self.playerService.songNearingEnd == true)
+    }
+
     @Test("Unexpected autoplay at end of queue is marked and native highlight is cleared")
     func unexpectedAutoplayAtEndOfQueueIsMarkedAndHighlightIsCleared() async {
         let songs = [

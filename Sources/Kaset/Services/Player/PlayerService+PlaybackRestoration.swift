@@ -124,9 +124,10 @@ private extension PlayerService {
             self.state = .paused
         }
 
-        // Detect when song is about to end (within last 2 seconds)
-        // This helps us prepare to play the next track from our queue.
-        if duration > 0, progress >= duration - 2, previousProgress < duration - 2 {
+        // Detect when song is about to end (within last 4 seconds).
+        // Background playback can deliver sparse progress updates, so relying on a single
+        // threshold crossing can miss the near-end marker entirely.
+        if duration > 0, progress >= duration - 4 {
             self.songNearingEnd = true
         }
     }
