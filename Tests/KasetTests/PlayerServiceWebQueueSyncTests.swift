@@ -365,6 +365,32 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.artistsDisplay == "Artist 2")
     }
 
+    @Test("Near-end transition window can enforce queue before songNearingEnd flag")
+    func nearEndTransitionWindowEnforcesQueueBeforeFlag() async {
+        let songs = [
+            Song(id: "1", title: "Song 1", artists: [], album: nil, duration: 180, thumbnailURL: nil, videoId: "v1"),
+            Song(id: "2", title: "Song 2", artists: [], album: nil, duration: 200, thumbnailURL: nil, videoId: "v2"),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.isKasetInitiatedPlayback = false
+        self.playerService.songNearingEnd = false
+        self.playerService.duration = 180
+        self.playerService.progress = 177
+
+        self.playerService.updateTrackMetadata(
+            title: "Autoplay Suggestion",
+            artist: "Someone Else",
+            thumbnailUrl: "",
+            videoId: "youtube-autoplay"
+        )
+
+        try? await Task.sleep(for: .milliseconds(150))
+
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.pendingPlayVideoId == "v2")
+    }
+
     @Test("Unexpected autoplay at end of queue is marked and native highlight is cleared")
     func unexpectedAutoplayAtEndOfQueueIsMarkedAndHighlightIsCleared() async {
         let songs = [

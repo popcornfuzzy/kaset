@@ -125,6 +125,13 @@ extension PlayerService {
         !self.queue.isEmpty && !self.canAdvanceNativeQueueAfterTrackEnd
     }
 
+    private var isInsideNearEndTransitionWindow: Bool {
+        guard self.duration > 0 else { return false }
+        // Keep this window slightly wider than the playback-state marker so queue reconciliation
+        // can run before WebView autoplay flashes a non-queue track.
+        return self.progress >= max(0, self.duration - 4)
+    }
+
     private func handleYouTubeAutoplayOutsideNativeQueue(
         observedVideoId: String,
         title: String,
@@ -316,7 +323,10 @@ extension PlayerService {
         thumbnailUrl: String,
         trackChanged: Bool
     ) -> Bool {
-        guard trackChanged, !self.queue.isEmpty, self.songNearingEnd else {
+        guard trackChanged,
+              !self.queue.isEmpty,
+              self.songNearingEnd || self.isInsideNearEndTransitionWindow
+        else {
             return false
         }
 

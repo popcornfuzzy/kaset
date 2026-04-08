@@ -376,20 +376,6 @@ struct PlayerBar: View {
             // Like/Dislike/Library actions
             self.actionButtons
 
-            // AirPlay button
-            Button {
-                HapticService.toggle()
-                self.playerService.showAirPlayPicker()
-            } label: {
-                Image(systemName: "airplayaudio")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(self.playerService.isAirPlayConnected ? .red : .primary.opacity(0.85))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(.pressable)
-            .accessibilityIdentifier(AccessibilityID.PlayerBar.airplayButton)
-            .accessibilityLabel(self.playerService.isAirPlayConnected ? String(localized: "AirPlay Connected") : String(localized: "AirPlay"))
-            .disabled(self.playerService.currentTrack == nil)
 
             Divider()
                 .frame(height: 20)
@@ -429,6 +415,22 @@ struct PlayerBar: View {
                     }
                 }
             }
+            
+
+                        // AirPlay button
+            Button {
+                HapticService.toggle()
+                self.playerService.showAirPlayPicker()
+            } label: {
+                Image(systemName: "airplayaudio")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(self.playerService.isAirPlayConnected ? .red : .primary.opacity(0.85))
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.pressable)
+            .accessibilityIdentifier(AccessibilityID.PlayerBar.airplayButton)
+            .accessibilityLabel(self.playerService.isAirPlayConnected ? String(localized: "AirPlay Connected") : String(localized: "AirPlay"))
+            .disabled(self.playerService.currentTrack == nil)
         }
     }
 

@@ -17,23 +17,20 @@ struct FullscreenNowPlayingView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let stageWidth = min(max(860, proxy.size.width - 64), 1480)
-            let stageHeight = min(max(500, proxy.size.height - 96), 900)
-            let panelSpacing = max(20, min(36, stageWidth * 0.028))
-            let artworkColumnWidth = floor(stageWidth * 0.40)
-            let lyricsColumnWidth = max(320, stageWidth - artworkColumnWidth - panelSpacing)
+            let horizontalPadding: CGFloat = 24
+            let stageWidth = min(max(240, proxy.size.width - (horizontalPadding * 2)), 1480)
+            let stageHeight = min(max(300, proxy.size.height - 96), 900)
+            let panelSpacing = max(10, min(30, stageWidth * 0.022))
+            let minimumLyricsWidth: CGFloat = 180
+            let preferredArtworkWidth = stageWidth * 0.40
+            let maxArtworkWidth = max(150, stageWidth - minimumLyricsWidth - panelSpacing)
+            let artworkColumnWidth = min(max(150, preferredArtworkWidth), maxArtworkWidth)
+            let lyricsColumnWidth = max(minimumLyricsWidth, stageWidth - artworkColumnWidth - panelSpacing)
 
             ZStack {
                 self.backgroundLayer
 
                 VStack(spacing: 0) {
-                    HStack {
-                        Spacer()
-                        self.closeButton
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 14)
-
                     HStack(alignment: .center, spacing: panelSpacing) {
                         self.leftColumn(width: artworkColumnWidth, availableHeight: stageHeight)
                             .frame(width: artworkColumnWidth, height: stageHeight, alignment: .center)
@@ -42,7 +39,7 @@ struct FullscreenNowPlayingView: View {
                             .frame(width: lyricsColumnWidth, height: stageHeight, alignment: .leading)
                     }
                     .frame(width: stageWidth, height: stageHeight, alignment: .center)
-                    .padding(.top, 8)
+                    .padding(.top, 56)
 
                     Spacer(minLength: 0)
                 }
@@ -51,6 +48,15 @@ struct FullscreenNowPlayingView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()
+        .overlay(alignment: .top) {
+            HStack {
+                Spacer(minLength: 0)
+                self.fullscreenCloseButton
+            }
+            .padding(.top, 12)
+            .padding(.trailing, 20)
+            .zIndex(10_000)
+        }
         .onExitCommand {
             self.closeFullscreenNowPlaying()
         }
@@ -124,11 +130,12 @@ struct FullscreenNowPlayingView: View {
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
         let columnSpacing = max(10, min(16, availableHeight * 0.018))
         let artworkMaxHeight = min(max(180, availableHeight * 0.42), 340)
-        let mediaWidth = min(width, 390)
+        let mediaWidth = width
 
-        return VStack(alignment: .leading, spacing: columnSpacing) {
+        return VStack(alignment: .center, spacing: columnSpacing) {
             self.artworkCard
-                .frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight, alignment: .topLeading)
+                .frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight, alignment: .center)
+                .padding(.bottom, 4)
 
             self.trackMeta
                 .frame(width: mediaWidth, alignment: .leading)
@@ -139,7 +146,7 @@ struct FullscreenNowPlayingView: View {
         .frame(width: width, height: availableHeight, alignment: .center)
     }
 
-    private var closeButton: some View {
+    private var fullscreenCloseButton: some View {
         Button {
             self.closeFullscreenNowPlaying()
         } label: {
@@ -317,16 +324,18 @@ struct FullscreenNowPlayingView: View {
                             }
                         )
                         .background(.clear)
+                        .mask(self.lyricsFadeMask)
                     case let .plain(plain):
                         ScrollView {
                             Text(plain.text)
-                                .font(.system(size: 44, weight: .bold))
+                                .font(.system(size: 36, weight: .bold))
                                 .lineSpacing(18)
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 12)
                         }
                         .scrollIndicators(.hidden)
+                        .mask(self.lyricsFadeMask)
                     case .unavailable:
                         self.emptyLyricsState(
                             icon: "quote.bubble",
@@ -341,6 +350,19 @@ struct FullscreenNowPlayingView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private var lyricsFadeMask: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0.0),
+                .init(color: .black, location: 0.08),
+                .init(color: .black, location: 0.92),
+                .init(color: .clear, location: 1.0),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     private func emptyLyricsState(icon: String, title: String, message: String) -> some View {
@@ -478,25 +500,31 @@ private struct FullscreenSyncedLyricsView: View {
     @State private var currentLineIndex: Int?
     @State private var userIsScrolling = false
     @State private var scrollResumeTask: Task<Void, Never>?
+    @State private var hoveredLineId: UUID?
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     Spacer().frame(height: 28)
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
 
                         Text(line.text.trimmingCharacters(in: .whitespaces).isEmpty ? "♪" : line.text)
-                            .font(.system(size: 52, weight: .bold))
+                            .font(.system(size: 44, weight: .bold))
                             .foregroundStyle(.white)
-                            .lineSpacing(8)
-                            .opacity(self.opacity(for: status))
-                            .scaleEffect(self.scale(for: status), anchor: .leading)
+                            .opacity(self.opacity(for: status, lineId: line.id))
+                            .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
                             .animation(.easeInOut(duration: 0.4), value: self.currentLineIndex)
+                            .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
+                            .onHover { isHovered in
+                                if status != .current {
+                                    self.hoveredLineId = isHovered ? line.id : nil
+                                }
+                            }
                             .onTapGesture {
                                 self.onSeek(line.timeInMs)
                             }
@@ -544,6 +572,7 @@ private struct FullscreenSyncedLyricsView: View {
             }
             .onDisappear {
                 self.scrollResumeTask?.cancel()
+                self.hoveredLineId = nil
             }
         }
     }
@@ -555,8 +584,12 @@ private struct FullscreenSyncedLyricsView: View {
         return .upcoming
     }
 
-    private func scale(for status: SyncedLyrics.LineStatus) -> CGFloat {
-        switch status {
+    private func scale(for status: SyncedLyrics.LineStatus, lineId: UUID) -> CGFloat {
+        if self.hoveredLineId == lineId, status != .current {
+            return 0.985
+        }
+
+        return switch status {
         case .current:
             1.0
         case .previous:
@@ -566,8 +599,12 @@ private struct FullscreenSyncedLyricsView: View {
         }
     }
 
-    private func opacity(for status: SyncedLyrics.LineStatus) -> Double {
-        switch status {
+    private func opacity(for status: SyncedLyrics.LineStatus, lineId: UUID) -> Double {
+        if self.hoveredLineId == lineId, status != .current {
+            return 0.78
+        }
+
+        return switch status {
         case .current:
             1.0
         case .previous:
