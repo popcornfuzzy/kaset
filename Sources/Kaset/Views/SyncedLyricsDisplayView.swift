@@ -8,6 +8,7 @@ struct SyncedLyricsDisplayView: View {
     let onSeek: (Int) -> Void
 
     @State private var currentLineId: UUID?
+    @State private var currentLineIndex: Int?
     /// Whether the user has manually scrolled (pauses auto-scroll).
     @State private var userIsScrolling = false
     /// Timer task to resume auto-scroll after user interaction.
@@ -19,8 +20,8 @@ struct SyncedLyricsDisplayView: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     Spacer().frame(height: 60)
 
-                    ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { _, line in
-                        let status = self.currentStatus(for: line)
+                    ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
+                        let status = self.currentStatus(for: index)
                         SyncedLineView(
                             line: line,
                             status: status,
@@ -54,6 +55,7 @@ struct SyncedLyricsDisplayView: View {
                     let newId = self.lyrics.lines[currentIdx].id
                     if newId != self.currentLineId {
                         self.currentLineId = newId
+                        self.currentLineIndex = currentIdx
                         if !self.userIsScrolling {
                             withAnimation(.spring(duration: 0.45, bounce: 0.0)) {
                                 proxy.scrollTo(newId, anchor: .center)
@@ -62,16 +64,23 @@ struct SyncedLyricsDisplayView: View {
                     }
                 }
             }
+            .onAppear {
+                if let initialIdx = self.lyrics.currentLineIndex(at: self.currentTimeMs) {
+                    self.currentLineIndex = initialIdx
+                    self.currentLineId = self.lyrics.lines[initialIdx].id
+                }
+            }
             .onDisappear {
                 self.scrollResumeTask?.cancel()
             }
         }
     }
 
-    private func currentStatus(for line: SyncedLyricLine) -> SyncedLyrics.LineStatus {
-        if line.timeInMs > self.currentTimeMs { return .upcoming }
-        if self.currentTimeMs - line.timeInMs >= line.duration, line.duration > 0 { return .previous }
-        return .current
+    private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus {
+        guard let currentLineIndex else { return .upcoming }
+        if lineIndex < currentLineIndex { return .previous }
+        if lineIndex == currentLineIndex { return .current }
+        return .upcoming
     }
 }
 
@@ -82,43 +91,47 @@ struct SyncedLineView: View {
     let status: SyncedLyrics.LineStatus
     let onTap: () -> Void
 
-    /// Smooth transition
-    private let animation = Animation.spring(response: 0.4, dampingFraction: 0.8)
+    private var displayText: String {
+        let text = self.line.text.trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? "♪" : self.line.text
+    }
 
     var body: some View {
-        if self.line.text.trimmingCharacters(in: .whitespaces).isEmpty {
-            HStack(spacing: 6) {
-                ForEach(0 ..< 3, id: \.self) { dotIndex in
-                    Circle()
-                        .fill(Color.primary.opacity(self.status == .current ? 0.9 : 0.25))
-                        .frame(width: 5, height: 5)
-                        .scaleEffect(self.status == .current ? 1.4 : 1.0)
-                        .animation(
-                            self.status == .current
-                                ? .easeInOut(duration: 0.5)
-                                    .repeatForever(autoreverses: true)
-                                    .delay(Double(dotIndex) * 0.15)
-                                : .easeOut(duration: 0.3),
-                            value: self.status
-                        )
-                }
-            }
+        Text(self.displayText)
+            .font(.system(size: 16, weight: .bold))
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .foregroundStyle(.primary)
+            .opacity(self.opacity(for: self.status))
+            .scaleEffect(self.scale(for: self.status), anchor: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 8)
-        } else {
-            Text(self.line.text)
-                .font(.system(size: 16, weight: .bold))
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(.primary)
-                .opacity(self.status == .current ? 1.0 : (self.status == .previous ? 0.3 : 0.45))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 5)
-                .animation(self.animation, value: self.status)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    self.onTap()
-                }
+            .padding(.vertical, 5)
+            .animation(.easeInOut(duration: 0.4), value: self.status)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                self.onTap()
+            }
+    }
+
+    private func scale(for status: SyncedLyrics.LineStatus) -> CGFloat {
+        switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.95
+        case .upcoming:
+            0.965
+        }
+    }
+
+    private func opacity(for status: SyncedLyrics.LineStatus) -> Double {
+        switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.35
+        case .upcoming:
+            0.55
         }
     }
 }

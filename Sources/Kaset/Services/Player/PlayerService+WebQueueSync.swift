@@ -4,6 +4,13 @@ import Foundation
 
 @MainActor
 extension PlayerService {
+    private func normalizedThumbnailURL(_ thumbnailUrl: String?) -> URL? {
+        guard let thumbnailUrl else { return nil }
+        let trimmed = thumbnailUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "null" else { return nil }
+        return URL(string: trimmed)
+    }
+
     private func normalizedObservedVideoId(_ videoId: String?) -> String? {
         guard let videoId, !videoId.isEmpty else { return nil }
         return videoId
@@ -76,7 +83,7 @@ extension PlayerService {
     }
 
     private func keepQueueSongVisible(_ song: Song, thumbnailUrl: String) {
-        let intendedThumbnailURL = URL(string: thumbnailUrl) ?? song.thumbnailURL
+        let intendedThumbnailURL = self.normalizedThumbnailURL(thumbnailUrl) ?? song.thumbnailURL
         self.currentTrack = Song(
             id: song.id,
             title: song.title,
@@ -99,7 +106,9 @@ extension PlayerService {
         thumbnailUrl: String,
         videoId: String
     ) -> Song {
-        let thumbnailURL = URL(string: thumbnailUrl)
+        let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
+            ?? self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL
+            ?? self.currentTrack?.thumbnailURL
         let artistObj = Artist(id: "unknown", name: artist)
         return Song(
             id: videoId,
@@ -626,9 +635,11 @@ extension PlayerService {
             return
         }
 
-        let thumbnailURL = URL(string: thumbnailUrl)
         let artistObj = Artist(id: "unknown", name: artist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+        let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
+            ?? self.queue.first(where: { $0.videoId == resolvedVideoId })?.thumbnailURL
+            ?? self.currentTrack?.thumbnailURL
         let trackChanged = self.currentTrack?.title != title
             || self.currentTrack?.artistsDisplay != artist
             || self.currentTrack?.videoId != resolvedVideoId
