@@ -62,11 +62,22 @@ struct LyricsView: View {
             self.updateLyricsPolling(for: newLyrics)
         }
         .onDisappear {
-            SingletonPlayerWebView.shared.stopLyricsPoll()
+            // Keep polling alive when transitioning into fullscreen synced lyrics.
+            if !self.shouldKeepLyricsPollingOnDisappear {
+                SingletonPlayerWebView.shared.stopLyricsPoll()
+            }
         }
         .onAppear {
             self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         }
+    }
+
+    private var shouldKeepLyricsPollingOnDisappear: Bool {
+        guard self.playerService.showFullscreenNowPlaying else { return false }
+        if case .synced = self.syncedLyricsService.currentLyrics {
+            return true
+        }
+        return false
     }
 
     private func updateLyricsPolling(for result: LyricResult) {

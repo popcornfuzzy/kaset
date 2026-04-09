@@ -565,23 +565,21 @@ private struct FullscreenSyncedLyricsView: View {
                     }
             )
             .onChange(of: self.currentTimeMs) { _, newTimeMs in
-                guard let currentIdx = self.lyrics.currentLineIndex(at: newTimeMs) else { return }
-                let newId = self.lyrics.lines[currentIdx].id
-
-                if newId != self.currentLineId {
-                    self.currentLineId = newId
-                    self.currentLineIndex = currentIdx
-                    if !self.userIsScrolling {
-                        withAnimation(.easeInOut(duration: 0.42)) {
-                            proxy.scrollTo(newId, anchor: .center)
-                        }
-                    }
-                }
+                self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling)
+            }
+            .onChange(of: self.lyrics) { _, _ in
+                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
             }
             .onAppear {
-                if let initialIdx = self.lyrics.currentLineIndex(at: self.currentTimeMs) {
-                    self.currentLineIndex = initialIdx
-                    self.currentLineId = self.lyrics.lines[initialIdx].id
+                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+
+                if let currentLineId = self.currentLineId {
+                    Task {
+                        await Task.yield()
+                        if !Task.isCancelled {
+                            proxy.scrollTo(currentLineId, anchor: .center)
+                        }
+                    }
                 }
             }
             .onDisappear {
@@ -625,6 +623,24 @@ private struct FullscreenSyncedLyricsView: View {
             0.35
         case .upcoming:
             0.55
+        }
+    }
+
+    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) {
+        guard let currentIdx = self.lyrics.currentLineIndex(at: timeMs) else { return }
+        let newId = self.lyrics.lines[currentIdx].id
+
+        self.currentLineIndex = currentIdx
+
+        guard newId != self.currentLineId else { return }
+        self.currentLineId = newId
+
+        if animate {
+            withAnimation(.easeInOut(duration: 0.42)) {
+                proxy.scrollTo(newId, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(newId, anchor: .center)
         }
     }
 }
