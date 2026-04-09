@@ -316,7 +316,7 @@ struct FullscreenNowPlayingView: View {
                     case let .synced(synced):
                         FullscreenSyncedLyricsView(
                             lyrics: synced,
-                            currentTimeMs: self.effectiveLyricsTimeMs,
+                            currentTimeMs: self.playerService.currentTimeMs,
                             onSeek: { timeMs in
                                 Task {
                                     await self.playerService.seek(to: Double(timeMs) / 1000.0)
@@ -387,10 +387,6 @@ struct FullscreenNowPlayingView: View {
     private var normalizedProgress: Double {
         guard self.playerService.duration > 0 else { return 0 }
         return min(max(self.playerService.progress / self.playerService.duration, 0), 1)
-    }
-
-    private var effectiveLyricsTimeMs: Int {
-        max(self.playerService.currentTimeMs, Int(self.playerService.progress * 1000.0))
     }
 
     private var repeatIcon: String {
