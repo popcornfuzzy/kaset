@@ -34,6 +34,8 @@ struct LyricsArtistNormalizerTests {
         #expect(LyricsArtistNormalizer.normalizeTitleForSearch("Song Name (Video)") == "song name")
         #expect(LyricsArtistNormalizer.normalizeTitleForSearch("Song Name (Official Lyric Video)") == "song name")
         #expect(LyricsArtistNormalizer.normalizeTitleForSearch("Song Name (Official Visualizer)") == "song name")
+        #expect(LyricsArtistNormalizer.normalizeTitleForSearch("Song Name [OFFICIAL VIDEO]") == "song name")
+        #expect(LyricsArtistNormalizer.normalizeTitleForSearch("Song Name [Official Video]") == "song name")
     }
 }
 

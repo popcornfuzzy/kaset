@@ -651,6 +651,14 @@ extension PlayerService {
 
         let artistObj = Artist(id: "unknown", name: artist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+        if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
+            self.updateCurrentPlaybackKind(using: queuedSong)
+        } else if self.currentTrack?.videoId == resolvedVideoId {
+            self.updateCurrentPlaybackKind(using: self.currentTrack)
+        } else {
+            self.updateCurrentPlaybackKind(using: nil)
+        }
+
         let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
             ?? self.queue.first(where: { $0.videoId == resolvedVideoId })?.thumbnailURL
             ?? self.currentTrack?.thumbnailURL

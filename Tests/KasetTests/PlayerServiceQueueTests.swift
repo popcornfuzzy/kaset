@@ -59,6 +59,34 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.queue.map(\.title) == originalOrder)
     }
 
+    @Test("Playing podcast queue auto-opens mini player")
+    func playingPodcastQueueAutoOpensMiniPlayer() async {
+        let episodes = [
+            Song(
+                id: "pod-1",
+                title: "Episode 1",
+                artists: [Artist(id: "podcast", name: "Test Show")],
+                album: nil,
+                duration: 1500,
+                thumbnailURL: nil,
+                videoId: "pod-1"
+            ),
+            Song(
+                id: "pod-2",
+                title: "Episode 2",
+                artists: [Artist(id: "podcast", name: "Test Show")],
+                album: nil,
+                duration: 1400,
+                thumbnailURL: nil,
+                videoId: "pod-2"
+            ),
+        ]
+
+        await self.playerService.playQueue(episodes, startingAt: 0)
+
+        #expect(self.playerService.showMiniPlayer == true)
+    }
+
     @Test("Reorder queue updates current index correctly when moving before current")
     func reorderQueueUpdatesCurrentIndexBefore() async {
         // Arrange - Current index is 2
@@ -269,7 +297,7 @@ struct PlayerServiceQueueTests {
         #expect(newService.currentTrackFeedbackTokens == songs[1].feedbackTokens)
     }
 
-    @Test("Resume on a restored session reveals the mini player before loading playback")
+    @Test("Resume on a restored song session keeps mini player hidden while loading playback")
     func resumeDeferredRestoredSession() async {
         // Arrange
         let songs = TestFixtures.makeSongs(count: 2)
@@ -286,8 +314,8 @@ struct PlayerServiceQueueTests {
         // Assert
         #expect(self.playerService.pendingPlayVideoId == songs[1].videoId)
         #expect(self.playerService.progress == 42)
-        #expect(self.playerService.state == .paused)
-        #expect(self.playerService.showMiniPlayer == true)
+        #expect(self.playerService.state == .loading)
+        #expect(self.playerService.showMiniPlayer == false)
         #expect(self.playerService.shouldAutoloadPendingVideo == true)
     }
 

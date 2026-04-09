@@ -265,6 +265,127 @@ struct PlayerServiceTests {
         #expect(self.playerService.showMiniPlayer == false)
     }
 
+    @Test("Playing podcast song auto-opens mini player")
+    func playingPodcastSongAutoOpensMiniPlayer() async {
+        let podcast = Song(
+            id: "pod-1",
+            title: "Episode 1",
+            artists: [Artist(id: "podcast", name: "Test Show")],
+            album: nil,
+            duration: 1200,
+            thumbnailURL: nil,
+            videoId: "pod-1"
+        )
+
+        await self.playerService.play(song: podcast)
+
+        #expect(self.playerService.showMiniPlayer == true)
+        #expect(self.playerService.shouldAutoDismissMiniPlayerOnPlaybackStart == false)
+    }
+
+    @Test("Playing normal song keeps mini player hidden by default")
+    func playingNormalSongKeepsMiniPlayerHiddenByDefault() async {
+        let song = Song(
+            id: "song-1",
+            title: "Song 1",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "song-1"
+        )
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.showMiniPlayer == false)
+    }
+
+    @Test("Manual mini player toggle is available but normal-song track changes still auto-hide")
+    func manualMiniPlayerToggleDoesNotOverrideNormalSongAutoHideAcrossTrackChanges() async {
+        let firstSong = Song(
+            id: "song-1",
+            title: "Song 1",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "song-1"
+        )
+        let secondSong = Song(
+            id: "song-2",
+            title: "Song 2",
+            artists: [Artist(id: "artist-2", name: "Artist 2")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "song-2"
+        )
+
+        await self.playerService.play(song: firstSong)
+        #expect(self.playerService.showMiniPlayer == false)
+
+        self.playerService.toggleMiniPlayerVisibilityByUser()
+        #expect(self.playerService.showMiniPlayer == true)
+        #expect(self.playerService.miniPlayerEnabledByUser == true)
+
+        await self.playerService.play(song: secondSong)
+        #expect(self.playerService.showMiniPlayer == false)
+        #expect(self.playerService.miniPlayerEnabledByUser == false)
+
+        self.playerService.toggleMiniPlayerVisibilityByUser()
+        #expect(self.playerService.showMiniPlayer == true)
+    }
+
+    @Test("Switching from podcast to song auto-closes mini player")
+    func switchingFromPodcastToSongAutoClosesMiniPlayer() async {
+        let podcast = Song(
+            id: "pod-1",
+            title: "Episode 1",
+            artists: [Artist(id: "podcast", name: "Test Show")],
+            album: nil,
+            duration: 1200,
+            thumbnailURL: nil,
+            videoId: "pod-1"
+        )
+        let song = Song(
+            id: "song-1",
+            title: "Song 1",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "song-1"
+        )
+
+        await self.playerService.play(song: podcast)
+        #expect(self.playerService.showMiniPlayer == true)
+
+        await self.playerService.play(song: song)
+        #expect(self.playerService.showMiniPlayer == false)
+    }
+
+    @Test("Video dimensions update mini player aspect ratio")
+    func videoDimensionsUpdateMiniPlayerAspectRatio() {
+        #expect(self.playerService.miniPlayerVideoAspectRatio == nil)
+
+        self.playerService.updateMiniPlayerVideoDimensions(width: 1920, height: 1080)
+
+        #expect(self.playerService.miniPlayerVideoAspectRatio != nil)
+        #expect(self.playerService.miniPlayerVideoAspectRatio == (1920.0 / 1080.0))
+    }
+
+    @Test("Invalid video dimensions are ignored")
+    func invalidVideoDimensionsAreIgnored() {
+        self.playerService.updateMiniPlayerVideoDimensions(width: 1280, height: 720)
+        let previousRatio = self.playerService.miniPlayerVideoAspectRatio
+
+        self.playerService.updateMiniPlayerVideoDimensions(width: 0, height: 720)
+        #expect(self.playerService.miniPlayerVideoAspectRatio == previousRatio)
+
+        self.playerService.updateMiniPlayerVideoDimensions(width: 4000, height: 1)
+        #expect(self.playerService.miniPlayerVideoAspectRatio == previousRatio)
+    }
+
     // MARK: - Queue/Lyrics Mutual Exclusivity Tests
 
     @Test("showQueue initially false")

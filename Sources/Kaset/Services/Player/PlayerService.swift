@@ -90,8 +90,22 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Index of current track in queue.
     var currentIndex: Int = 0
 
-    /// Whether the mini player should be shown (user needs to interact to start playback).
+    /// Whether the mini player should be shown.
     var showMiniPlayer: Bool = false
+
+    /// True when the user explicitly enabled the mini player with the player bar toggle.
+    private(set) var miniPlayerEnabledByUser: Bool = false
+
+    /// True only when the current mini player visibility should auto-dismiss as soon as playback starts.
+    private(set) var shouldAutoDismissMiniPlayerOnPlaybackStart: Bool = false
+
+    /// Sticky classification for the currently active playback item.
+    /// This avoids relying on transient web metadata that may omit podcast markers.
+    private(set) var currentPlaybackIsPodcast: Bool = false
+
+    /// Observed video aspect ratio (width / height) from the active HTML video element.
+    /// `nil` means the UI should use its fallback ratio until dimensions become available.
+    private(set) var miniPlayerVideoAspectRatio: Double?
 
     /// The video ID that needs to be played in the mini player.
     var pendingPlayVideoId: String?
@@ -197,6 +211,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Queue index before each `next()`; `previous()` pops so Back returns to the track you skipped from (shuffle- and seek-safe).
     private var forwardSkipIndexStack: [Int] = []
 
+    /// One-shot fallback task that reveals the mini player if the first hidden song fails to start quickly.
+    private var miniPlayerFallbackTask: Task<Void, Never>?
+
+    /// Ensures the hidden-song fallback only runs once per app session.
+    private var hasArmedFirstHiddenSongFallbackThisSession: Bool = false
+
     /// UserDefaults key for persisting volume.
     static let volumeKey = "playerVolume"
     /// UserDefaults key for persisting volume before mute.
@@ -274,6 +294,94 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether the persistent player should navigate to the pending video immediately.
     var shouldAutoloadPendingVideo: Bool {
         !self.isPendingRestoredLoadDeferred
+    }
+
+    /// Whether the currently active track is a podcast episode.
+    var isCurrentTrackPodcast: Bool {
+        self.currentPlaybackIsPodcast || self.isPodcastTrack(self.currentTrack)
+    }
+
+    /// Toggles user-controlled mini player visibility from the player bar.
+    func toggleMiniPlayerVisibilityByUser() {
+        self.setMiniPlayerVisibilityByUser(enabled: !self.miniPlayerEnabledByUser)
+    }
+
+    /// Applies user-controlled mini player visibility from the player bar.
+    func setMiniPlayerVisibilityByUser(enabled: Bool) {
+        self.miniPlayerEnabledByUser = enabled
+        self.cancelMiniPlayerFallback()
+        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
+
+        if enabled {
+            self.showMiniPlayer = true
+            self.logger.info("Mini player enabled manually")
+            return
+        }
+
+        self.showMiniPlayer = false
+        self.logger.info("Mini player manual override disabled")
+    }
+
+    /// Handles playback-start transitions that may auto-dismiss the mini player.
+    func handlePlaybackStartedForMiniPlayer() {
+        self.cancelMiniPlayerFallback()
+
+        guard self.showMiniPlayer, self.shouldAutoDismissMiniPlayerOnPlaybackStart else {
+            return
+        }
+
+        self.confirmPlaybackStarted()
+    }
+
+    func isPodcastTrack(_ song: Song?) -> Bool {
+        guard let song else { return false }
+        return song.artists.contains(where: { $0.id == "podcast" })
+    }
+
+    func updateCurrentPlaybackKind(using song: Song?) {
+        self.currentPlaybackIsPodcast = self.isPodcastTrack(song)
+    }
+
+    private func applyMiniPlayerPolicyForPlayback(videoId: String, isPodcast: Bool) {
+        self.cancelMiniPlayerFallback()
+        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
+        self.miniPlayerEnabledByUser = false
+        self.currentPlaybackIsPodcast = isPodcast
+        self.miniPlayerVideoAspectRatio = nil
+
+        if isPodcast {
+            self.showMiniPlayer = true
+            self.logger.info("Mini player auto-opened for podcast playback")
+            return
+        }
+
+        self.showMiniPlayer = false
+
+        if !self.hasArmedFirstHiddenSongFallbackThisSession {
+            self.hasArmedFirstHiddenSongFallbackThisSession = true
+            self.armFirstHiddenSongFallback(videoId: videoId)
+        }
+    }
+
+    private func armFirstHiddenSongFallback(videoId: String) {
+        self.miniPlayerFallbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1800))
+
+            guard !Task.isCancelled else { return }
+            guard self.pendingPlayVideoId == videoId else { return }
+            guard !self.isPlaying else { return }
+            guard !self.showMiniPlayer else { return }
+            guard !self.isCurrentTrackPodcast else { return }
+
+            self.showMiniPlayer = true
+            self.shouldAutoDismissMiniPlayerOnPlaybackStart = true
+            self.logger.info("Mini player fallback shown because hidden song playback did not start quickly")
+        }
+    }
+
+    private func cancelMiniPlayerFallback() {
+        self.miniPlayerFallbackTask?.cancel()
+        self.miniPlayerFallbackTask = nil
     }
 
     /// Toggles between popup and side panel queue display modes.
@@ -419,17 +527,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         self.pendingPlayVideoId = videoId
 
-        // If user has already interacted this session, auto-play without popup
-        if self.hasUserInteractedThisSession {
-            self.logger.info("User has interacted before, auto-playing without popup")
-            self.showMiniPlayer = false
-            // Load the video directly - WebView session should allow autoplay
-            SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
-        } else {
-            // First time: show the mini player for user interaction
-            self.showMiniPlayer = true
-            self.logger.info("Showing mini player for first-time user interaction")
-        }
+        self.applyMiniPlayerPolicyForPlayback(videoId: videoId, isPodcast: false)
+        SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
 
         // Fetch full song metadata in the background to get feedbackTokens
         await self.fetchSongMetadata(videoId: videoId)
@@ -474,16 +573,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         self.pendingPlayVideoId = song.videoId
 
-        // If user has already interacted this session, auto-play without popup
-        if self.hasUserInteractedThisSession {
-            self.logger.info("User has interacted before, auto-playing without popup")
-            self.showMiniPlayer = false
-            SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
-        } else {
-            // First time: show the mini player for user interaction
-            self.showMiniPlayer = true
-            self.logger.info("Showing mini player for first-time user interaction")
-        }
+        self.applyMiniPlayerPolicyForPlayback(videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
+        SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
 
         // Fetch full song metadata if we don't have feedbackTokens
         if song.feedbackTokens == nil {
@@ -493,7 +584,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Called when the mini player confirms playback has started.
     func confirmPlaybackStarted() {
+        self.cancelMiniPlayerFallback()
         self.showMiniPlayer = false
+        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
         self.state = .playing
         self.hasUserInteractedThisSession = true
         self.logger.info("Playback confirmed started, user interaction recorded")
@@ -501,7 +594,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Called when the mini player is dismissed.
     func miniPlayerDismissed() {
+        self.cancelMiniPlayerFallback()
         self.showMiniPlayer = false
+        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
         if self.state == .loading {
             self.state = .idle
         }
@@ -592,6 +687,22 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
     }
 
+    /// Updates the mini player aspect ratio from observed HTML video dimensions.
+    func updateMiniPlayerVideoDimensions(width: Int, height: Int) {
+        guard width > 0, height > 0 else { return }
+
+        let ratio = Double(width) / Double(height)
+        guard ratio.isFinite, ratio >= 0.3, ratio <= 4.0 else { return }
+
+        if let currentRatio = self.miniPlayerVideoAspectRatio,
+           abs(currentRatio - ratio) < 0.001
+        {
+            return
+        }
+
+        self.miniPlayerVideoAspectRatio = ratio
+    }
+
     /// Toggles play/pause.
     func playPause() async {
         self.logger.debug("Toggle play/pause")
@@ -648,14 +759,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
 
         if shouldLoadPendingVideo {
-            if self.hasUserInteractedThisSession {
-                self.showMiniPlayer = false
-                self.state = .loading
-                SingletonPlayerWebView.shared.loadVideo(videoId: pendingPlayVideoId)
-            } else {
-                self.showMiniPlayer = true
-                self.logger.info("Showing mini player so the user can resume playback")
-            }
+            let isPodcast = self.isPodcastTrack(self.currentTrack)
+            self.applyMiniPlayerPolicyForPlayback(videoId: pendingPlayVideoId, isPodcast: isPodcast)
+            self.state = .loading
+            SingletonPlayerWebView.shared.loadVideo(videoId: pendingPlayVideoId)
             return
         }
 

@@ -235,6 +235,9 @@ final class SingletonPlayerWebView {
     }
 
     private var mediaControlUsesNextPrev: Bool
+    private var miniPlayerPresentationEnabled = false
+    private var miniPlayerPrefersVideo = false
+    private var miniPlayerViewportSize = CGSize(width: 320, height: 180)
 
     private init() {
         self.mediaControlUsesNextPrev = SettingsManager.shared.mediaControlStyle == .nextPreviousTrack
@@ -328,6 +331,267 @@ final class SingletonPlayerWebView {
         webView.translatesAutoresizingMaskIntoConstraints = true
         webView.frame = container.bounds
         webView.autoresizingMask = [.width, .height]
+    }
+
+    /// Updates the DOM presentation for the mini player overlay.
+    /// When expanded, the page chrome is hidden and the video surface is prioritized.
+    func updateMiniPlayerPresentation(isExpanded: Bool, prefersVideo: Bool, viewportSize: CGSize) {
+        self.miniPlayerPresentationEnabled = isExpanded
+        self.miniPlayerPrefersVideo = prefersVideo
+        self.miniPlayerViewportSize = CGSize(
+            width: max(1, viewportSize.width),
+            height: max(1, viewportSize.height)
+        )
+        self.applyMiniPlayerPresentationScript()
+    }
+
+    /// Re-applies mini player DOM presentation after navigation finishes.
+    func reapplyMiniPlayerPresentationIfNeeded() {
+        self.applyMiniPlayerPresentationScript()
+    }
+
+    private func applyMiniPlayerPresentationScript() {
+        guard let webView else { return }
+
+        let isExpandedLiteral = self.miniPlayerPresentationEnabled ? "true" : "false"
+        let prefersVideoLiteral = self.miniPlayerPrefersVideo ? "true" : "false"
+        let viewportWidth = Int(self.miniPlayerViewportSize.width.rounded())
+        let viewportHeight = Int(self.miniPlayerViewportSize.height.rounded())
+
+        let script = """
+            (function() {
+                const enabled = \(isExpandedLiteral);
+                const prefersVideo = \(prefersVideoLiteral);
+                const viewportWidth = \(viewportWidth);
+                const viewportHeight = \(viewportHeight);
+
+                const styleId = 'kaset-mini-player-video-style';
+                const containerId = 'kaset-video-container';
+                const blackoutId = 'kaset-video-blackout';
+                const timerIdKey = '__kasetMiniPlayerVideoTimer';
+
+                window.__kasetMiniPlayerPresentationEnabled = enabled;
+                window.__kasetMiniPlayerPrefersVideo = prefersVideo;
+
+                function clearPresentationTimer() {
+                    if (window[timerIdKey]) {
+                        clearInterval(window[timerIdKey]);
+                        window[timerIdKey] = null;
+                    }
+                }
+
+                function ensureStyle() {
+                    let style = document.getElementById(styleId);
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = styleId;
+                        (document.head || document.documentElement).appendChild(style);
+                    }
+
+                    style.textContent = `
+                        html, body, ytmusic-app, #layout, #content, #contents {
+                            background: #000 !important;
+                            overflow: hidden !important;
+                        }
+
+                        ytmusic-nav-bar,
+                        ytmusic-player-bar,
+                        ytmusic-guide-renderer,
+                        tp-yt-app-drawer,
+                        ytmusic-notification-action-renderer,
+                        ytmusic-player-page #tabs,
+                        ytmusic-player-page #side-panel,
+                        .ytp-chrome-top,
+                        .ytp-chrome-bottom,
+                        .ytp-gradient-top,
+                        .ytp-gradient-bottom,
+                        .ytp-cards-button,
+                        .ytp-endscreen-content,
+                        .ytp-ce-element,
+                        .ytmusic-player-page-player-controls {
+                            display: none !important;
+                        }
+
+                        #${containerId} {
+                            position: fixed !important;
+                            top: 0 !important;
+                            left: 0 !important;
+                            width: ${viewportWidth}px !important;
+                            height: ${viewportHeight}px !important;
+                            background: #000 !important;
+                            z-index: 2147483646 !important;
+                            overflow: hidden !important;
+                            pointer-events: none !important;
+                        }
+
+                        #${containerId} video {
+                            width: 100% !important;
+                            height: 100% !important;
+                            object-fit: cover !important;
+                            background: #000 !important;
+                            pointer-events: none !important;
+                        }
+                    `;
+                }
+
+                function removeStyle() {
+                    const style = document.getElementById(styleId);
+                    if (style) style.remove();
+                }
+
+                function ensureContainer() {
+                    let container = document.getElementById(containerId);
+                    if (!container) {
+                        container = document.createElement('div');
+                        container.id = containerId;
+                        (document.body || document.documentElement).appendChild(container);
+                    }
+                    return container;
+                }
+
+                function removeContainer() {
+                    const container = document.getElementById(containerId);
+                    if (container) container.remove();
+                }
+
+                function ensureBlackout() {
+                    let blackout = document.getElementById(blackoutId);
+                    if (!blackout) {
+                        blackout = document.createElement('div');
+                        blackout.id = blackoutId;
+                        blackout.style.position = 'fixed';
+                        blackout.style.inset = '0';
+                        blackout.style.background = '#000';
+                        blackout.style.zIndex = '2147483645';
+                        blackout.style.pointerEvents = 'none';
+                        (document.body || document.documentElement).appendChild(blackout);
+                    }
+                    return blackout;
+                }
+
+                function removeBlackout() {
+                    const blackout = document.getElementById(blackoutId);
+                    if (blackout) blackout.remove();
+                }
+
+                function findVideoToggle() {
+                    const controls = Array.from(
+                        document.querySelectorAll('button, tp-yt-paper-button, [role="button"], [role="tab"]')
+                    );
+                    return controls.find((element) => {
+                        const text = (element.textContent || element.innerText || '').trim().toLowerCase();
+                        const label = (element.getAttribute('aria-label') || '').trim().toLowerCase();
+                        return text === 'video'
+                            || text === 'musikvideo'
+                            || text === 'music video'
+                            || label === 'video'
+                            || label.includes('video');
+                    });
+                }
+
+                function ensureVideoTabSelected() {
+                    if (!window.__kasetMiniPlayerPrefersVideo) return;
+
+                    const button = findVideoToggle();
+                    if (!button) return;
+
+                    const isSelected = button.getAttribute('aria-selected') === 'true'
+                        || button.getAttribute('aria-pressed') === 'true'
+                        || button.classList.contains('selected')
+                        || button.classList.contains('is-selected');
+
+                    if (!isSelected) {
+                        button.click();
+                    }
+                }
+
+                function extractVideoToContainer() {
+                    const video = document.querySelector('video');
+                    if (!video) return false;
+
+                    const hasFrame = video.readyState >= 2 || video.videoWidth > 0;
+                    if (!hasFrame) return false;
+
+                    const container = ensureContainer();
+
+                    if (!window.__kasetMiniPlayerVideoExtracted) {
+                        window.__kasetMiniPlayerOriginalParent = video.parentElement || null;
+                        window.__kasetMiniPlayerOriginalNextSibling = video.nextSibling || null;
+                        window.__kasetMiniPlayerVideoExtracted = true;
+                    }
+
+                    if (video.parentElement !== container) {
+                        container.appendChild(video);
+                    }
+
+                    video.controls = false;
+                    return true;
+                }
+
+                function restoreVideoToOriginalParent() {
+                    const video = document.querySelector('video');
+                    const originalParent = window.__kasetMiniPlayerOriginalParent;
+                    const originalNextSibling = window.__kasetMiniPlayerOriginalNextSibling;
+
+                    if (video && originalParent) {
+                        if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
+                            originalParent.insertBefore(video, originalNextSibling);
+                        } else {
+                            originalParent.appendChild(video);
+                        }
+                    }
+
+                    window.__kasetMiniPlayerVideoExtracted = false;
+                    window.__kasetMiniPlayerOriginalParent = null;
+                    window.__kasetMiniPlayerOriginalNextSibling = null;
+                    removeContainer();
+                    removeStyle();
+                    removeBlackout();
+                }
+
+                if (!enabled) {
+                    clearPresentationTimer();
+                    restoreVideoToOriginalParent();
+                    return;
+                }
+
+                ensureStyle();
+                ensureBlackout();
+                ensureVideoTabSelected();
+
+                let attempts = 0;
+                clearPresentationTimer();
+                window[timerIdKey] = setInterval(function() {
+                    if (!window.__kasetMiniPlayerPresentationEnabled) {
+                        clearPresentationTimer();
+                        restoreVideoToOriginalParent();
+                        return;
+                    }
+
+                    attempts += 1;
+                    ensureStyle();
+                    ensureVideoTabSelected();
+
+                    const extracted = extractVideoToContainer();
+                    if (extracted) {
+                        clearPresentationTimer();
+                        removeBlackout();
+                        return;
+                    }
+
+                    if (attempts >= 40) {
+                        clearPresentationTimer();
+                        removeBlackout();
+                    }
+                }, 150);
+            })();
+        """
+
+        webView.evaluateJavaScript(script) { [weak self] _, error in
+            if let error {
+                self?.logger.debug("Failed to apply mini player presentation script: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Starts high frequency polling for synced lyrics
@@ -484,6 +748,8 @@ final class SingletonPlayerWebView {
             let likeStatusString = body["likeStatus"] as? String ?? "INDIFFERENT"
             let hasVideo = body["hasVideo"] as? Bool ?? false
             let isAd = body["isAd"] as? Bool ?? false
+            let videoWidth = (body["videoWidth"] as? Int) ?? Int((body["videoWidth"] as? Double) ?? 0)
+            let videoHeight = (body["videoHeight"] as? Int) ?? Int((body["videoHeight"] as? Double) ?? 0)
             let adBlockingEnabled = SettingsManager.shared.safeAdBlockingEnabled
 
             // Parse like status
@@ -507,6 +773,7 @@ final class SingletonPlayerWebView {
 
                 // Update video availability
                 self.playerService.updateVideoAvailability(hasVideo: hasVideo)
+                self.playerService.updateMiniPlayerVideoDimensions(width: videoWidth, height: videoHeight)
 
                 // Update like status only when track changes (initial state)
                 if trackChanged {
@@ -533,6 +800,8 @@ final class SingletonPlayerWebView {
             DiagnosticsLogger.player.info(
                 "Singleton WebView finished loading: \(webView.url?.absoluteString ?? "nil")"
             )
+
+            SingletonPlayerWebView.shared.reapplyMiniPlayerPresentationIfNeeded()
 
             // Apply the current volume when page finishes loading
             // This is critical because YouTube may set its own default volume

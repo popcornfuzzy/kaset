@@ -56,7 +56,10 @@ playerService.play(videoId: "dQw4w9WgXcQ")
 
 This sets:
 - `pendingPlayVideoId` = video ID
-- `showMiniPlayer` = `true` (shows toast for user interaction)
+- `showMiniPlayer` based on playback type:
+    - Podcast episodes auto-open the mini player
+    - Normal songs stay hidden by default
+    - First hidden song can arm a one-shot fallback that reveals the mini player if autoplay does not start quickly
 
 ### 2. WebView Loads
 
@@ -87,6 +90,11 @@ func makeNSView(context: Context) -> NSView {
     return container
 }
 ```
+
+When playback transitions to `isPlaying`:
+- Fallback-driven mini player reveals auto-dismiss and mark user interaction
+- Podcast auto-open does not auto-dismiss (stays visible)
+- User-toggled mini player visibility is preserved until toggled off
 
 ### 4. State Updates
 

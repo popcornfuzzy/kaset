@@ -381,7 +381,9 @@ extension SingletonPlayerWebView {
                         trackChanged: trackChanged,
                         likeStatus: likeStatus,
                         hasVideo: hasVideo,
-                        isAd: isAd
+                        isAd: isAd,
+                        videoWidth: video ? (video.videoWidth || 0) : 0,
+                        videoHeight: video ? (video.videoHeight || 0) : 0
                     });
                 } catch (e) {}
             }

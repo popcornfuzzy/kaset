@@ -10,6 +10,8 @@ struct PersistentPlayerView: NSViewRepresentable {
 
     let videoId: String
     let isExpanded: Bool
+    let prefersVideo: Bool
+    let viewportSize: CGSize
 
     private let logger = DiagnosticsLogger.player
 
@@ -30,6 +32,13 @@ struct PersistentPlayerView: NSViewRepresentable {
         webView.frame = container.bounds
         webView.autoresizingMask = [.width, .height]
         container.addSubview(webView)
+
+        // Keep the shared WebView in a video-focused presentation when the mini player is visible.
+        SingletonPlayerWebView.shared.updateMiniPlayerPresentation(
+            isExpanded: self.isExpanded,
+            prefersVideo: self.prefersVideo,
+            viewportSize: self.viewportSize
+        )
 
         // Restored sessions keep the hidden WebView inert until the user explicitly resumes.
         if self.playerService.shouldAutoloadPendingVideo,
@@ -59,6 +68,12 @@ struct PersistentPlayerView: NSViewRepresentable {
 
         webView.frame = container.bounds
 
+        SingletonPlayerWebView.shared.updateMiniPlayerPresentation(
+            isExpanded: self.isExpanded,
+            prefersVideo: self.prefersVideo,
+            viewportSize: self.viewportSize
+        )
+
         if self.playerService.shouldAutoloadPendingVideo {
             SingletonPlayerWebView.shared.loadVideo(videoId: self.videoId)
         }
@@ -74,7 +89,12 @@ struct MiniPlayerToast: View {
     let videoId: String
 
     var body: some View {
-        PersistentPlayerView(videoId: self.videoId, isExpanded: true)
+        PersistentPlayerView(
+            videoId: self.videoId,
+            isExpanded: true,
+            prefersVideo: true,
+            viewportSize: CGSize(width: 320, height: 180)
+        )
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .glassEffectTransition(.materialize)
     }

@@ -17,6 +17,20 @@ struct MainWindow: View {
 
     private enum Layout {
         static let commandBarTopPadding: CGFloat = 72
+        static let miniPlayerDefaultWidth: CGFloat = 320
+        static let miniPlayerMinWidth: CGFloat = 220
+        static let miniPlayerMaxWidth: CGFloat = 760
+        static let miniPlayerDefaultAspectRatio: CGFloat = 16.0 / 9.0
+        static let miniPlayerMinAspectRatio: CGFloat = 0.3
+        static let miniPlayerMaxAspectRatio: CGFloat = 4.0
+        static let miniPlayerResizeEdgeThickness: CGFloat = 10
+    }
+
+    private enum MiniPlayerResizeEdge {
+        case left
+        case right
+        case top
+        case bottom
     }
 
     @Environment(AuthService.self) private var authService
@@ -36,6 +50,8 @@ struct MainWindow: View {
     @State private var showLoginSheet = false
     @State private var isCommandBarPresented = false
     @State private var whatsNewToPresent: PresentedWhatsNew?
+    @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
+    @State private var miniPlayerResizeStartWidth: CGFloat?
 
     // MARK: - Cached ViewModels (persist across tab switches)
 
@@ -80,6 +96,17 @@ struct MainWindow: View {
         NSApplication.shared.delegate as? AppDelegate
     }
 
+    private var miniPlayerAspectRatio: CGFloat {
+        guard let observedRatio = self.playerService.miniPlayerVideoAspectRatio else {
+            return Layout.miniPlayerDefaultAspectRatio
+        }
+
+        return min(
+            max(CGFloat(observedRatio), Layout.miniPlayerMinAspectRatio),
+            Layout.miniPlayerMaxAspectRatio
+        )
+    }
+
     var body: some View {
         @Bindable var player = self.playerService
 
@@ -113,21 +140,30 @@ struct MainWindow: View {
 
             // Persistent WebView - always present once a video has been requested
             // Uses a SINGLETON WebView instance that persists for the app lifetime
-            // Compact size (120x68) for first-time interaction, then hidden (1x1)
+            // The mini player can be resized by dragging any edge.
             if let videoId = playerService.pendingPlayVideoId {
-                ZStack(alignment: .topTrailing) {
-                    PersistentPlayerView(
-                        videoId: videoId,
-                        isExpanded: !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
-                    )
-                    .frame(
-                        width: self.playerService.showFullscreenNowPlaying ? 1 : (self.playerService.showMiniPlayer ? 120 : 1),
-                        height: self.playerService.showFullscreenNowPlaying ? 1 : (self.playerService.showMiniPlayer ? 68 : 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .opacity((!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 0.95 : 0)
+                let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
+                let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
 
-                    if !self.playerService.showFullscreenNowPlaying, self.playerService.showMiniPlayer {
+                PersistentPlayerView(
+                    videoId: videoId,
+                    isExpanded: isMiniPlayerVisible,
+                    prefersVideo: true,
+                    viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
+                )
+                .frame(
+                    width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
+                    height: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? miniPlayerHeight : 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .opacity(isMiniPlayerVisible ? 0.95 : 0)
+                .overlay {
+                    if isMiniPlayerVisible {
+                        self.miniPlayerResizeOverlay
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if isMiniPlayerVisible {
                         Button {
                             self.playerService.confirmPlaybackStarted()
                         } label: {
@@ -142,21 +178,15 @@ struct MainWindow: View {
                     }
                 }
                 .shadow(
-                    color: (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? .black.opacity(0.2) : .clear,
+                    color: isMiniPlayerVisible ? .black.opacity(0.2) : .clear,
                     radius: 6,
                     y: 3
                 )
-                .padding(.trailing, (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 12 : 0)
-                .padding(.bottom, (!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer) ? 76 : 0)
-                .allowsHitTesting(!self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer)
-                // Hiding must not interpolate frame/opacity (no “shrink”); showing can ease in.
-                .transaction { transaction in
-                    if self.playerService.showFullscreenNowPlaying || !self.playerService.showMiniPlayer {
-                        transaction.animation = nil
-                    } else {
-                        transaction.animation = .easeInOut(duration: 0.2)
-                    }
-                }
+                .padding(.trailing, isMiniPlayerVisible ? 12 : 0)
+                .padding(.bottom, isMiniPlayerVisible ? 76 : 0)
+                .allowsHitTesting(isMiniPlayerVisible)
+                .animation(.easeInOut(duration: 0.2), value: isMiniPlayerVisible)
+                .animation(.easeInOut(duration: 0.2), value: self.miniPlayerAspectRatio)
             }
         }
         .sheet(isPresented: self.$showLoginSheet) {
@@ -248,9 +278,8 @@ struct MainWindow: View {
             }
         }
         .onChange(of: self.playerService.isPlaying) { _, isPlaying in
-            // Auto-hide the WebView once playback starts
-            if isPlaying, self.playerService.showMiniPlayer {
-                self.playerService.confirmPlaybackStarted()
+            if isPlaying {
+                self.playerService.handlePlaybackStartedForMiniPlayer()
             }
         }
         .onChange(of: self.accountService.currentAccount?.id) { _, newAccountId in
@@ -380,6 +409,100 @@ struct MainWindow: View {
                 Spacer()
             }
             .padding(.trailing, 16)
+        }
+    }
+
+    private var miniPlayerResizeOverlay: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(height: Layout.miniPlayerResizeEdgeThickness)
+                    .contentShape(Rectangle())
+                    .gesture(self.resizeGesture(for: .top))
+                    .onHover { hovering in
+                        self.updateResizeCursor(hovering: hovering, edge: .top)
+                    }
+
+                Spacer(minLength: 0)
+
+                Color.clear
+                    .frame(height: Layout.miniPlayerResizeEdgeThickness)
+                    .contentShape(Rectangle())
+                    .gesture(self.resizeGesture(for: .bottom))
+                    .onHover { hovering in
+                        self.updateResizeCursor(hovering: hovering, edge: .bottom)
+                    }
+            }
+
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(width: Layout.miniPlayerResizeEdgeThickness)
+                    .contentShape(Rectangle())
+                    .gesture(self.resizeGesture(for: .left))
+                    .onHover { hovering in
+                        self.updateResizeCursor(hovering: hovering, edge: .left)
+                    }
+
+                Spacer(minLength: 0)
+
+                Color.clear
+                    .frame(width: Layout.miniPlayerResizeEdgeThickness)
+                    .contentShape(Rectangle())
+                    .gesture(self.resizeGesture(for: .right))
+                    .onHover { hovering in
+                        self.updateResizeCursor(hovering: hovering, edge: .right)
+                    }
+            }
+        }
+        .allowsHitTesting(true)
+    }
+
+    private func resizeGesture(for edge: MiniPlayerResizeEdge) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                self.resizeMiniPlayer(using: value, edge: edge)
+            }
+            .onEnded { _ in
+                self.miniPlayerResizeStartWidth = nil
+            }
+    }
+
+    private func resizeMiniPlayer(using value: DragGesture.Value, edge: MiniPlayerResizeEdge) {
+        if self.miniPlayerResizeStartWidth == nil {
+            self.miniPlayerResizeStartWidth = self.miniPlayerWidth
+        }
+
+        let dominantDelta: CGFloat = switch edge {
+        case .left:
+            -value.translation.width
+        case .right:
+            value.translation.width
+        case .top:
+            -value.translation.height * self.miniPlayerAspectRatio
+        case .bottom:
+            value.translation.height * self.miniPlayerAspectRatio
+        }
+
+        let baseWidth = self.miniPlayerResizeStartWidth ?? self.miniPlayerWidth
+        let proposedWidth = baseWidth + dominantDelta
+
+        self.miniPlayerWidth = min(
+            max(proposedWidth, Layout.miniPlayerMinWidth),
+            Layout.miniPlayerMaxWidth
+        )
+    }
+
+    private func updateResizeCursor(hovering: Bool, edge: MiniPlayerResizeEdge) {
+        guard hovering else {
+            NSCursor.arrow.set()
+            return
+        }
+
+        switch edge {
+        case .left, .right:
+            NSCursor.resizeLeftRight.set()
+        case .top, .bottom:
+            NSCursor.resizeUpDown.set()
         }
     }
 

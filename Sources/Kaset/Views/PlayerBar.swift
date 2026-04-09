@@ -510,6 +510,24 @@ struct PlayerBar: View {
                 .accessibilityIdentifier(AccessibilityID.PlayerBar.queueButton)
                 .accessibilityLabel(String(localized: "Queue"))
                 .accessibilityValue(self.playerService.showQueue ? String(localized: "Showing") : String(localized: "Hidden"))
+
+                // Mini player toggle button
+                Button {
+                    HapticService.toggle()
+                    self.playerService.toggleMiniPlayerVisibilityByUser()
+                } label: {
+                    Image(systemName: self.playerService.showMiniPlayer ? "pip.fill" : "pip")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(self.playerService.showMiniPlayer ? .red : .primary.opacity(0.85))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.pressable)
+                .glassEffectID("miniPlayer", in: self.playerNamespace)
+                .symbolEffect(.bounce, value: self.playerService.showMiniPlayer)
+                .accessibilityIdentifier(AccessibilityID.PlayerBar.miniPlayerButton)
+                .accessibilityLabel(String(localized: "Mini Player"))
+                .accessibilityValue(self.playerService.showMiniPlayer ? String(localized: "Showing") : String(localized: "Hidden"))
+                .disabled(self.playerService.pendingPlayVideoId == nil)
             }
 
             // Fullscreen now-playing button
