@@ -707,17 +707,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
                 }
                 self.saveQueueForPersistence()
             } else if self.mixContinuationToken != nil {
-                // At end of queue but have continuation - fetch more and continue
-                let previousCount = self.queue.count
-                await self.fetchMoreMixSongsIfNeeded()
-                // Only advance if new songs were actually added
-                if self.queue.count > previousCount {
-                    self.pushForwardSkipStackIfLeavingIndex(for: self.currentIndex + 1)
-                    self.currentIndex += 1
-                    if let nextSong = queue[safe: currentIndex] {
-                        await self.play(song: nextSong)
-                    }
-                    self.saveQueueForPersistence()
+                // At end of queue with continuation: fetch a fresh batch and drop consumed songs.
+                if await self.rolloverMixQueueAtEndIfNeeded() {
+                    return
                 }
             } else if self.pendingPlayVideoId != nil {
                 // User pressed Next at queue end (for example after clearQueue keeps only current song).

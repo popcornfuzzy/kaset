@@ -30,12 +30,49 @@ struct SyncedLyrics: Equatable {
     let lines: [SyncedLyricLine]
     let source: String
 
+    static let defaultPauseGapThresholdMs = 600
+
     var isEmpty: Bool {
         self.lines.isEmpty
     }
 
     enum LineStatus {
         case previous, current, upcoming
+    }
+
+    enum PauseDotStatus: Equatable {
+        case notSung, active, sung
+    }
+
+    struct PauseInterlude: Equatable {
+        let lineIndex: Int
+        let lineId: UUID
+        let startTimeMs: Int
+        let endTimeMs: Int
+
+        var durationMs: Int {
+            max(1, self.endTimeMs - self.startTimeMs)
+        }
+
+        func dotStatuses(at timeMs: Int) -> [PauseDotStatus] {
+            if timeMs < self.startTimeMs {
+                return [.notSung, .notSung, .notSung]
+            }
+
+            if timeMs >= self.endTimeMs {
+                return [.sung, .sung, .sung]
+            }
+
+            let relativeMs = Double(timeMs - self.startTimeMs)
+            let segmentDurationMs = Double(self.durationMs) / 3.0
+            let activeDotIndex = min(2, Int(relativeMs / segmentDurationMs))
+
+            return (0 ..< 3).map { dotIndex in
+                if dotIndex < activeDotIndex { return .sung }
+                if dotIndex == activeDotIndex { return .active }
+                return .notSung
+            }
+        }
     }
 
     func lineStatuses(at timeMs: Int) -> [LineStatus] {
@@ -49,6 +86,55 @@ struct SyncedLyrics: Equatable {
 
     func currentLineIndex(at timeMs: Int) -> Int? {
         self.lineStatuses(at: timeMs).lastIndex(of: .current)
+    }
+
+    func pauseInterlude(
+        at timeMs: Int,
+        minimumGapMs: Int = Self.defaultPauseGapThresholdMs
+    ) -> PauseInterlude? {
+        guard let currentIndex = self.currentLineIndex(at: timeMs) else { return nil }
+        return self.pauseInterlude(forLineAt: currentIndex, minimumGapMs: minimumGapMs)
+    }
+
+    func pauseInterlude(
+        forLineAt lineIndex: Int,
+        minimumGapMs: Int = Self.defaultPauseGapThresholdMs
+    ) -> PauseInterlude? {
+        guard self.lines.indices.contains(lineIndex) else { return nil }
+
+        let line = self.lines[lineIndex]
+        let isPauseText = line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard isPauseText else { return nil }
+        guard line.duration >= minimumGapMs else { return nil }
+
+        let startTimeMs = line.timeInMs
+        let endTimeMs = line.timeInMs + line.duration
+        guard endTimeMs > startTimeMs else { return nil }
+
+        return PauseInterlude(
+            lineIndex: lineIndex,
+            lineId: line.id,
+            startTimeMs: startTimeMs,
+            endTimeMs: endTimeMs
+        )
+    }
+
+    func isPauseLine(
+        at lineIndex: Int,
+        minimumGapMs: Int = Self.defaultPauseGapThresholdMs
+    ) -> Bool {
+        self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) != nil
+    }
+
+    func pauseDotStatuses(
+        forLineAt lineIndex: Int,
+        at timeMs: Int,
+        minimumGapMs: Int = Self.defaultPauseGapThresholdMs
+    ) -> [PauseDotStatus] {
+        guard let interlude = self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) else {
+            return [.notSung, .notSung, .notSung]
+        }
+        return interlude.dotStatuses(at: timeMs)
     }
 }
 

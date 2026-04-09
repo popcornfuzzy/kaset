@@ -22,12 +22,21 @@ struct SyncedLyricsDisplayView: View {
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
-                        SyncedLineView(
-                            line: line,
-                            status: status,
-                            onTap: { self.onSeek(line.timeInMs) }
-                        )
-                        .id(line.id)
+                        if self.lyrics.isPauseLine(at: index) {
+                            SyncedPauseDotsLineView(
+                                dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: self.currentTimeMs),
+                                status: status,
+                                onTap: { self.onSeek(line.timeInMs) }
+                            )
+                            .id(line.id)
+                        } else {
+                            SyncedLineView(
+                                line: line,
+                                status: status,
+                                onTap: { self.onSeek(line.timeInMs) }
+                            )
+                            .id(line.id)
+                        }
                     }
 
                     Spacer().frame(height: 120)
@@ -81,6 +90,91 @@ struct SyncedLyricsDisplayView: View {
         if lineIndex < currentLineIndex { return .previous }
         if lineIndex == currentLineIndex { return .current }
         return .upcoming
+    }
+}
+
+// MARK: - SyncedLineView
+
+@available(macOS 26.0, *)
+struct SyncedPauseDotsLineView: View {
+    let dotStatuses: [SyncedLyrics.PauseDotStatus]
+    let status: SyncedLyrics.LineStatus
+    let onTap: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0 ..< 3, id: \.self) { dotIndex in
+                self.dotView(for: self.safeDotStatus(at: dotIndex))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 7)
+        .opacity(self.lineOpacity(for: self.status))
+        .scaleEffect(self.lineScale(for: self.status), anchor: .leading)
+        .animation(.easeInOut(duration: 0.35), value: self.dotStatuses)
+        .animation(.easeInOut(duration: 0.35), value: self.status)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            self.onTap()
+        }
+    }
+
+    @ViewBuilder
+    private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View {
+        let dot = Circle()
+            .fill(Color.primary)
+            .frame(width: 7, height: 7)
+            .opacity(self.dotOpacity(for: dotStatus))
+
+        if dotStatus == .active {
+            TimelineView(.animation) { timeline in
+                let elapsed = timeline.date.timeIntervalSinceReferenceDate
+                let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72
+                let yOffset = -2.8 * (0.5 + 0.5 * sin(phase * 2 * .pi))
+
+                dot.offset(y: yOffset)
+            }
+        } else {
+            dot
+        }
+    }
+
+    private func safeDotStatus(at index: Int) -> SyncedLyrics.PauseDotStatus {
+        guard self.dotStatuses.indices.contains(index) else { return .notSung }
+        return self.dotStatuses[index]
+    }
+
+    private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double {
+        switch status {
+        case .notSung:
+            0.28
+        case .active:
+            1.0
+        case .sung:
+            0.65
+        }
+    }
+
+    private func lineScale(for status: SyncedLyrics.LineStatus) -> CGFloat {
+        switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.95
+        case .upcoming:
+            0.965
+        }
+    }
+
+    private func lineOpacity(for status: SyncedLyrics.LineStatus) -> Double {
+        switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.35
+        case .upcoming:
+            0.55
+        }
     }
 }
 

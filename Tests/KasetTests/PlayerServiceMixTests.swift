@@ -63,6 +63,58 @@ struct PlayerServiceMixTests {
         #expect(self.playerService.queue.count == 20)
     }
 
+    @Test("next at end with mix continuation replaces queue with new batch")
+    func nextAtEndWithMixContinuationReplacesQueue() async {
+        let initialQueue = [
+            TestFixtures.makeSong(id: "video-a", title: "Old A"),
+            TestFixtures.makeSong(id: "video-b", title: "Old B"),
+        ]
+        await self.playerService.playQueue(initialQueue, startingAt: 1)
+        self.playerService.mixContinuationToken = "mix-token-1"
+
+        self.mockClient.mixQueueContinuationResults = [
+            RadioQueueResult(
+                songs: [
+                    TestFixtures.makeSong(id: "video-c", title: "New C"),
+                    TestFixtures.makeSong(id: "video-d", title: "New D"),
+                ],
+                continuationToken: "mix-token-2"
+            ),
+        ]
+
+        await self.playerService.next()
+
+        #expect(self.mockClient.getMixQueueContinuationCalled == true)
+        #expect(self.playerService.queue.count == 2)
+        #expect(self.playerService.queue[0].videoId == "video-c")
+        #expect(self.playerService.queue[1].videoId == "video-d")
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.currentTrack?.videoId == "video-c")
+        #expect(self.playerService.mixContinuationToken == "mix-token-2")
+    }
+
+    @Test("next at end with empty continuation keeps current queue")
+    func nextAtEndWithEmptyMixContinuationKeepsQueue() async {
+        let initialQueue = [
+            TestFixtures.makeSong(id: "video-a", title: "Old A"),
+            TestFixtures.makeSong(id: "video-b", title: "Old B"),
+        ]
+        await self.playerService.playQueue(initialQueue, startingAt: 1)
+        self.playerService.mixContinuationToken = "mix-token-1"
+
+        self.mockClient.mixQueueContinuationResults = [
+            RadioQueueResult(songs: [], continuationToken: nil),
+        ]
+
+        await self.playerService.next()
+
+        #expect(self.playerService.queue.count == 2)
+        #expect(self.playerService.queue[0].videoId == "video-a")
+        #expect(self.playerService.queue[1].videoId == "video-b")
+        #expect(self.playerService.currentIndex == 1)
+        #expect(self.playerService.mixContinuationToken == nil)
+    }
+
     // MARK: - Queue Management Tests
 
     @Test("clearQueue clears mixContinuationToken")

@@ -524,12 +524,12 @@ private struct FullscreenSyncedLyricsView: View {
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
-
-                        Text(line.text.trimmingCharacters(in: .whitespaces).isEmpty ? "♪" : line.text)
-                            .font(.system(size: 44, weight: .bold))
-                            .foregroundStyle(.white)
-                            .opacity(self.opacity(for: status, lineId: line.id))
-                            .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
+                        if self.lyrics.isPauseLine(at: index) {
+                            FullscreenPauseDotsLineView(
+                                dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: self.currentTimeMs),
+                                status: status,
+                                isHovered: self.hoveredLineId == line.id
+                            )
                             .animation(.easeInOut(duration: 0.4), value: self.currentLineIndex)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -543,6 +543,26 @@ private struct FullscreenSyncedLyricsView: View {
                                 self.onSeek(line.timeInMs)
                             }
                             .id(line.id)
+                        } else {
+                            Text(line.text.trimmingCharacters(in: .whitespaces).isEmpty ? "♪" : line.text)
+                                .font(.system(size: 44, weight: .bold))
+                                .foregroundStyle(.white)
+                                .opacity(self.opacity(for: status, lineId: line.id))
+                                .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
+                                .animation(.easeInOut(duration: 0.4), value: self.currentLineIndex)
+                                .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onHover { isHovered in
+                                    if status != .current {
+                                        self.hoveredLineId = isHovered ? line.id : nil
+                                    }
+                                }
+                                .onTapGesture {
+                                    self.onSeek(line.timeInMs)
+                                }
+                                .id(line.id)
+                        }
                     }
 
                     Spacer().frame(height: 84)
@@ -641,6 +661,91 @@ private struct FullscreenSyncedLyricsView: View {
             }
         } else {
             proxy.scrollTo(newId, anchor: .center)
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+private struct FullscreenPauseDotsLineView: View {
+    let dotStatuses: [SyncedLyrics.PauseDotStatus]
+    let status: SyncedLyrics.LineStatus
+    let isHovered: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            ForEach(0 ..< 3, id: \.self) { dotIndex in
+                self.dotView(for: self.safeDotStatus(at: dotIndex))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 13)
+        .opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered))
+        .scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading)
+    }
+
+    @ViewBuilder
+    private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View {
+        let dot = Circle()
+            .fill(Color.white)
+            .frame(width: 13, height: 13)
+            .opacity(self.dotOpacity(for: dotStatus))
+
+        if dotStatus == .active {
+            TimelineView(.animation) { timeline in
+                let elapsed = timeline.date.timeIntervalSinceReferenceDate
+                let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72
+                let yOffset = -5.2 * (0.5 + 0.5 * sin(phase * 2 * .pi))
+
+                dot.offset(y: yOffset)
+            }
+        } else {
+            dot
+        }
+    }
+
+    private func safeDotStatus(at index: Int) -> SyncedLyrics.PauseDotStatus {
+        guard self.dotStatuses.indices.contains(index) else { return .notSung }
+        return self.dotStatuses[index]
+    }
+
+    private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double {
+        switch status {
+        case .notSung:
+            0.28
+        case .active:
+            1.0
+        case .sung:
+            0.68
+        }
+    }
+
+    private func lineScale(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> CGFloat {
+        if isHovered, status != .current {
+            return 0.985
+        }
+
+        return switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.95
+        case .upcoming:
+            0.965
+        }
+    }
+
+    private func lineOpacity(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> Double {
+        if isHovered, status != .current {
+            return 0.78
+        }
+
+        return switch status {
+        case .current:
+            1.0
+        case .previous:
+            0.35
+        case .upcoming:
+            0.55
         }
     }
 }

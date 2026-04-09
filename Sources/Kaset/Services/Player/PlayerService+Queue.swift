@@ -4,6 +4,55 @@ import Foundation
 
 @MainActor
 extension PlayerService {
+    private func deduplicatedSongsByVideoId(_ songs: [Song]) -> [Song] {
+        var seenVideoIds = Set<String>()
+        return songs.filter { seenVideoIds.insert($0.videoId).inserted }
+    }
+
+    /// At the end of an infinite mix queue, fetches the next batch and replaces the old queue.
+    /// Returns true when playback was advanced to a new batch.
+    func rolloverMixQueueAtEndIfNeeded() async -> Bool {
+        guard let token = self.mixContinuationToken,
+              !self.isFetchingMoreMixSongs,
+              let client = self.ytMusicClient,
+              !self.queue.isEmpty,
+              self.currentIndex >= self.queue.count - 1
+        else {
+            return false
+        }
+
+        self.logger.info("Rolling over mix queue at end using continuation")
+        self.isFetchingMoreMixSongs = true
+        defer {
+            self.isFetchingMoreMixSongs = false
+        }
+
+        do {
+            let result = try await client.getMixQueueContinuation(continuationToken: token)
+            let nextBatch = self.deduplicatedSongsByVideoId(result.songs)
+            self.mixContinuationToken = result.continuationToken
+
+            guard let nextSong = nextBatch.first else {
+                self.logger.warning("Mix rollover returned no playable songs")
+                return false
+            }
+
+            self.clearForwardSkipNavigationStack()
+            self.recordQueueStateForUndo()
+            self.queue = nextBatch
+            self.currentIndex = 0
+
+            await self.play(song: nextSong)
+            self.saveQueueForPersistence()
+
+            self.logger.info("Mix queue rolled over: replaced with \(nextBatch.count) songs")
+            return true
+        } catch {
+            self.logger.warning("Failed to roll over mix queue: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// Plays a queue of songs starting at the specified index.
     func playQueue(_ songs: [Song], startingAt index: Int = 0) async {
         guard !songs.isEmpty else { return }

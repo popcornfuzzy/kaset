@@ -197,6 +197,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
     // MARK: - Coordinator
 
+    @MainActor
     class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
         var queue: [Song]
         var currentIndex: Int
@@ -228,19 +229,17 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             super.init()
         }
 
-        deinit {
-            self.resumeAutoScrollTimer?.invalidate()
-        }
-
         func registerUserScrollInteraction() {
             self.isUserScrolling = true
             self.resumeAutoScrollTimer?.invalidate()
 
             self.resumeAutoScrollTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: false) { [weak self] _ in
-                guard let self else { return }
-                self.isUserScrolling = false
-                if let tableView = self.viewController?.tableView {
-                    self.scrollToCurrentSong(in: tableView, animated: true)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isUserScrolling = false
+                    if let tableView = self.viewController?.tableView {
+                        self.scrollToCurrentSong(in: tableView, animated: true)
+                    }
                 }
             }
         }
@@ -261,6 +260,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.scrollToCurrentSong(in: tableView, animated: true)
         }
 
+        @MainActor
         private func scrollToCurrentSong(in tableView: DraggableTableView, animated: Bool) {
             guard self.queue.indices.contains(self.currentIndex) else { return }
             guard let scrollView = tableView.enclosingScrollView else {
@@ -312,10 +312,12 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 rowView.animator().alphaValue = 0
                 rowView.animator().frame.origin.x += offsetX
             } completionHandler: { [weak self] in
-                // Reset row view so it can be reused without a stuck frame/alpha (fixes misaligned rows).
-                rowView.alphaValue = 1
-                rowView.frame = originalFrame
-                self?.onRemove(videoId)
+                Task { @MainActor in
+                    // Reset row view so it can be reused without a stuck frame/alpha (fixes misaligned rows).
+                    rowView.alphaValue = 1
+                    rowView.frame = originalFrame
+                    self?.onRemove(videoId)
+                }
             }
         }
 
@@ -333,9 +335,8 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 isPlaying: self.isPlaying,
                 actions: QueueCellActions(
                     onPlay: { [weak self] in self?.onSelect(row) },
-                    onRevealRemove: { [weak self] in
-                        guard let self,
-                              let draggableTableView = tableView as? DraggableTableView
+                    onRevealRemove: {
+                        guard let draggableTableView = tableView as? DraggableTableView
                         else { return }
                         draggableTableView.revealDeleteActionForRow(row)
                     }
@@ -881,18 +882,20 @@ class DraggableTableView: NSTableView {
                 belowRowView.animator().frame = belowFrame
             }
         } completionHandler: {
-            var frame = rowView.frame
-            frame.origin.x = initialX
-            rowView.frame = frame
-            rowView.isHidden = false
-            swipeSnapshot.removeFromSuperview()
-            actionView?.removeFromSuperview()
-            self.revealedDeleteBackgroundView = nil
-            self.revealedDeleteRow = -1
-            self.revealedDeleteDirection = 0
-            self.revealedDeleteInitialOriginX = 0
-            self.syncRevealedDeleteUI()
-            coord.onRemove(song.videoId)
+            Task { @MainActor in
+                var frame = rowView.frame
+                frame.origin.x = initialX
+                rowView.frame = frame
+                rowView.isHidden = false
+                swipeSnapshot.removeFromSuperview()
+                actionView?.removeFromSuperview()
+                self.revealedDeleteBackgroundView = nil
+                self.revealedDeleteRow = -1
+                self.revealedDeleteDirection = 0
+                self.revealedDeleteInitialOriginX = 0
+                self.syncRevealedDeleteUI()
+                self.coordinator?.onRemove(song.videoId)
+            }
         }
     }
 
@@ -931,15 +934,6 @@ class DraggableTableView: NSTableView {
         let initialX = rowSlotFrame.origin.x
         let actionView = self.revealedDeleteBackgroundView
 
-        let resetState = {
-            actionView?.removeFromSuperview()
-            self.revealedDeleteBackgroundView = nil
-            self.revealedDeleteRow = -1
-            self.revealedDeleteDirection = 0
-            self.revealedDeleteInitialOriginX = 0
-            self.syncRevealedDeleteUI()
-        }
-
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
@@ -949,14 +943,25 @@ class DraggableTableView: NSTableView {
                 rowView.animator().frame = frame
                 actionView?.animator().alphaValue = 0
             } completionHandler: {
-                resetState()
+                Task { @MainActor in
+                    self.resetRevealedDeleteState(actionView: actionView)
+                }
             }
         } else {
             var frame = rowView.frame
             frame.origin.x = initialX
             rowView.frame = frame
-            resetState()
+            self.resetRevealedDeleteState(actionView: actionView)
         }
+    }
+
+    private func resetRevealedDeleteState(actionView: NSView?) {
+        actionView?.removeFromSuperview()
+        self.revealedDeleteBackgroundView = nil
+        self.revealedDeleteRow = -1
+        self.revealedDeleteDirection = 0
+        self.revealedDeleteInitialOriginX = 0
+        self.syncRevealedDeleteUI()
     }
 }
 

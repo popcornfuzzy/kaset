@@ -55,6 +55,8 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     var moodCategoryResponse: HomeResponse = .init(sections: [])
     var lyricsResponses: [String: Lyrics] = [:]
     var radioQueueSongs: [String: [Song]] = [:]
+    var mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
+    var mixQueueContinuationResults: [RadioQueueResult] = []
     var songResponses: [String: Song] = [:]
     var accountsListResponse: AccountsListResponse = .init(googleEmail: "test@gmail.com", accounts: [])
 
@@ -163,6 +165,9 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     private(set) var getLyricsVideoIds: [String] = []
     private(set) var getRadioQueueCalled = false
     private(set) var getRadioQueueVideoIds: [String] = []
+    private(set) var getMixQueueCalled = false
+    private(set) var getMixQueueContinuationCalled = false
+    private(set) var getMixQueueContinuationTokens: [String] = []
     private(set) var moodCategoryCalled = false
 
     // MARK: - Error Simulation
@@ -698,13 +703,18 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     }
 
     func getMixQueue(playlistId _: String, startVideoId _: String?) async throws -> RadioQueueResult {
+        self.getMixQueueCalled = true
         if let error = shouldThrowError { throw error }
-        // Return empty by default, can be overridden via radioQueueSongs if needed
-        return RadioQueueResult(songs: [], continuationToken: nil)
+        return self.mixQueueResult
     }
 
-    func getMixQueueContinuation(continuationToken _: String) async throws -> RadioQueueResult {
+    func getMixQueueContinuation(continuationToken: String) async throws -> RadioQueueResult {
+        self.getMixQueueContinuationCalled = true
+        self.getMixQueueContinuationTokens.append(continuationToken)
         if let error = shouldThrowError { throw error }
+        if !self.mixQueueContinuationResults.isEmpty {
+            return self.mixQueueContinuationResults.removeFirst()
+        }
         return RadioQueueResult(songs: [], continuationToken: nil)
     }
 
@@ -783,6 +793,11 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.getLyricsVideoIds = []
         self.getRadioQueueCalled = false
         self.getRadioQueueVideoIds = []
+        self.getMixQueueCalled = false
+        self.getMixQueueContinuationCalled = false
+        self.getMixQueueContinuationTokens = []
+        self.mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
+        self.mixQueueContinuationResults = []
         self.moodCategoryCalled = false
         self.shouldThrowError = nil
     }
