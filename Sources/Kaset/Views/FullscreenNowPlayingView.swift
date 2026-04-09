@@ -24,7 +24,7 @@ struct FullscreenNowPlayingView: View {
             let minimumLyricsWidth: CGFloat = 180
             let preferredArtworkWidth = stageWidth * 0.40
             let maxArtworkWidth = max(150, stageWidth - minimumLyricsWidth - panelSpacing)
-            let artworkColumnWidth = min(max(150, preferredArtworkWidth), maxArtworkWidth)
+            let artworkColumnWidth = min(min(max(150, preferredArtworkWidth), maxArtworkWidth), 520)
             let lyricsColumnWidth = max(minimumLyricsWidth, stageWidth - artworkColumnWidth - panelSpacing)
 
             ZStack {
@@ -129,13 +129,15 @@ struct FullscreenNowPlayingView: View {
 
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
         let columnSpacing = max(10, min(16, availableHeight * 0.018))
-        let artworkMaxHeight = min(max(180, availableHeight * 0.42), 340)
-        let mediaWidth = width
+        let artworkMaxHeight = min(max(200, availableHeight * 0.46), 380)
+        let maxContentWidth: CGFloat = 440
+        let contentWidth = min(width, maxContentWidth)
+        let mediaWidth = min(contentWidth, artworkMaxHeight)
 
         return VStack(alignment: .center, spacing: columnSpacing) {
             self.artworkCard
                 .frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight, alignment: .center)
-                .padding(.bottom, 4)
+                .padding(.bottom, 12)
 
             self.trackMeta
                 .frame(width: mediaWidth, alignment: .leading)
