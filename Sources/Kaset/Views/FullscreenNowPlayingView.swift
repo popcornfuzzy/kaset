@@ -142,8 +142,9 @@ struct FullscreenNowPlayingView: View {
             self.trackMeta
                 .frame(width: mediaWidth, alignment: .leading)
 
-            self.transportControls
-                .frame(width: mediaWidth, alignment: .leading)
+            self.transportControls(contentWidth: mediaWidth)
+                .frame(width: mediaWidth, alignment: .center)
+                .padding(.top, 6)
         }
         .frame(width: width, height: availableHeight, alignment: .center)
     }
@@ -194,17 +195,20 @@ struct FullscreenNowPlayingView: View {
         }
     }
 
-    private var transportControls: some View {
-        VStack(spacing: 16) {
+    private func transportControls(contentWidth: CGFloat) -> some View {
+        let buttonRowSpacing = max(12, min(22, contentWidth * 0.055))
+        let timeLabelWidth: CGFloat = 46
+
+        return VStack(alignment: .center, spacing: 16) {
             HStack(spacing: 10) {
                 Text(self.formatTime(self.playerService.progress))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white)
                     .monospacedDigit()
+                    .frame(width: timeLabelWidth, alignment: .leading)
 
                 Slider(
                     value: self.$seekValue,
-                    in: 0 ... 1,
                     onEditingChanged: { isEditing in
                         self.isSeeking = isEditing
                         if !isEditing {
@@ -222,15 +226,27 @@ struct FullscreenNowPlayingView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white)
                     .monospacedDigit()
+                    .frame(width: timeLabelWidth, alignment: .trailing)
             }
+            .frame(width: contentWidth, alignment: .center)
 
-            HStack(spacing: 22) {
+            HStack(spacing: buttonRowSpacing) {
+                Button {
+                    HapticService.toggle()
+                    self.playerService.dislikeCurrentTrack()
+                } label: {
+                    Image(systemName: self.playerService.currentTrackLikeStatus == .dislike ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(self.playerService.currentTrackLikeStatus == .dislike ? .red : .white)
+                }
+                .buttonStyle(.plain)
+
                 Button {
                     HapticService.toggle()
                     self.playerService.toggleShuffle()
                 } label: {
                     Image(systemName: "shuffle")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(self.playerService.shuffleEnabled ? .red : .white)
                 }
                 .buttonStyle(.plain)
@@ -242,7 +258,7 @@ struct FullscreenNowPlayingView: View {
                     }
                 } label: {
                     Image(systemName: "backward.fill")
-                        .font(.system(size: 21, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
@@ -254,7 +270,7 @@ struct FullscreenNowPlayingView: View {
                     }
                 } label: {
                     Image(systemName: self.playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 58, weight: .regular))
+                        .font(.system(size: 54, weight: .regular))
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
@@ -266,7 +282,7 @@ struct FullscreenNowPlayingView: View {
                     }
                 } label: {
                     Image(systemName: "forward.fill")
-                        .font(.system(size: 21, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
@@ -276,7 +292,7 @@ struct FullscreenNowPlayingView: View {
                     self.playerService.cycleRepeatMode()
                 } label: {
                     Image(systemName: self.repeatIcon)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(self.playerService.repeatMode != .off ? .red : .white)
                 }
                 .buttonStyle(.plain)
@@ -286,13 +302,13 @@ struct FullscreenNowPlayingView: View {
                     self.playerService.likeCurrentTrack()
                 } label: {
                     Image(systemName: self.playerService.currentTrackLikeStatus == .like ? "hand.thumbsup.fill" : "hand.thumbsup")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(self.playerService.currentTrackLikeStatus == .like ? .red : .white)
                 }
                 .buttonStyle(.plain)
             }
+            .frame(width: contentWidth, alignment: .center)
         }
-        .padding(.horizontal, 2)
     }
 
     private var lyricsPanel: some View {
