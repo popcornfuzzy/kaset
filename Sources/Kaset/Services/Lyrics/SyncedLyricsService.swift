@@ -14,6 +14,9 @@ final class SyncedLyricsService {
     /// Which provider supplied the current lyrics.
     var activeProvider: String?
 
+    /// Video ID for which `currentLyrics` is valid.
+    var currentLyricsVideoId: String?
+
     /// Loading state.
     var isLoading = false
 
@@ -41,7 +44,8 @@ final class SyncedLyricsService {
                     result: cached,
                     activeProvider: Self.cachedProviderName(for: cached)
                 ),
-                requestID: requestID
+                requestID: requestID,
+                videoId: info.videoId
             )
             return
         }
@@ -49,6 +53,7 @@ final class SyncedLyricsService {
         if let cached {
             self.currentLyrics = cached
             self.activeProvider = Self.cachedProviderName(for: cached)
+            self.currentLyricsVideoId = info.videoId
         }
 
         self.isLoading = true
@@ -81,12 +86,12 @@ final class SyncedLyricsService {
         }
 
         let resolved = self.resolveLyrics(best: best, cached: cached, videoId: info.videoId)
-        self.applyResolvedLyrics(resolved, requestID: requestID)
+        self.applyResolvedLyrics(resolved, requestID: requestID, videoId: info.videoId)
     }
 
     /// Fallback logic
     func fallbackToPlainLyrics(_ lyrics: Lyrics, videoId: String) {
-        if case .synced = self.currentLyrics {
+        if case .synced = self.currentLyrics, self.currentLyricsVideoId == videoId {
             // Already synced, don't overwrite with plain
             return
         }
@@ -94,10 +99,12 @@ final class SyncedLyricsService {
         if lyrics.isAvailable {
             self.currentLyrics = .plain(lyrics)
             self.activeProvider = lyrics.source
+            self.currentLyricsVideoId = videoId
             self.cache[videoId] = .plain(lyrics)
         } else {
             self.currentLyrics = .unavailable
             self.activeProvider = nil
+            self.currentLyricsVideoId = videoId
             self.cache[videoId] = .unavailable
         }
     }
@@ -146,11 +153,12 @@ final class SyncedLyricsService {
         return .init(result: .unavailable, activeProvider: nil)
     }
 
-    private func applyResolvedLyrics(_ resolved: ResolvedLyrics, requestID: Int) {
+    private func applyResolvedLyrics(_ resolved: ResolvedLyrics, requestID: Int, videoId: String) {
         guard requestID == self.fetchGeneration else { return }
 
         self.currentLyrics = resolved.result
         self.activeProvider = resolved.activeProvider
+        self.currentLyricsVideoId = videoId
         self.isLoading = false
     }
 

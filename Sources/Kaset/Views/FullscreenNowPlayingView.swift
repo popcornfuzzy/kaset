@@ -15,6 +15,11 @@ struct FullscreenNowPlayingView: View {
     @State private var isSeeking = false
     @State private var escapeKeyMonitor: Any?
 
+    private var hasLyricsForCurrentTrack: Bool {
+        guard let videoId = self.playerService.currentTrack?.videoId else { return false }
+        return self.syncedLyricsService.currentLyricsVideoId == videoId
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let horizontalPadding: CGFloat = 24
@@ -320,7 +325,7 @@ struct FullscreenNowPlayingView: View {
                         title: String(localized: "No Song Playing"),
                         message: String(localized: "Play a song to view synced lyrics.")
                     )
-                } else if self.syncedLyricsService.isLoading || self.isLoadingFallback {
+                } else if !self.hasLyricsForCurrentTrack || self.syncedLyricsService.isLoading || self.isLoadingFallback {
                     VStack(spacing: 12) {
                         ProgressView()
                             .controlSize(.regular)
@@ -477,6 +482,7 @@ struct FullscreenNowPlayingView: View {
         } else {
             self.syncedLyricsService.currentLyrics = .unavailable
             self.syncedLyricsService.activeProvider = nil
+            self.syncedLyricsService.currentLyricsVideoId = videoId
         }
 
         guard self.lastLoadedVideoId == videoId else { return }

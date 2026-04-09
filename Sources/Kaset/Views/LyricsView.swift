@@ -24,6 +24,11 @@ struct LyricsView: View {
     /// Namespace for glass effect morphing.
     @Namespace private var lyricsNamespace
 
+    private var hasLyricsForCurrentTrack: Bool {
+        guard let videoId = self.playerService.currentTrack?.videoId else { return false }
+        return self.syncedLyricsService.currentLyricsVideoId == videoId
+    }
+
     var body: some View {
         GlassEffectContainer(spacing: 0) {
             VStack(spacing: 0) {
@@ -137,7 +142,7 @@ struct LyricsView: View {
     private var contentView: some View {
         if self.playerService.currentTrack == nil {
             self.noTrackPlayingView
-        } else if self.syncedLyricsService.isLoading || self.isLoadingFallback {
+        } else if !self.hasLyricsForCurrentTrack || self.syncedLyricsService.isLoading || self.isLoadingFallback {
             self.loadingView
         } else {
             switch self.syncedLyricsService.currentLyrics {
@@ -418,6 +423,7 @@ struct LyricsView: View {
         } else {
             self.syncedLyricsService.currentLyrics = .unavailable
             self.syncedLyricsService.activeProvider = nil
+            self.syncedLyricsService.currentLyricsVideoId = videoId
         }
 
         guard self.lastLoadedVideoId == videoId else { return }
