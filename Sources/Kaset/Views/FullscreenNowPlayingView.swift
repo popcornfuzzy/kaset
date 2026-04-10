@@ -329,9 +329,10 @@ struct FullscreenNowPlayingView: View {
                     VStack(spacing: 12) {
                         ProgressView()
                             .controlSize(.regular)
+                            .tint(.white)
                         Text(String(localized: "Loading lyrics..."))
                             .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.8))
+                            .foregroundStyle(.white)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
