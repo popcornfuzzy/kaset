@@ -22,15 +22,12 @@ struct FullscreenNowPlayingView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let horizontalPadding: CGFloat = 24
-            let stageWidth = min(max(240, proxy.size.width - (horizontalPadding * 2)), 1480)
+            let stageWidth = proxy.size.width
             let stageHeight = min(max(300, proxy.size.height - 96), 900)
-            let panelSpacing = max(10, min(30, stageWidth * 0.022))
-            let minimumLyricsWidth: CGFloat = 180
-            let preferredArtworkWidth = stageWidth * 0.40
-            let maxArtworkWidth = max(150, stageWidth - minimumLyricsWidth - panelSpacing)
-            let artworkColumnWidth = min(min(max(150, preferredArtworkWidth), maxArtworkWidth), 520)
-            let lyricsColumnWidth = max(minimumLyricsWidth, stageWidth - artworkColumnWidth - panelSpacing)
+            let panelSpacing = max(8, min(30, stageWidth * 0.022))
+            let totalColumnWidth = max(1, stageWidth - panelSpacing)
+            let artworkColumnWidth = totalColumnWidth * 0.40
+            let lyricsColumnWidth = totalColumnWidth * 0.60
 
             ZStack {
                 self.backgroundLayer
@@ -43,12 +40,12 @@ struct FullscreenNowPlayingView: View {
                         self.lyricsPanel
                             .frame(width: lyricsColumnWidth, height: stageHeight, alignment: .leading)
                     }
-                    .frame(width: stageWidth, height: stageHeight, alignment: .center)
+                    .frame(width: stageWidth, height: stageHeight, alignment: .leading)
                     .padding(.top, 56)
 
                     Spacer(minLength: 0)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
