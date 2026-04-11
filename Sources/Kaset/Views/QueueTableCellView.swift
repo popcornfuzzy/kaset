@@ -18,6 +18,7 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
     private var isCurrentTrack: Bool = false
     private var isPlaying: Bool = false
     private var isInlineRemoveHidden = false
+    private var stackView: NSStackView?
     private var indicatorLabel = NSTextField()
     private var waveformView: NSView?
     private let thumbnailImageView = NSImageView()
@@ -47,8 +48,10 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         stackView.orientation = .horizontal
         stackView.spacing = 12
         stackView.alignment = .centerY
-        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 8) // Reduced right padding
+        // Do NOT use edgeInsets — use explicit constraints for predictable, consistent padding on all rows.
+        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 8)
         stackView.translatesAutoresizingMaskIntoConstraints = false
+        self.stackView = stackView
 
         // Indicator container (for number or waveform) — keep fixed so long text doesn't shift row layout
         let indicatorContainer = NSView()
@@ -140,7 +143,7 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
 
         addSubview(stackView)
         NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
             stackView.topAnchor.constraint(equalTo: topAnchor),
             stackView.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -158,6 +161,9 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         if let sv = superview, !sv.bounds.isEmpty, frame != sv.bounds {
             frame = sv.bounds
         }
+        // Force stackView to recalculate layout based on consistent constraints — prevents
+        // off-by-one padding from table view reuse when constraints were set up incorrectly.
+        self.stackView?.needsLayout = true
     }
 
     func configure(song: Song, index: Int, isCurrentTrack: Bool, isPlaying: Bool, actions: QueueCellActions) {
@@ -165,6 +171,12 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.onRevealRemove = actions.onRevealRemove
         self.isCurrentTrack = isCurrentTrack
         self.isPlaying = isPlaying
+        
+        // Reset frame to match superview — fixes misaligned rows from constraint drift on reuse
+        if let sv = superview, !sv.bounds.isEmpty {
+            self.frame = sv.bounds
+        }
+        
         self.updateAppearance(isCurrentTrack: isCurrentTrack, isPlaying: isPlaying, index: index)
 
         self.titleLabel.stringValue = song.title

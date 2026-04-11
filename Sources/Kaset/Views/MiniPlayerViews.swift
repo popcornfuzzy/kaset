@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - PersistentPlayerView
@@ -20,6 +21,7 @@ struct PersistentPlayerView: NSViewRepresentable {
 
         let container = NSView(frame: .zero)
         container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.black.cgColor
 
         // Get or create the singleton WebView
         let webView = SingletonPlayerWebView.shared.getWebView(

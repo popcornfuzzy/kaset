@@ -23,10 +23,10 @@ struct MainWindow: View {
         static let miniPlayerDefaultAspectRatio: CGFloat = 16.0 / 9.0
         static let miniPlayerMinAspectRatio: CGFloat = 0.3
         static let miniPlayerMaxAspectRatio: CGFloat = 4.0
-        static let miniPlayerResizeEdgeThickness: CGFloat = 10
+        static let miniPlayerResizeEdgeThickness: CGFloat = 24
     }
 
-    private enum MiniPlayerResizeEdge {
+    private enum MiniPlayerResizeEdge: Hashable {
         case left
         case right
         case top
@@ -51,7 +51,6 @@ struct MainWindow: View {
     @State private var isCommandBarPresented = false
     @State private var whatsNewToPresent: PresentedWhatsNew?
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
-    @State private var miniPlayerResizeStartWidth: CGFloat?
 
     // MARK: - Cached ViewModels (persist across tab switches)
 
@@ -144,17 +143,20 @@ struct MainWindow: View {
             if let videoId = playerService.pendingPlayVideoId {
                 let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
                 let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
+                let shouldPreferVideo = self.playerService.currentTrackHasVideo
+                    || self.playerService.miniPlayerVideoAspectRatio != nil
 
                 PersistentPlayerView(
                     videoId: videoId,
                     isExpanded: isMiniPlayerVisible,
-                    prefersVideo: true,
+                    prefersVideo: shouldPreferVideo,
                     viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
                 )
                 .frame(
                     width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
                     height: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? miniPlayerHeight : 1)
                 )
+                .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .opacity(isMiniPlayerVisible ? 0.95 : 0)
                 .overlay {
@@ -177,6 +179,20 @@ struct MainWindow: View {
                         .padding(3)
                     }
                 }
+                .overlay(alignment: .bottomLeading) {
+                    if isMiniPlayerVisible, self.shouldShowNoVideoHint {
+                        Text(String(localized: "No video available for this track"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.22), in: Capsule())
+                            .padding(.leading, 8)
+                            .padding(.bottom, 8)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
                 .shadow(
                     color: isMiniPlayerVisible ? .black.opacity(0.2) : .clear,
                     radius: 6,
@@ -186,7 +202,7 @@ struct MainWindow: View {
                 .padding(.bottom, isMiniPlayerVisible ? 76 : 0)
                 .allowsHitTesting(isMiniPlayerVisible)
                 .animation(.easeInOut(duration: 0.2), value: isMiniPlayerVisible)
-                .animation(.easeInOut(duration: 0.2), value: self.miniPlayerAspectRatio)
+                .animation(.easeInOut(duration: 0.18), value: self.shouldShowNoVideoHint)
             }
         }
         .sheet(isPresented: self.$showLoginSheet) {
@@ -413,97 +429,19 @@ struct MainWindow: View {
     }
 
     private var miniPlayerResizeOverlay: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                Color.clear
-                    .frame(height: Layout.miniPlayerResizeEdgeThickness)
-                    .contentShape(Rectangle())
-                    .gesture(self.resizeGesture(for: .top))
-                    .onHover { hovering in
-                        self.updateResizeCursor(hovering: hovering, edge: .top)
-                    }
-
-                Spacer(minLength: 0)
-
-                Color.clear
-                    .frame(height: Layout.miniPlayerResizeEdgeThickness)
-                    .contentShape(Rectangle())
-                    .gesture(self.resizeGesture(for: .bottom))
-                    .onHover { hovering in
-                        self.updateResizeCursor(hovering: hovering, edge: .bottom)
-                    }
-            }
-
-            HStack(spacing: 0) {
-                Color.clear
-                    .frame(width: Layout.miniPlayerResizeEdgeThickness)
-                    .contentShape(Rectangle())
-                    .gesture(self.resizeGesture(for: .left))
-                    .onHover { hovering in
-                        self.updateResizeCursor(hovering: hovering, edge: .left)
-                    }
-
-                Spacer(minLength: 0)
-
-                Color.clear
-                    .frame(width: Layout.miniPlayerResizeEdgeThickness)
-                    .contentShape(Rectangle())
-                    .gesture(self.resizeGesture(for: .right))
-                    .onHover { hovering in
-                        self.updateResizeCursor(hovering: hovering, edge: .right)
-                    }
-            }
-        }
-        .allowsHitTesting(true)
-    }
-
-    private func resizeGesture(for edge: MiniPlayerResizeEdge) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                self.resizeMiniPlayer(using: value, edge: edge)
-            }
-            .onEnded { _ in
-                self.miniPlayerResizeStartWidth = nil
-            }
-    }
-
-    private func resizeMiniPlayer(using value: DragGesture.Value, edge: MiniPlayerResizeEdge) {
-        if self.miniPlayerResizeStartWidth == nil {
-            self.miniPlayerResizeStartWidth = self.miniPlayerWidth
-        }
-
-        let dominantDelta: CGFloat = switch edge {
-        case .left:
-            -value.translation.width
-        case .right:
-            value.translation.width
-        case .top:
-            -value.translation.height * self.miniPlayerAspectRatio
-        case .bottom:
-            value.translation.height * self.miniPlayerAspectRatio
-        }
-
-        let baseWidth = self.miniPlayerResizeStartWidth ?? self.miniPlayerWidth
-        let proposedWidth = baseWidth + dominantDelta
-
-        self.miniPlayerWidth = min(
-            max(proposedWidth, Layout.miniPlayerMinWidth),
-            Layout.miniPlayerMaxWidth
+        MiniPlayerResizeOverlayView(
+            width: self.$miniPlayerWidth,
+            aspectRatio: self.miniPlayerAspectRatio,
+            minWidth: Layout.miniPlayerMinWidth,
+            maxWidth: Layout.miniPlayerMaxWidth,
+            edgeThickness: Layout.miniPlayerResizeEdgeThickness
         )
     }
 
-    private func updateResizeCursor(hovering: Bool, edge: MiniPlayerResizeEdge) {
-        guard hovering else {
-            NSCursor.arrow.set()
-            return
-        }
-
-        switch edge {
-        case .left, .right:
-            NSCursor.resizeLeftRight.set()
-        case .top, .bottom:
-            NSCursor.resizeUpDown.set()
-        }
+    private var shouldShowNoVideoHint: Bool {
+        self.playerService.showMiniPlayer
+            && self.playerService.pendingPlayVideoId != nil
+            && (!self.playerService.currentTrackHasVideo || self.playerService.miniPlayerVideoAspectRatio == nil)
     }
 
     private func detailView(for item: NavigationItem?, client _: any YTMusicClientProtocol) -> some View {
@@ -717,4 +655,140 @@ enum NavigationItem: String, Hashable, CaseIterable, Identifiable {
         .environment(PlayerService())
         .environment(WebKitManager.shared)
         .environment(accountService)
+}
+
+private struct MiniPlayerResizeOverlayView: NSViewRepresentable {
+    @Binding var width: CGFloat
+
+    let aspectRatio: CGFloat
+    let minWidth: CGFloat
+    let maxWidth: CGFloat
+    let edgeThickness: CGFloat
+
+    func makeNSView(context: Context) -> MiniPlayerResizeView {
+        let view = MiniPlayerResizeView(frame: .zero)
+        view.onWidthChange = { newWidth in
+            self.width = newWidth
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: MiniPlayerResizeView, context _: Context) {
+        nsView.currentWidth = self.width
+        nsView.aspectRatio = self.aspectRatio
+        nsView.minWidth = self.minWidth
+        nsView.maxWidth = self.maxWidth
+        nsView.edgeThickness = self.edgeThickness
+        nsView.onWidthChange = { newWidth in
+            self.width = newWidth
+        }
+        nsView.needsDisplay = true
+        nsView.window?.invalidateCursorRects(for: nsView)
+    }
+}
+
+private final class MiniPlayerResizeView: NSView {
+    enum ResizeEdge {
+        case left
+        case right
+        case top
+        case bottom
+    }
+
+    var currentWidth: CGFloat = 320
+    var aspectRatio: CGFloat = 16.0 / 9.0
+    var minWidth: CGFloat = 220
+    var maxWidth: CGFloat = 760
+    var edgeThickness: CGFloat = 24
+    var onWidthChange: ((CGFloat) -> Void)?
+
+    private var activeEdge: ResizeEdge?
+    private var dragStartPoint: NSPoint = .zero
+    private var dragStartWidth: CGFloat = 320
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        self.edge(at: point) == nil ? nil : self
+    }
+
+    override func resetCursorRects() {
+        self.discardCursorRects()
+
+        let edge = self.edgeThickness
+        let horizontalWidth = max(self.bounds.width - (2 * edge), 1)
+        let verticalHeight = max(self.bounds.height - (2 * edge), 1)
+
+        self.addCursorRect(
+            NSRect(x: edge, y: self.bounds.height - edge, width: horizontalWidth, height: edge),
+            cursor: .resizeUpDown
+        )
+        self.addCursorRect(
+            NSRect(x: edge, y: 0, width: horizontalWidth, height: edge),
+            cursor: .resizeUpDown
+        )
+        self.addCursorRect(
+            NSRect(x: 0, y: edge, width: edge, height: verticalHeight),
+            cursor: .resizeLeftRight
+        )
+        self.addCursorRect(
+            NSRect(x: self.bounds.width - edge, y: edge, width: edge, height: verticalHeight),
+            cursor: .resizeLeftRight
+        )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = self.convert(event.locationInWindow, from: nil)
+        guard let edge = self.edge(at: point) else { return }
+
+        self.activeEdge = edge
+        self.dragStartPoint = point
+        self.dragStartWidth = self.currentWidth
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let activeEdge else { return }
+
+        let point = self.convert(event.locationInWindow, from: nil)
+        let deltaX = point.x - self.dragStartPoint.x
+        let deltaY = point.y - self.dragStartPoint.y
+
+        let dominantDelta: CGFloat = switch activeEdge {
+        case .left:
+            -deltaX
+        case .right:
+            deltaX
+        case .top:
+            deltaY * self.aspectRatio
+        case .bottom:
+            -deltaY * self.aspectRatio
+        }
+
+        let proposedWidth = self.dragStartWidth + dominantDelta
+        let clampedWidth = min(max(proposedWidth, self.minWidth), self.maxWidth)
+        self.onWidthChange?(clampedWidth)
+    }
+
+    override func mouseUp(with _: NSEvent) {
+        self.activeEdge = nil
+    }
+
+    private func edge(at point: NSPoint) -> ResizeEdge? {
+        let edge = self.edgeThickness
+        let leftDistance = point.x
+        let rightDistance = self.bounds.width - point.x
+        let topDistance = self.bounds.height - point.y
+        let bottomDistance = point.y
+
+        let candidates: [(ResizeEdge, CGFloat)] = [
+            (.left, leftDistance),
+            (.right, rightDistance),
+            (.top, topDistance),
+            (.bottom, bottomDistance),
+        ]
+
+        guard let nearest = candidates.min(by: { $0.1 < $1.1 }), nearest.1 <= edge else {
+            return nil
+        }
+
+        return nearest.0
+    }
 }

@@ -336,12 +336,21 @@ final class SingletonPlayerWebView {
     /// Updates the DOM presentation for the mini player overlay.
     /// When expanded, the page chrome is hidden and the video surface is prioritized.
     func updateMiniPlayerPresentation(isExpanded: Bool, prefersVideo: Bool, viewportSize: CGSize) {
+        let previousIsExpanded = self.miniPlayerPresentationEnabled
+        let previousPrefersVideo = self.miniPlayerPrefersVideo
+
         self.miniPlayerPresentationEnabled = isExpanded
         self.miniPlayerPrefersVideo = prefersVideo
         self.miniPlayerViewportSize = CGSize(
             width: max(1, viewportSize.width),
             height: max(1, viewportSize.height)
         )
+
+        // Ignore pure size changes while staying expanded; the container now scales with 100% sizing.
+        guard previousIsExpanded != isExpanded || previousPrefersVideo != prefersVideo else {
+            return
+        }
+
         self.applyMiniPlayerPresentationScript()
     }
 
@@ -355,15 +364,11 @@ final class SingletonPlayerWebView {
 
         let isExpandedLiteral = self.miniPlayerPresentationEnabled ? "true" : "false"
         let prefersVideoLiteral = self.miniPlayerPrefersVideo ? "true" : "false"
-        let viewportWidth = Int(self.miniPlayerViewportSize.width.rounded())
-        let viewportHeight = Int(self.miniPlayerViewportSize.height.rounded())
 
         let script = """
             (function() {
                 const enabled = \(isExpandedLiteral);
                 const prefersVideo = \(prefersVideoLiteral);
-                const viewportWidth = \(viewportWidth);
-                const viewportHeight = \(viewportHeight);
 
                 const styleId = 'kaset-mini-player-video-style';
                 const containerId = 'kaset-video-container';
@@ -392,6 +397,12 @@ final class SingletonPlayerWebView {
                         html, body, ytmusic-app, #layout, #content, #contents {
                             background: #000 !important;
                             overflow: hidden !important;
+                            pointer-events: none !important;
+                            cursor: default !important;
+                        }
+
+                        *, *::before, *::after {
+                            cursor: default !important;
                         }
 
                         ytmusic-nav-bar,
@@ -414,10 +425,9 @@ final class SingletonPlayerWebView {
 
                         #${containerId} {
                             position: fixed !important;
-                            top: 0 !important;
-                            left: 0 !important;
-                            width: ${viewportWidth}px !important;
-                            height: ${viewportHeight}px !important;
+                            inset: 0 !important;
+                            width: 100% !important;
+                            height: 100% !important;
                             background: #000 !important;
                             z-index: 2147483646 !important;
                             overflow: hidden !important;
@@ -427,7 +437,7 @@ final class SingletonPlayerWebView {
                         #${containerId} video {
                             width: 100% !important;
                             height: 100% !important;
-                            object-fit: cover !important;
+                            object-fit: contain !important;
                             background: #000 !important;
                             pointer-events: none !important;
                         }
