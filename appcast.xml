@@ -3,15 +3,15 @@
     <channel>
         <title>Kaset</title>
         <item>
-            <title>0.2</title>
-            <pubDate>Sat, 04 Apr 2026 13:56:08 +0200</pubDate>
+            <title>0.3</title>
+            <pubDate>Sat, 11 Apr 2026 22:29:52 +0200</pubDate>
             <link>https://github.com/popcornfuzzy/kaset/releases</link>
-            <sparkle:fullReleaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.2</sparkle:fullReleaseNotesLink>
-            <sparkle:version>2</sparkle:version>
-            <sparkle:shortVersionString>0.2</sparkle:shortVersionString>
+            <sparkle:fullReleaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.3</sparkle:fullReleaseNotesLink>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.2/kaset-v0.2.dmg" length="4236288" type="application/octet-stream" sparkle:edSignature="9TS7feDzHymlOPp9t0d0rvhhjJw5mSNhWFtzOaPlZioQABg3LubN736wfhgRWp2q8OykorPqvn8yCx2k+68KBw=="/>
+            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.3/kaset-v0.3.dmg" length="4325888" type="application/octet-stream" sparkle:edSignature="8IYk2Sf+xblof3JtC07uKhv9DH00t4ALFclXDallvcFyL+Maz3ZTb8Oyc0+3a4Dm1n86B/MzjQfQkZXfnFV7DQ=="/>
         </item>
     </channel>
 </rss>

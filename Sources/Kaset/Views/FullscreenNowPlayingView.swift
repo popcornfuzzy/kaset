@@ -688,6 +688,8 @@ private struct FullscreenPauseDotsLineView: View {
         .padding(.vertical, 13)
         .opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered))
         .scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading)
+        .animation(.easeInOut(duration: 0.35), value: self.dotStatuses)
+        .animation(.easeInOut(duration: 0.35), value: self.status)
     }
 
     @ViewBuilder
@@ -722,7 +724,7 @@ private struct FullscreenPauseDotsLineView: View {
         case .active:
             1.0
         case .sung:
-            0.68
+            0.65
         }
     }
 
