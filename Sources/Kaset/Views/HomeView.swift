@@ -7,6 +7,7 @@ struct HomeView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @State private var navigationPath = NavigationPath()
     @State private var networkMonitor = NetworkMonitor.shared
 
@@ -149,6 +150,14 @@ struct HomeView: View {
             Divider()
 
             AddToQueueContextMenu(song: song, playerService: self.playerService)
+
+            Divider()
+
+            AddToPlaylistContextMenu(
+                song: song,
+                client: self.viewModel.client,
+                libraryViewModel: self.libraryViewModel
+            )
 
             Divider()
 

@@ -9,6 +9,7 @@ struct PlayerBar: View {
 
     @Environment(PlayerService.self) private var playerService
     @Environment(WebKitManager.self) private var webKitManager
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
     /// Namespace for glass effect morphing and unioning.
     @Namespace private var playerNamespace
@@ -475,6 +476,22 @@ struct PlayerBar: View {
             .accessibilityLabel(String(localized: "Like"))
             .accessibilityValue(self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked"))
             .disabled(self.playerService.currentTrack == nil)
+
+
+            // Add to Playlist button
+            if let currentTrack = self.playerService.currentTrack,
+               let client = self.libraryViewModel?.client ?? self.playerService.ytMusicClient
+            {
+                AddToPlaylistPopoverButton(
+                    song: currentTrack,
+                    client: client,
+                    libraryViewModel: self.libraryViewModel,
+                    icon: "plus.circle",
+                    iconSize: 15,
+                    usePressableStyle: true
+                )
+                .accessibilityLabel(String(localized: "Add to Playlist"))
+            }
 
             if !self.playerService.showFullscreenNowPlaying {
                 // Lyrics button

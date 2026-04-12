@@ -12,6 +12,7 @@ struct PlaylistDetailView: View {
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(\.dismiss) private var dismiss
 
     /// Tracks whether this playlist has been added to library in this session.
     @State private var isAddedToLibrary: Bool = false
@@ -30,6 +31,30 @@ struct PlaylistDetailView: View {
 
     /// Error message from refine operation.
     @State private var refineError: String?
+
+    /// Whether playlist rename popover is visible.
+    @State private var showRenamePlaylistPopover: Bool = false
+
+    /// Whether delete confirmation is visible.
+    @State private var showDeletePlaylistAlert: Bool = false
+
+    /// Draft title for rename action.
+    @State private var playlistTitleDraft: String = ""
+
+    /// Whether a rename request is currently in progress.
+    @State private var isRenamingPlaylist: Bool = false
+
+    /// Whether a delete request is currently in progress.
+    @State private var isDeletingPlaylist: Bool = false
+
+    /// Error message for playlist management actions.
+    @State private var playlistActionError: String?
+
+    /// Row key currently showing Add-to-Playlist popover (opened from context menu action).
+    @State private var addToPlaylistPopoverRowKey: String?
+
+    /// Song currently selected for Add-to-Playlist popover.
+    @State private var addToPlaylistPopoverSong: Song?
 
     /// Computed property to check if playlist is in library.
     private var isInLibrary: Bool {
@@ -63,7 +88,7 @@ struct PlaylistDetailView: View {
             }
         }
         .accentBackground(from: self.viewModel.playlistDetail?.thumbnailURL?.highQualityThumbnailURL)
-        .navigationTitle(self.playlist.title)
+        .navigationTitle(self.viewModel.playlistDetail?.title ?? self.playlist.title)
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
@@ -239,19 +264,66 @@ struct PlaylistDetailView: View {
 
                 // Add/Remove Library button
                 let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
-                Button {
-                    self.toggleLibrary()
-                } label: {
-                    Label(
-                        currentlyInLibrary ? String(localized: "Added to Library") : String(localized: "Add to Library"),
-                        systemImage: currentlyInLibrary ? "checkmark.circle.fill" : "plus.circle"
-                    )
+                if !currentlyInLibrary {
+                    Button {
+                        self.toggleLibrary()
+                    } label: {
+                        Label(String(localized: "Add to Library"), systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
 
                 // Refine Playlist button (AI-powered)
                 if !detail.isAlbum {
+                    Menu {
+                        Button {
+                            self.playlistTitleDraft = detail.title
+                            self.playlistActionError = nil
+                            self.showRenamePlaylistPopover = true
+                        } label: {
+                            Label("Rename Playlist", systemImage: "pencil")
+                        }
+
+                        Button(role: .destructive) {
+                            self.playlistActionError = nil
+                            self.showDeletePlaylistAlert = true
+                        } label: {
+                            Label("Delete Playlist", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(self.isRenamingPlaylist || self.isDeletingPlaylist)
+                    .popover(isPresented: self.$showRenamePlaylistPopover, arrowEdge: .top) {
+                        self.renamePlaylistPopover
+                    }
+                    .alert("Delete Playlist?", isPresented: self.$showDeletePlaylistAlert) {
+                        Button("Cancel", role: .cancel) {}
+                        Button("Delete", role: .destructive) {
+                            Task {
+                                await self.deletePlaylist()
+                            }
+                        }
+                        .disabled(self.isDeletingPlaylist)
+                    } message: {
+                        Text("This removes the playlist from YouTube Music. This action cannot be undone.")
+                    }
+
+                    Button {
+                        Task {
+                            await self.viewModel.refresh()
+                            await self.libraryViewModel?.refreshFromNetwork()
+                        }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
+
                     Button {
                         self.showRefineSheet = true
                     } label: {
@@ -266,6 +338,13 @@ struct PlaylistDetailView: View {
             Text(self.metadataText(for: detail))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            if let playlistActionError {
+                Text(playlistActionError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -275,6 +354,46 @@ struct PlaylistDetailView: View {
         }
 
         return detail.trackCountDisplay
+    }
+
+    private var renamePlaylistPopover: some View {
+        GlassEffectContainer(spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Rename Playlist")
+                    .font(.headline)
+
+                TextField("Playlist title", text: self.$playlistTitleDraft)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Spacer()
+
+                    Button("Cancel") {
+                        self.showRenamePlaylistPopover = false
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        Task {
+                            await self.renamePlaylist()
+                        }
+                    } label: {
+                        if self.isRenamingPlaylist {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text("Save")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(self.isRenamingPlaylist || self.playlistTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(12)
+            .frame(width: 300)
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
+        }
     }
 
     private func tracksView(_ tracks: [Song], isAlbum: Bool, author: String?, fallbackAlbum: Album? = nil) -> some View {
@@ -310,122 +429,205 @@ struct PlaylistDetailView: View {
     }
 
     private func trackRow(_ track: Song, index: Int, tracks: [Song], isAlbum: Bool, author: String?, fallbackAlbum: Album? = nil) -> some View {
-        Button {
-            self.playTrackInQueue(tracks: tracks, startingAt: index, fallbackArtist: author, fallbackAlbum: fallbackAlbum)
-        } label: {
-            HStack(spacing: 12) {
-                // Now playing indicator or index
-                Group {
-                    if self.playerService.currentTrack?.videoId == track.videoId {
-                        NowPlayingIndicator(isPlaying: self.playerService.isPlaying, size: 14)
-                    } else {
-                        Text("\(index + 1)")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 28, alignment: .trailing)
-
-                // Thumbnail - only show for playlists (different album art per track)
-                // Albums share the same artwork, so we hide per-track thumbnails
-                if !isAlbum {
-                    CachedAsyncImage(url: track.thumbnailURL) { image in
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Rectangle()
-                            .fill(.quaternary)
-                    }
-                    .frame(width: 40, height: 40)
-                    .clipShape(.rect(cornerRadius: 4))
-                }
-
-                // Title and artist
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(track.title)
-                        .font(.system(size: 14))
-                        .foregroundStyle(self.playerService.currentTrack?.videoId == track.videoId ? .red : .primary)
-                        .lineLimit(1)
-
-                    Text(track.artistsDisplay)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Duration
-                Text(track.durationDisplay)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 45, alignment: .trailing)
-            }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.interactiveRow(cornerRadius: 6))
-        .staggeredAppearance(index: min(index, 10))
-        .contextMenu {
+        HStack(spacing: 8) {
             Button {
                 self.playTrackInQueue(tracks: tracks, startingAt: index, fallbackArtist: author, fallbackAlbum: fallbackAlbum)
             } label: {
-                Label("Play", systemImage: "play.fill")
-            }
+                HStack(spacing: 12) {
+                    // Now playing indicator or index
+                    Group {
+                        if self.playerService.currentTrack?.videoId == track.videoId {
+                            NowPlayingIndicator(isPlaying: self.playerService.isPlaying, size: 14)
+                        } else {
+                            Text("\(index + 1)")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 28, alignment: .trailing)
 
-            Divider()
+                    // Thumbnail - only show for playlists (different album art per track)
+                    // Albums share the same artwork, so we hide per-track thumbnails
+                    if !isAlbum {
+                        CachedAsyncImage(url: track.thumbnailURL) { image in
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } placeholder: {
+                            Rectangle()
+                                .fill(.quaternary)
+                        }
+                        .frame(width: 40, height: 40)
+                        .clipShape(.rect(cornerRadius: 4))
+                    }
 
-            FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
+                    // Title and artist
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.title)
+                            .font(.system(size: 14))
+                            .foregroundStyle(self.playerService.currentTrack?.videoId == track.videoId ? .red : .primary)
+                            .lineLimit(1)
 
-            Divider()
+                        Text(track.artistsDisplay)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
-
-            Divider()
-
-            StartRadioContextMenu.menuItem(for: track, playerService: self.playerService)
-
-            Divider()
-
-            Button {
-                SongActionsHelper.addToLibrary(track, playerService: self.playerService)
-            } label: {
-                Label("Add to Library", systemImage: "plus.circle")
-            }
-
-            Divider()
-
-            ShareContextMenu.menuItem(for: track)
-
-            Divider()
-
-            AddToQueueContextMenu(song: track, playerService: self.playerService)
-
-            Divider()
-
-            // Go to Artist - show first artist with valid ID
-            if let artist = track.artists.first(where: { $0.hasNavigableId }) {
-                NavigationLink(value: artist) {
-                    Label("Go to Artist", systemImage: "person")
+                    // Duration
+                    Text(track.durationDisplay)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 45, alignment: .trailing)
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
             }
-
-            // Go to Album - show if album has valid browse ID
-            if let album = track.album, album.hasNavigableId {
-                let playlist = Playlist(
-                    id: album.id,
-                    title: album.title,
-                    description: nil,
-                    thumbnailURL: album.thumbnailURL ?? track.thumbnailURL,
-                    trackCount: album.trackCount,
-                    author: album.artistsDisplay
+            .buttonStyle(.interactiveRow(cornerRadius: 6))
+            .staggeredAppearance(index: min(index, 10))
+            .contextMenu {
+                self.trackRowMenuContent(
+                    track: track,
+                    index: index,
+                    tracks: tracks,
+                    isAlbum: isAlbum,
+                    author: author,
+                    fallbackAlbum: fallbackAlbum
                 )
-                NavigationLink(value: playlist) {
-                    Label("Go to Album", systemImage: "square.stack")
+            }
+            .popover(isPresented: self.addToPlaylistPopoverBinding(for: track, index: index), arrowEdge: .top) {
+                if let song = self.addToPlaylistPopoverSong {
+                    AddToPlaylistPopoverContent(
+                        song: song,
+                        client: self.viewModel.client,
+                        libraryViewModel: self.libraryViewModel
+                    )
                 }
+            }
+
+            Menu {
+                self.trackRowMenuContent(
+                    track: track,
+                    index: index,
+                    tracks: tracks,
+                    isAlbum: isAlbum,
+                    author: author,
+                    fallbackAlbum: fallbackAlbum
+                )
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func trackRowMenuContent(
+        track: Song,
+        index: Int,
+        tracks: [Song],
+        isAlbum: Bool,
+        author: String?,
+        fallbackAlbum: Album?
+    ) -> some View {
+        Button {
+            self.playTrackInQueue(tracks: tracks, startingAt: index, fallbackArtist: author, fallbackAlbum: fallbackAlbum)
+        } label: {
+            Label("Play", systemImage: "play.fill")
+        }
+
+        Divider()
+
+        FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
+
+        Divider()
+
+        LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
+
+        Divider()
+
+        StartRadioContextMenu.menuItem(for: track, playerService: self.playerService)
+
+        Divider()
+
+        Button {
+            SongActionsHelper.addToLibrary(track, playerService: self.playerService)
+        } label: {
+            Label("Add to Library", systemImage: "plus.circle")
+        }
+
+        Divider()
+
+        ShareContextMenu.menuItem(for: track)
+
+        Divider()
+
+        AddToQueueContextMenu(song: track, playerService: self.playerService)
+
+        Divider()
+
+        Button {
+            self.addToPlaylistPopoverSong = track
+            self.addToPlaylistPopoverRowKey = self.trackRowKey(index: index, track: track)
+        } label: {
+            Label("Add to Playlist", systemImage: "text.badge.plus")
+        }
+
+        if !isAlbum {
+            Divider()
+
+            Button(role: .destructive) {
+                Task {
+                    await self.removeTrackFromCurrentPlaylist(track)
+                }
+            } label: {
+                Label("Remove from Playlist", systemImage: "minus.circle")
             }
         }
+
+        Divider()
+
+        if let artist = track.artists.first(where: { $0.hasNavigableId }) {
+            NavigationLink(value: artist) {
+                Label("Go to Artist", systemImage: "person")
+            }
+        }
+
+        if let album = track.album, album.hasNavigableId {
+            let playlist = Playlist(
+                id: album.id,
+                title: album.title,
+                description: nil,
+                thumbnailURL: album.thumbnailURL ?? track.thumbnailURL,
+                trackCount: album.trackCount,
+                author: album.artistsDisplay
+            )
+            NavigationLink(value: playlist) {
+                Label("Go to Album", systemImage: "square.stack")
+            }
+        }
+    }
+
+    private func trackRowKey(index: Int, track: Song) -> String {
+        "\(index)-\(track.videoId)"
+    }
+
+    private func addToPlaylistPopoverBinding(for track: Song, index: Int) -> Binding<Bool> {
+        let rowKey = self.trackRowKey(index: index, track: track)
+        return Binding(
+            get: { self.addToPlaylistPopoverRowKey == rowKey },
+            set: { isPresented in
+                if !isPresented, self.addToPlaylistPopoverRowKey == rowKey {
+                    self.addToPlaylistPopoverRowKey = nil
+                    self.addToPlaylistPopoverSong = nil
+                }
+            }
+        )
     }
 
     // MARK: - Actions
@@ -520,6 +722,78 @@ struct PlaylistDetailView: View {
                 )
                 self.isAddedToLibrary = true
             }
+        }
+    }
+
+    private func renamePlaylist() async {
+        let trimmedTitle = self.playlistTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+
+        self.isRenamingPlaylist = true
+        defer { self.isRenamingPlaylist = false }
+
+        do {
+            try await self.viewModel.client.renamePlaylist(playlistId: self.playlist.id, newTitle: trimmedTitle)
+            self.libraryViewModel?.updatePlaylistTitle(playlistId: self.playlist.id, newTitle: trimmedTitle)
+            self.libraryViewModel?.markNeedsReloadOnActivation()
+            self.playlistActionError = nil
+            self.showRenamePlaylistPopover = false
+            await self.viewModel.refresh()
+            await self.libraryViewModel?.refreshFromNetwork()
+        } catch {
+            self.playlistActionError = error.localizedDescription
+            DiagnosticsLogger.api.error("Failed to rename playlist: \(error.localizedDescription)")
+        }
+    }
+
+    private func removeTrackFromCurrentPlaylist(_ track: Song) async {
+        do {
+            if Self.isLikedMusicPlaylistId(self.playlist.id) {
+                try await self.viewModel.client.rateSong(videoId: track.videoId, rating: .indifferent)
+            } else {
+                try await self.viewModel.client.removeSongFromPlaylist(
+                    videoId: track.videoId,
+                    playlistId: self.playlist.id,
+                    setVideoId: nil
+                )
+            }
+
+            self.playlistActionError = nil
+            self.libraryViewModel?.markNeedsReloadOnActivation()
+            await self.viewModel.refresh()
+            await self.libraryViewModel?.refreshFromNetwork()
+        } catch {
+            self.playlistActionError = error.localizedDescription
+            DiagnosticsLogger.api.error("Failed to remove track from playlist: \(error.localizedDescription)")
+        }
+    }
+
+    private static func isLikedMusicPlaylistId(_ playlistId: String) -> Bool {
+        if playlistId == "LM" || playlistId == "VLLM" {
+            return true
+        }
+
+        if playlistId.hasPrefix("VL") {
+            return String(playlistId.dropFirst(2)) == "LM"
+        }
+
+        return false
+    }
+
+    private func deletePlaylist() async {
+        self.isDeletingPlaylist = true
+        defer { self.isDeletingPlaylist = false }
+
+        do {
+            try await self.viewModel.client.deletePlaylist(playlistId: self.playlist.id)
+            self.libraryViewModel?.removeFromLibrary(playlistId: self.playlist.id)
+            self.libraryViewModel?.markNeedsReloadOnActivation()
+            self.playlistActionError = nil
+            await self.libraryViewModel?.refreshFromNetwork()
+            self.dismiss()
+        } catch {
+            self.playlistActionError = error.localizedDescription
+            DiagnosticsLogger.api.error("Failed to delete playlist: \(error.localizedDescription)")
         }
     }
 

@@ -48,6 +48,7 @@ struct LibraryView: View {
 
     @State private var navigationPath = NavigationPath()
     @State private var selectedFilter: LibraryFilter = .all
+    @State private var showCreatePlaylistPopover = false
 
     var body: some View {
         NavigationStack(path: self.$navigationPath) {
@@ -57,7 +58,7 @@ struct LibraryView: View {
                         title: String(localized: "No Connection"),
                         message: String(localized: "Please check your internet connection and try again.")
                     ) {
-                        Task { await self.viewModel.refresh() }
+                        Task { await self.viewModel.refreshFromNetwork() }
                     }
                 } else {
                     switch self.viewModel.loadingState {
@@ -67,7 +68,7 @@ struct LibraryView: View {
                         self.contentView
                     case let .error(error):
                         ErrorView(error: error) {
-                            Task { await self.viewModel.refresh() }
+                            Task { await self.viewModel.refreshFromNetwork() }
                         }
                     }
                 }
@@ -112,7 +113,7 @@ struct LibraryView: View {
             await self.viewModel.reloadIfNeededOnActivation()
         }
         .refreshable {
-            await self.viewModel.refresh()
+            await self.viewModel.refreshFromNetwork()
         }
     }
 
@@ -138,6 +139,24 @@ struct LibraryView: View {
                 self.filterChip(filter)
             }
             Spacer()
+
+            Button {
+                Task {
+                    await self.viewModel.refreshFromNetwork()
+                }
+            } label: {
+                if self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .disabled(self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
+            .help(String(localized: "Refresh Library"))
         }
     }
 
@@ -183,13 +202,19 @@ struct LibraryView: View {
     }
 
     private var libraryGrid: some View {
-        Group {
-            if self.filteredItems.isEmpty {
+        let shouldShowCreatePlaylistCard = self.selectedFilter == .all || self.selectedFilter == .playlists
+
+        return Group {
+            if self.filteredItems.isEmpty, !shouldShowCreatePlaylistCard {
                 self.emptyStateView
             } else {
                 LazyVGrid(columns: [
                     GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 16),
                 ], spacing: 16) {
+                    if shouldShowCreatePlaylistCard {
+                        self.createPlaylistCard
+                    }
+
                     ForEach(self.filteredItems) { item in
                         switch item {
                         case let .playlist(playlist):
@@ -202,6 +227,41 @@ struct LibraryView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var createPlaylistCard: some View {
+        Button {
+            self.showCreatePlaylistPopover = true
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 160, height: 160)
+
+                Text("Add Playlist")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(width: 160, alignment: .leading)
+
+                Text("0 songs", comment: "Playlist track count")
+                    .font(.system(size: 11))
+                    .opacity(0)
+            }
+            .frame(width: 160, height: 214, alignment: .topLeading)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: self.$showCreatePlaylistPopover, arrowEdge: .top) {
+            CreatePlaylistPopover(
+                client: self.viewModel.client,
+                libraryViewModel: self.viewModel
+            )
         }
     }
 
@@ -251,7 +311,10 @@ struct LibraryView: View {
     }
 
     private func playlistCard(_ playlist: Playlist) -> some View {
-        Button {
+        let trackCountText = playlist.trackCount.map { "\($0) songs" } ?? "0 songs"
+        let shouldShowTrackCount = playlist.trackCount != nil
+
+        return Button {
             self.navigationPath.append(playlist)
         } label: {
             VStack(alignment: .leading, spacing: 8) {
@@ -280,12 +343,12 @@ struct LibraryView: View {
                     .frame(width: 160, alignment: .leading)
 
                 // Track count
-                if let count = playlist.trackCount {
-                    Text("\(count) songs", comment: "Playlist track count")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+                Text(trackCountText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .opacity(shouldShowTrackCount ? 1 : 0)
             }
+            .frame(width: 160, height: 214, alignment: .topLeading)
         }
         .buttonStyle(.plain)
     }

@@ -227,6 +227,135 @@ struct PlaylistParserTests {
         #expect(response.continuationToken == nil)
     }
 
+    // MARK: - Playlist Mutations Parsing
+
+    @Test("Parse add-to-playlist entries deduplicates and infers membership")
+    func parseAddToPlaylistEntriesDeduplicates() {
+        let data: [String: Any] = [
+            "outer": [
+                "items": [
+                    [
+                        "playlistAddToOptionRenderer": [
+                            "playlistId": "VL001",
+                            "title": ["runs": [["text": "Chill Mix"]]],
+                            "shortBylineText": ["runs": [["text": "You • 20 songs"]]],
+                            "isSelected": true,
+                            "addToPlaylistServiceEndpoint": [
+                                "playlistEditEndpoint": [
+                                    "actions": [["action": "ACTION_ADD_VIDEO"]],
+                                ],
+                            ],
+                            "removeFromPlaylistServiceEndpoint": [
+                                "playlistEditEndpoint": [
+                                    "actions": [["action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID"]],
+                                ],
+                            ],
+                        ],
+                    ],
+                    [
+                        "nested": [
+                            "playlistAddToOptionRenderer": [
+                                "playlistId": "VL002",
+                                "title": ["runs": [["text": "Roadtrip"]]],
+                                "shortBylineText": ["runs": [["text": "35 songs"]]],
+                                "addToPlaylistServiceEndpoint": [
+                                    "playlistEditEndpoint": [
+                                        "actions": [["action": "ACTION_ADD_VIDEO"]],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    // Duplicate playlist ID should be ignored
+                    [
+                        "playlistAddToOptionRenderer": [
+                            "playlistId": "VL001",
+                            "title": ["runs": [["text": "Duplicate Chill Mix"]]],
+                            "addToPlaylistServiceEndpoint": [
+                                "playlistEditEndpoint": [
+                                    "actions": [["action": "ACTION_ADD_VIDEO"]],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        let entries = PlaylistParser.parseAddToPlaylistEntries(data)
+
+        #expect(entries.count == 2)
+        #expect(entries.map(\.id) == ["VL001", "VL002"])
+        #expect(entries[0].title == "Chill Mix")
+        #expect(entries[0].subtitle == "You • 20 songs")
+        #expect(entries[0].canAddVideo == true)
+        #expect(entries[0].canRemoveVideoById == true)
+        #expect(entries[0].containsVideo == true)
+        #expect(entries[1].canRemoveVideoById == false)
+        #expect(entries[1].containsVideo == false)
+    }
+
+    @Test("Parse add-to-playlist entries detects membership from selected state")
+    func parseAddToPlaylistEntriesDetectsMembershipFromSelectedState() {
+        let data: [String: Any] = [
+            "playlists": [
+                [
+                    "playlistAddToOptionRenderer": [
+                        "playlistId": "LM",
+                        "title": ["runs": [["text": "Liked Music"]]],
+                        "isSelected": true,
+                    ],
+                ],
+            ],
+        ]
+
+        let entries = PlaylistParser.parseAddToPlaylistEntries(data)
+
+        #expect(entries.count == 1)
+        #expect(entries[0].id == "LM")
+        #expect(entries[0].containsVideo == true)
+    }
+
+    @Test("Parse created playlist from playlist/create response")
+    func parseCreatedPlaylistFromCreateResponse() {
+        let data: [String: Any] = [
+            "playlistId": "PLNEW123",
+            "actions": [[
+                "handlePlaylistCreationCommand": [
+                    "createdPlaylist": [
+                        "musicTwoRowItemRenderer": [
+                            "title": ["runs": [["text": "My New Playlist"]]],
+                            "subtitle": ["runs": [["text": "You • 1 song"]]],
+                            "thumbnailRenderer": [
+                                "musicThumbnailRenderer": [
+                                    "thumbnail": [
+                                        "thumbnails": [[
+                                            "url": "https://example.com/thumb.jpg",
+                                        ]],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ]],
+        ]
+
+        let playlist = PlaylistParser.parseCreatedPlaylist(data)
+
+        #expect(playlist?.id == "PLNEW123")
+        #expect(playlist?.title == "My New Playlist")
+        #expect(playlist?.author == "You")
+        #expect(playlist?.trackCount == 1)
+        #expect(playlist?.thumbnailURL?.absoluteString == "https://example.com/thumb.jpg")
+    }
+
+    @Test("Parse created playlist returns nil without playlist ID")
+    func parseCreatedPlaylistMissingPlaylistId() {
+        let playlist = PlaylistParser.parseCreatedPlaylist([:])
+        #expect(playlist == nil)
+    }
+
     // MARK: - Helpers
 
     private func makeLibraryResponseData(playlistCount: Int) -> [String: Any] {

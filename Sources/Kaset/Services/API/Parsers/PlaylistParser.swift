@@ -65,6 +65,132 @@ enum PlaylistParser {
         return LibraryContent(playlists: playlists, artists: artists, podcastShows: podcastShows)
     }
 
+    /// Parses playlist targets for the Add-to-Playlist flow.
+    static func parseAddToPlaylistEntries(_ data: [String: Any]) -> [AddToPlaylistEntry] {
+        var optionRenderers: [[String: Any]] = []
+        Self.collectPlaylistOptionRenderers(from: data, into: &optionRenderers)
+
+        var seenPlaylistIds: Set<String> = []
+        var entries: [AddToPlaylistEntry] = []
+
+        for renderer in optionRenderers {
+            guard let entry = Self.parseAddToPlaylistEntry(renderer) else { continue }
+            guard seenPlaylistIds.insert(entry.id).inserted else { continue }
+            entries.append(entry)
+        }
+
+        return entries
+    }
+
+    /// Parses a created playlist from the playlist/create endpoint response.
+    static func parseCreatedPlaylist(_ data: [String: Any]) -> Playlist? {
+        guard let playlistId = data["playlistId"] as? String else {
+            return nil
+        }
+
+        let createdRenderer = Self.extractCreatedPlaylistRenderer(from: data)
+        let title = createdRenderer.flatMap { ParsingHelpers.extractTitle(from: $0) } ?? "New Playlist"
+        let subtitle = createdRenderer.flatMap { ParsingHelpers.extractSubtitle(from: $0) }
+        let trackCount = subtitle.flatMap { ParsingHelpers.extractSongCount(from: $0) }
+        let author = subtitle?.components(separatedBy: " • ").first
+        let thumbnailURL = createdRenderer
+            .flatMap { ParsingHelpers.extractThumbnails(from: $0).last }
+            .flatMap(URL.init(string:))
+
+        return Playlist(
+            id: playlistId,
+            title: title,
+            description: nil,
+            thumbnailURL: thumbnailURL,
+            trackCount: trackCount,
+            author: author
+        )
+    }
+
+    private static func extractCreatedPlaylistRenderer(from data: [String: Any]) -> [String: Any]? {
+        guard let actions = data["actions"] as? [[String: Any]] else {
+            return nil
+        }
+
+        for action in actions {
+            guard let creationCommand = action["handlePlaylistCreationCommand"] as? [String: Any],
+                  let createdPlaylist = creationCommand["createdPlaylist"] as? [String: Any],
+                  let renderer = createdPlaylist["musicTwoRowItemRenderer"] as? [String: Any]
+            else {
+                continue
+            }
+
+            return renderer
+        }
+
+        return nil
+    }
+
+    private static func parseAddToPlaylistEntry(_ renderer: [String: Any]) -> AddToPlaylistEntry? {
+        guard let playlistId = renderer["playlistId"] as? String,
+              let title = ParsingHelpers.extractTitle(from: renderer)
+        else {
+            return nil
+        }
+
+        let subtitle = Self.extractRunsText(renderer["shortBylineText"] as? [String: Any])
+        let thumbnailURL = ParsingHelpers.extractThumbnails(from: renderer)
+            .last
+            .flatMap(URL.init(string:))
+
+        let addActions = ((renderer["addToPlaylistServiceEndpoint"] as? [String: Any])?["playlistEditEndpoint"] as? [String: Any])?["actions"] as? [[String: Any]] ?? []
+        let removeActions = ((renderer["removeFromPlaylistServiceEndpoint"] as? [String: Any])?["playlistEditEndpoint"] as? [String: Any])?["actions"] as? [[String: Any]] ?? []
+        let isSelected = renderer["isSelected"] as? Bool ?? false
+
+        let canAddVideo = addActions.contains { $0["action"] as? String == "ACTION_ADD_VIDEO" }
+        let canRemoveVideoById = removeActions.contains {
+            guard let action = $0["action"] as? String else { return false }
+            return action == "ACTION_REMOVE_VIDEO_BY_VIDEO_ID" || action == "ACTION_REMOVE_VIDEO"
+        }
+        let containsVideo = isSelected
+
+        return AddToPlaylistEntry(
+            id: playlistId,
+            title: title,
+            subtitle: subtitle,
+            thumbnailURL: thumbnailURL,
+            canAddVideo: canAddVideo,
+            canRemoveVideoById: canRemoveVideoById,
+            containsVideo: containsVideo
+        )
+    }
+
+    /// Recursively traverses response JSON to find all playlistAddToOptionRenderer nodes.
+    private static func collectPlaylistOptionRenderers(from node: Any, into renderers: inout [[String: Any]]) {
+        if let dict = node as? [String: Any] {
+            if let optionRenderer = dict["playlistAddToOptionRenderer"] as? [String: Any] {
+                renderers.append(optionRenderer)
+            }
+
+            for value in dict.values {
+                Self.collectPlaylistOptionRenderers(from: value, into: &renderers)
+            }
+            return
+        }
+
+        if let array = node as? [Any] {
+            for value in array {
+                Self.collectPlaylistOptionRenderers(from: value, into: &renderers)
+            }
+        }
+    }
+
+    private static func extractRunsText(_ node: [String: Any]?) -> String? {
+        guard let node,
+              let runs = node["runs"] as? [[String: Any]]
+        else {
+            return nil
+        }
+
+        let text = runs.compactMap { $0["text"] as? String }.joined()
+        return text.isEmpty ? nil : text
+    }
+
     /// Parses artists from the dedicated library artists browse response.
     static func parseLibraryArtists(_ data: [String: Any]) -> [Artist] {
         var artists: [Artist] = []
