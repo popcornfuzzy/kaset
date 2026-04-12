@@ -1,5 +1,38 @@
 import SwiftUI
 
+// MARK: - AddToPlaylistEntriesCache
+
+@MainActor
+private final class AddToPlaylistEntriesCache {
+    static let shared = AddToPlaylistEntriesCache()
+
+    private struct Entry {
+        let videoId: String
+        let entries: [AddToPlaylistEntry]
+        let timestamp: Date
+    }
+
+    private var cacheByAccount: [String: Entry] = [:]
+
+    private init() {}
+
+    func entries(videoId: String, accountID: String, maxAge: TimeInterval) -> [AddToPlaylistEntry]? {
+        guard let entry = self.cacheByAccount[accountID] else { return nil }
+        guard entry.videoId == videoId else { return nil }
+
+        if Date().timeIntervalSince(entry.timestamp) > maxAge {
+            self.cacheByAccount.removeValue(forKey: accountID)
+            return nil
+        }
+
+        return entry.entries
+    }
+
+    func setEntries(_ entries: [AddToPlaylistEntry], videoId: String, accountID: String) {
+        self.cacheByAccount[accountID] = Entry(videoId: videoId, entries: entries, timestamp: Date())
+    }
+}
+
 // MARK: - AddToPlaylistPopoverButton
 
 /// Reusable button that opens a popover for adding/removing a song to playlists.
@@ -110,6 +143,8 @@ struct AddToPlaylistPopoverContent: View {
     let song: Song
     let client: any YTMusicClientProtocol
     let libraryViewModel: LibraryViewModel?
+    private let membershipProbeLimit = 8
+    private let entriesCacheMaxAge: TimeInterval = 10 * 60
 
     @State private var entries: [AddToPlaylistEntry] = []
     @State private var loadingState = LoadingState.idle
@@ -117,6 +152,9 @@ struct AddToPlaylistPopoverContent: View {
     @State private var showCreateComposer = false
     @State private var createTitle = ""
     @State private var isCreating = false
+    @State private var resolvedMembershipByPlaylistId: [String: Bool] = [:]
+    @State private var probingMembershipPlaylistIds: Set<String> = []
+    @State private var isRefreshingLikedSongsMembership = false
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
@@ -209,9 +247,14 @@ struct AddToPlaylistPopoverContent: View {
                             if self.mutatingIds.contains(entry.id) {
                                 ProgressView()
                                     .controlSize(.small)
+                            } else if self.shouldShowMembershipLoading(for: entry) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .scaleEffect(0.8)
                             } else {
-                                Image(systemName: entry.containsVideo ? "checkmark.circle.fill" : "plus.circle")
-                                    .foregroundStyle(entry.containsVideo ? .red : .secondary)
+                                let containsVideo = self.containsVideo(for: entry)
+                                Image(systemName: containsVideo ? "checkmark.circle.fill" : "plus.circle")
+                                    .foregroundStyle(containsVideo ? .red : .secondary)
                             }
                         }
                         .padding(.horizontal, 8)
@@ -296,8 +339,11 @@ struct AddToPlaylistPopoverContent: View {
             return
         }
 
-        if entry.containsVideo, entry.canRemoveVideoById {
-            await self.removeSong(from: entry)
+        if self.containsVideo(for: entry) {
+            let removed = await self.removeSong(from: entry, showErrorOnFailure: false)
+            if !removed {
+                await self.addSong(to: entry)
+            }
         } else {
             await self.addSong(to: entry)
         }
@@ -307,32 +353,90 @@ struct AddToPlaylistPopoverContent: View {
         playlistId == "LM" || playlistId == "VLLM"
     }
 
+    private static func isAlreadyInPlaylistError(_ error: any Error) -> Bool {
+        let message: String = if let ytError = error as? YTMusicError,
+                                 case let .apiError(apiMessage, _) = ytError
+        {
+            apiMessage
+        } else {
+            error.localizedDescription
+        }
+
+        let lowercasedMessage = message.lowercased()
+        return (lowercasedMessage.contains("already") && lowercasedMessage.contains("playlist"))
+            || lowercasedMessage.contains("duplicate")
+    }
+
     private func toggleLikedSongsMembership(for entry: AddToPlaylistEntry) async {
         self.mutatingIds.insert(entry.id)
         defer { self.mutatingIds.remove(entry.id) }
 
+        let containsVideo = self.containsVideo(for: entry)
+        let finalStatus: LikeStatus = if containsVideo {
+            await SongLikeStatusManager.shared.unlike(self.song, client: self.client)
+        } else {
+            await SongLikeStatusManager.shared.like(self.song, client: self.client)
+        }
+
         do {
-            let rating: LikeStatus = entry.containsVideo ? .indifferent : .like
-            try await self.client.rateSong(videoId: self.song.videoId, rating: rating)
-            self.updateMembership(for: entry.id, containsVideo: !entry.containsVideo)
+            self.updateLikedSongsMembership(containsVideo: finalStatus == .like)
             self.libraryViewModel?.markNeedsReloadOnActivation()
-            Task {
-                try? await Task.sleep(for: .milliseconds(700))
-                await self.loadEntries()
-            }
-        } catch {
-            DiagnosticsLogger.api.error("Failed toggling Liked Songs membership: \(error.localizedDescription)")
-            self.loadingState = .error(LoadingError(from: error))
         }
     }
 
     private func loadEntries() async {
-        self.loadingState = .loading
+        if let cachedEntries = AddToPlaylistEntriesCache.shared.entries(
+            videoId: self.song.videoId,
+            accountID: self.activeAccountID,
+            maxAge: self.entriesCacheMaxAge
+        ) {
+            self.entries = cachedEntries
+            self.seedMembershipCacheFromEntries()
+            self.seedLikedSongsMembershipFromSongStatus()
+            self.loadingState = .loaded
+
+            Task {
+                await self.refreshEntriesFromNetwork(showLoadingIndicator: false)
+            }
+            return
+        }
+
+        await self.refreshEntriesFromNetwork(showLoadingIndicator: true)
+    }
+
+    private func refreshEntriesFromNetwork(showLoadingIndicator: Bool) async {
+        if showLoadingIndicator {
+            self.loadingState = .loading
+        }
+
         do {
             self.entries = try await self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
+            AddToPlaylistEntriesCache.shared.setEntries(
+                self.entries,
+                videoId: self.song.videoId,
+                accountID: self.activeAccountID
+            )
+            self.seedMembershipCacheFromEntries()
+            self.seedLikedSongsMembershipFromSongStatus()
             self.loadingState = .loaded
+
+            if self.entries.contains(where: { Self.isLikedSongsPlaylistId($0.id) }) {
+                Task {
+                    await self.refreshLikedSongsMembershipFromMetadataIfNeeded()
+                }
+            }
+
+            Task {
+                await self.resolveMembershipFromPlaylistContents()
+            }
         } catch {
-            self.loadingState = .error(LoadingError(from: error))
+            if showLoadingIndicator {
+                self.loadingState = .error(LoadingError(from: error))
+            } else {
+                DiagnosticsLogger.api.debug(
+                    "Failed refreshing add-to-playlist entries in background: \(error.localizedDescription)"
+                )
+            }
         }
     }
 
@@ -342,33 +446,40 @@ struct AddToPlaylistPopoverContent: View {
 
         do {
             _ = try await self.client.addSongToPlaylist(videoId: self.song.videoId, playlistId: entry.id)
+            PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: entry.id)
+            self.resolvedMembershipByPlaylistId[entry.id] = true
             self.updateMembership(for: entry.id, containsVideo: true)
             self.libraryViewModel?.markNeedsReloadOnActivation()
-            Task {
-                try? await Task.sleep(for: .milliseconds(700))
-                await self.loadEntries()
-            }
         } catch {
+            if Self.isAlreadyInPlaylistError(error) {
+                // Some API responses don't mark membership up front; duplicate-add confirms membership.
+                PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: entry.id)
+                self.resolvedMembershipByPlaylistId[entry.id] = true
+                self.updateMembership(for: entry.id, containsVideo: true)
+                return
+            }
             DiagnosticsLogger.api.error("Failed adding song to playlist: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))
         }
     }
 
-    private func removeSong(from entry: AddToPlaylistEntry) async {
+    private func removeSong(from entry: AddToPlaylistEntry, showErrorOnFailure: Bool = true) async -> Bool {
         self.mutatingIds.insert(entry.id)
         defer { self.mutatingIds.remove(entry.id) }
 
         do {
             try await self.client.removeSongFromPlaylist(videoId: self.song.videoId, playlistId: entry.id, setVideoId: nil)
+            PlaylistMembershipManager.shared.markOptimisticRemove(videoId: self.song.videoId, playlistId: entry.id)
+            self.resolvedMembershipByPlaylistId[entry.id] = false
             self.updateMembership(for: entry.id, containsVideo: false)
             self.libraryViewModel?.markNeedsReloadOnActivation()
-            Task {
-                try? await Task.sleep(for: .milliseconds(700))
-                await self.loadEntries()
-            }
+            return true
         } catch {
             DiagnosticsLogger.api.error("Failed removing song from playlist: \(error.localizedDescription)")
-            self.loadingState = .error(LoadingError(from: error))
+            if showErrorOnFailure {
+                self.loadingState = .error(LoadingError(from: error))
+            }
+            return false
         }
     }
 
@@ -395,15 +506,163 @@ struct AddToPlaylistPopoverContent: View {
                 ),
                 at: 0
             )
+            PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: playlist.id)
+            self.resolvedMembershipByPlaylistId[playlist.id] = true
             self.showCreateComposer = false
-            Task {
-                try? await Task.sleep(for: .milliseconds(700))
-                await self.loadEntries()
-            }
+            self.persistEntriesCache()
         } catch {
             DiagnosticsLogger.api.error("Failed creating playlist from popover: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))
         }
+    }
+
+    private func containsVideo(for entry: AddToPlaylistEntry) -> Bool {
+        if Self.isLikedSongsPlaylistId(entry.id),
+           let likedSongsMembership = self.currentLikedSongsMembershipFromSongStatus()
+        {
+            return likedSongsMembership
+        }
+
+        if !Self.isLikedSongsPlaylistId(entry.id),
+           let cachedMembership = PlaylistMembershipManager.shared.isMember(videoId: self.song.videoId, in: entry.id)
+        {
+            return cachedMembership
+        }
+
+        if let resolvedMembership = self.resolvedMembershipByPlaylistId[entry.id] {
+            return resolvedMembership
+        }
+
+        return entry.containsVideo
+    }
+
+    private func seedMembershipCacheFromEntries() {
+        for entry in self.entries where !Self.isLikedSongsPlaylistId(entry.id) {
+            if entry.containsVideo {
+                PlaylistMembershipManager.shared.setMembership(
+                    true,
+                    videoId: self.song.videoId,
+                    playlistId: entry.id,
+                    confidence: .apiDeclared
+                )
+            }
+        }
+    }
+
+    private func currentLikedSongsMembershipFromSongStatus() -> Bool? {
+        self.currentLikedSongsStatus().map { $0 == .like }
+    }
+
+    private func currentLikedSongsStatus() -> LikeStatus? {
+        if let cachedStatus = SongLikeStatusManager.shared.status(for: self.song.videoId) {
+            if cachedStatus != .indifferent {
+                return cachedStatus
+            }
+        }
+
+        if let songLikeStatus = self.song.likeStatus, songLikeStatus != .indifferent {
+            return songLikeStatus
+        }
+
+        return nil
+    }
+
+    private func seedLikedSongsMembershipFromSongStatus() {
+        guard let containsVideo = self.currentLikedSongsMembershipFromSongStatus() else { return }
+
+        for entry in self.entries where Self.isLikedSongsPlaylistId(entry.id) {
+            self.resolvedMembershipByPlaylistId[entry.id] = containsVideo
+            self.updateMembership(for: entry.id, containsVideo: containsVideo)
+        }
+    }
+
+    private func updateLikedSongsMembership(containsVideo: Bool) {
+        for entry in self.entries where Self.isLikedSongsPlaylistId(entry.id) {
+            self.resolvedMembershipByPlaylistId[entry.id] = containsVideo
+            self.updateMembership(for: entry.id, containsVideo: containsVideo)
+        }
+    }
+
+    private func refreshLikedSongsMembershipFromMetadataIfNeeded() async {
+        guard self.currentLikedSongsStatus() == nil else { return }
+
+        self.isRefreshingLikedSongsMembership = true
+        defer { self.isRefreshingLikedSongsMembership = false }
+
+        do {
+            let songMetadata = try await self.client.getSong(videoId: self.song.videoId)
+            guard let likeStatus = songMetadata.likeStatus else { return }
+            guard likeStatus != .indifferent else { return }
+
+            SongLikeStatusManager.shared.setStatus(likeStatus, for: self.song.videoId)
+            self.updateLikedSongsMembership(containsVideo: likeStatus == .like)
+        } catch {
+            DiagnosticsLogger.api.debug(
+                "Failed refreshing liked songs membership from metadata: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func resolveMembershipFromPlaylistContents() async {
+        let candidates = Array(self.entries
+            .filter { !Self.isLikedSongsPlaylistId($0.id) }
+            .filter { self.resolvedMembershipByPlaylistId[$0.id] == nil }
+            .filter { PlaylistMembershipManager.shared.isMember(videoId: self.song.videoId, in: $0.id) == nil }
+            .prefix(self.membershipProbeLimit))
+
+        guard !candidates.isEmpty else { return }
+
+        let probeCandidates = candidates.filter { !self.mutatingIds.contains($0.id) }
+        guard !probeCandidates.isEmpty else { return }
+
+        let probingIDs = Set(probeCandidates.map(\.id))
+        self.probingMembershipPlaylistIds.formUnion(probingIDs)
+        defer { self.probingMembershipPlaylistIds.subtract(probingIDs) }
+
+        let results = await withTaskGroup(of: (String, Bool?, String?).self, returning: [(String, Bool?, String?)].self) {
+            group in
+            for entry in probeCandidates {
+                group.addTask {
+                    do {
+                        let tracks = try await self.client.getPlaylistAllTracks(playlistId: entry.id)
+                        let containsVideo = tracks.contains { $0.videoId == self.song.videoId }
+                        return (entry.id, containsVideo, nil)
+                    } catch {
+                        return (entry.id, nil, error.localizedDescription)
+                    }
+                }
+            }
+
+            var collected: [(String, Bool?, String?)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        for result in results {
+            if let containsVideo = result.1 {
+                PlaylistMembershipManager.shared.markProbeResult(
+                    videoId: self.song.videoId,
+                    playlistId: result.0,
+                    isMember: containsVideo
+                )
+                self.resolvedMembershipByPlaylistId[result.0] = containsVideo
+                self.updateMembership(for: result.0, containsVideo: containsVideo)
+            } else if let message = result.2 {
+                DiagnosticsLogger.api.debug(
+                    "Membership probe failed for playlist \(result.0): \(message)"
+                )
+            }
+        }
+    }
+
+    private func shouldShowMembershipLoading(for entry: AddToPlaylistEntry) -> Bool {
+        if Self.isLikedSongsPlaylistId(entry.id) {
+            return self.isRefreshingLikedSongsMembership
+        }
+
+        return self.probingMembershipPlaylistIds.contains(entry.id)
     }
 
     private func updateMembership(for playlistId: String, containsVideo: Bool) {
@@ -417,6 +676,19 @@ struct AddToPlaylistPopoverContent: View {
             canAddVideo: current.canAddVideo,
             canRemoveVideoById: current.canRemoveVideoById,
             containsVideo: containsVideo
+        )
+        self.persistEntriesCache()
+    }
+
+    private var activeAccountID: String {
+        PlaylistMembershipManager.shared.activeAccountID
+    }
+
+    private func persistEntriesCache() {
+        AddToPlaylistEntriesCache.shared.setEntries(
+            self.entries,
+            videoId: self.song.videoId,
+            accountID: self.activeAccountID
         )
     }
 }

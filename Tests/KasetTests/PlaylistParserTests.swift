@@ -316,6 +316,31 @@ struct PlaylistParserTests {
         #expect(entries[0].containsVideo == true)
     }
 
+    @Test("Parse add-to-playlist entries does not infer Liked Music membership from like endpoint")
+    func parseAddToPlaylistEntriesDoesNotInferLikedMusicMembershipFromLikeStatus() {
+        let data: [String: Any] = [
+            "playlists": [
+                [
+                    "playlistAddToOptionRenderer": [
+                        "playlistId": "LM",
+                        "title": ["runs": [["text": "Liked Music"]]],
+                        "addToPlaylistServiceEndpoint": [
+                            "likeEndpoint": [
+                                "status": "LIKE",
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        let entries = PlaylistParser.parseAddToPlaylistEntries(data)
+
+        #expect(entries.count == 1)
+        #expect(entries[0].id == "LM")
+        #expect(entries[0].containsVideo == false)
+    }
+
     @Test("Parse created playlist from playlist/create response")
     func parseCreatedPlaylistFromCreateResponse() {
         let data: [String: Any] = [

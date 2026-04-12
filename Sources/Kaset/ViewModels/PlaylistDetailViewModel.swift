@@ -202,6 +202,8 @@ final class PlaylistDetailViewModel {
 
     /// Refreshes the playlist.
     func refresh() async {
+        // Manual refresh should fetch fresh data instead of reusing browse cache.
+        APICache.shared.invalidate(matching: "browse:")
         self.playlistDetail = nil
         self.hasMore = false
         await self.load()

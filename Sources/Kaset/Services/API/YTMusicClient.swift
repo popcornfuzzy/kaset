@@ -1336,8 +1336,56 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         if status != "STATUS_SUCCEEDED" {
+            if let message = Self.extractPlaylistEditFailureMessage(fromPlaylistEditResponse: data) {
+                throw YTMusicError.apiError(message: message, code: nil)
+            }
             throw YTMusicError.apiError(message: "Playlist edit failed with status \(status)", code: nil)
         }
+    }
+
+    private static func extractPlaylistEditFailureMessage(fromPlaylistEditResponse data: [String: Any]) -> String? {
+        guard let actions = data["actions"] as? [[String: Any]] else {
+            return nil
+        }
+
+        for action in actions {
+            if let message = Self.extractNotificationResponseText(from: action), !message.isEmpty {
+                return message
+            }
+        }
+
+        return nil
+    }
+
+    private static func extractNotificationResponseText(from node: Any) -> String? {
+        if let dict = node as? [String: Any] {
+            if let renderer = dict["notificationActionRenderer"] as? [String: Any],
+               let responseText = renderer["responseText"] as? [String: Any],
+               let runs = responseText["runs"] as? [[String: Any]]
+            {
+                let text = runs.compactMap { $0["text"] as? String }.joined()
+                if !text.isEmpty {
+                    return text
+                }
+            }
+
+            for value in dict.values {
+                if let message = Self.extractNotificationResponseText(from: value) {
+                    return message
+                }
+            }
+            return nil
+        }
+
+        if let array = node as? [Any] {
+            for value in array {
+                if let message = Self.extractNotificationResponseText(from: value) {
+                    return message
+                }
+            }
+        }
+
+        return nil
     }
 
     private static func extractSetVideoId(fromPlaylistEditResponse data: [String: Any]) -> String? {
