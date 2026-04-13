@@ -56,6 +56,10 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Centralized storage for continuation tokens keyed by content type.
     private var continuationTokens: [PaginatedContentType: String] = [:]
 
+    /// Podcasts discovery is served through the home browse endpoint with the Podcasts chip selected.
+    /// `FEmusic_podcasts` now returns HTTP 404.
+    private static let podcastsBrowseParams = "ggNCSgQIDBADSgQICRABSgQIBBABSgQIBxABSgQICBABSgQIAxABSgQIDRABSgQIDhABSgQIChABSgQIBRABSgQIBhAB"
+
     init(authService: AuthService, webKitManager: WebKitManager = .shared) {
         self.authService = authService
         self.webKitManager = webKitManager
@@ -213,7 +217,8 @@ final class YTMusicClient: YTMusicClientProtocol {
         self.logger.info("Fetching podcasts page")
 
         let body: [String: Any] = [
-            "browseId": PaginatedContentType.podcasts.rawValue,
+            "browseId": PaginatedContentType.home.rawValue,
+            "params": Self.podcastsBrowseParams,
         ]
 
         let data = try await request("browse", body: body, ttl: APICache.TTL.home)
