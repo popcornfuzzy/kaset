@@ -16,7 +16,12 @@ enum AccessibilityID {
         static let podcastsItem = "sidebar.podcasts"
         static let likedMusicItem = "sidebar.likedMusic"
         static let libraryItem = "sidebar.library"
+        static let libraryDisclosure = "sidebar.libraryDisclosure"
         static let addPlaylistItem = "sidebar.addPlaylist"
+
+        static func playlistItem(_ playlistId: String) -> String {
+            "sidebar.playlist.\(playlistId)"
+        }
     }
 
     // MARK: - PlayerBar
