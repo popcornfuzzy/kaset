@@ -489,6 +489,7 @@ struct PlayerBar: View {
                     song: currentTrack,
                     client: client,
                     libraryViewModel: self.libraryViewModel,
+                    preferredLikeStatus: self.playerService.currentTrackLikeStatus,
                     icon: "plus.circle",
                     iconSize: 15,
                     usePressableStyle: true

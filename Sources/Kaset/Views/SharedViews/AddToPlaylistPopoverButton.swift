@@ -41,6 +41,7 @@ struct AddToPlaylistPopoverButton: View {
     let song: Song
     let client: any YTMusicClientProtocol
     let libraryViewModel: LibraryViewModel?
+    var preferredLikeStatus: LikeStatus? = nil
     var icon: String = "text.badge.plus"
     var iconSize: CGFloat = 14
     var usePressableStyle = false
@@ -72,7 +73,8 @@ struct AddToPlaylistPopoverButton: View {
             AddToPlaylistPopoverContent(
                 song: self.song,
                 client: self.client,
-                libraryViewModel: self.libraryViewModel
+                libraryViewModel: self.libraryViewModel,
+                preferredLikeStatus: self.preferredLikeStatus
             )
         }
     }
@@ -145,6 +147,7 @@ struct AddToPlaylistPopoverContent: View {
     let song: Song
     let client: any YTMusicClientProtocol
     let libraryViewModel: LibraryViewModel?
+    let preferredLikeStatus: LikeStatus?
     private let membershipProbeLimit = 8
     private let entriesCacheMaxAge: TimeInterval = 10 * 60
 
@@ -156,6 +159,18 @@ struct AddToPlaylistPopoverContent: View {
     @State private var isCreating = false
     @State private var resolvedMembershipByPlaylistId: [String: Bool] = [:]
     @State private var probingMembershipPlaylistIds: Set<String> = []
+
+    init(
+        song: Song,
+        client: any YTMusicClientProtocol,
+        libraryViewModel: LibraryViewModel?,
+        preferredLikeStatus: LikeStatus? = nil
+    ) {
+        self.song = song
+        self.client = client
+        self.libraryViewModel = libraryViewModel
+        self.preferredLikeStatus = preferredLikeStatus
+    }
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
@@ -566,26 +581,19 @@ struct AddToPlaylistPopoverContent: View {
     }
 
     private func currentLikedSongsMembershipFromSongStatus() -> Bool? {
+        if let preferredLikeStatus {
+            return preferredLikeStatus == .like
+        }
+
         if let cachedStatus = self.likeStatusManager.status(for: self.song.videoId) {
+            if cachedStatus == .indifferent {
+                return nil
+            }
             return cachedStatus == .like
         }
 
         if let songLikeStatus = self.song.likeStatus, songLikeStatus != .indifferent {
             return songLikeStatus == .like
-        }
-
-        return nil
-    }
-
-    private func currentLikedSongsStatus() -> LikeStatus? {
-        if let cachedStatus = self.likeStatusManager.status(for: self.song.videoId) {
-            if cachedStatus != .indifferent {
-                return cachedStatus
-            }
-        }
-
-        if let songLikeStatus = self.song.likeStatus, songLikeStatus != .indifferent {
-            return songLikeStatus
         }
 
         return nil
