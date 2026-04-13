@@ -152,9 +152,9 @@ struct AddToPlaylistPopoverContent: View {
     @State private var showCreateComposer = false
     @State private var createTitle = ""
     @State private var isCreating = false
+    @State private var likeStatusManager = SongLikeStatusManager.shared
     @State private var resolvedMembershipByPlaylistId: [String: Bool] = [:]
     @State private var probingMembershipPlaylistIds: Set<String> = []
-    @State private var isRefreshingLikedSongsMembership = false
 
     var body: some View {
         GlassEffectContainer(spacing: 8) {
@@ -197,6 +197,10 @@ struct AddToPlaylistPopoverContent: View {
                 self.createTitle = self.song.title
             }
             await self.loadEntries()
+        }
+        .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
+            guard let event, event.videoId == self.song.videoId else { return }
+            self.updateLikedSongsMembership(containsVideo: event.status == .like)
         }
     }
 
@@ -420,12 +424,6 @@ struct AddToPlaylistPopoverContent: View {
             self.seedLikedSongsMembershipFromSongStatus()
             self.loadingState = .loaded
 
-            if self.entries.contains(where: { Self.isLikedSongsPlaylistId($0.id) }) {
-                Task {
-                    await self.refreshLikedSongsMembershipFromMetadataIfNeeded()
-                }
-            }
-
             Task {
                 await self.resolveMembershipFromPlaylistContents()
             }
@@ -550,11 +548,19 @@ struct AddToPlaylistPopoverContent: View {
     }
 
     private func currentLikedSongsMembershipFromSongStatus() -> Bool? {
-        self.currentLikedSongsStatus().map { $0 == .like }
+        if let cachedStatus = self.likeStatusManager.status(for: self.song.videoId) {
+            return cachedStatus == .like
+        }
+
+        if let songLikeStatus = self.song.likeStatus, songLikeStatus != .indifferent {
+            return songLikeStatus == .like
+        }
+
+        return nil
     }
 
     private func currentLikedSongsStatus() -> LikeStatus? {
-        if let cachedStatus = SongLikeStatusManager.shared.status(for: self.song.videoId) {
+        if let cachedStatus = self.likeStatusManager.status(for: self.song.videoId) {
             if cachedStatus != .indifferent {
                 return cachedStatus
             }
@@ -580,26 +586,6 @@ struct AddToPlaylistPopoverContent: View {
         for entry in self.entries where Self.isLikedSongsPlaylistId(entry.id) {
             self.resolvedMembershipByPlaylistId[entry.id] = containsVideo
             self.updateMembership(for: entry.id, containsVideo: containsVideo)
-        }
-    }
-
-    private func refreshLikedSongsMembershipFromMetadataIfNeeded() async {
-        guard self.currentLikedSongsStatus() == nil else { return }
-
-        self.isRefreshingLikedSongsMembership = true
-        defer { self.isRefreshingLikedSongsMembership = false }
-
-        do {
-            let songMetadata = try await self.client.getSong(videoId: self.song.videoId)
-            guard let likeStatus = songMetadata.likeStatus else { return }
-            guard likeStatus != .indifferent else { return }
-
-            SongLikeStatusManager.shared.setStatus(likeStatus, for: self.song.videoId)
-            self.updateLikedSongsMembership(containsVideo: likeStatus == .like)
-        } catch {
-            DiagnosticsLogger.api.debug(
-                "Failed refreshing liked songs membership from metadata: \(error.localizedDescription)"
-            )
         }
     }
 
@@ -659,7 +645,7 @@ struct AddToPlaylistPopoverContent: View {
 
     private func shouldShowMembershipLoading(for entry: AddToPlaylistEntry) -> Bool {
         if Self.isLikedSongsPlaylistId(entry.id) {
-            return self.isRefreshingLikedSongsMembership
+            return false
         }
 
         return self.probingMembershipPlaylistIds.contains(entry.id)
