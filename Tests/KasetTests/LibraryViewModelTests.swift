@@ -181,6 +181,17 @@ struct LibraryViewModelTests {
         #expect(self.viewModel.playlists.map(\.id) == ["VL1"])
     }
 
+    @Test("updatePlaylistTitle updates matching playlist by normalized ID")
+    func updatePlaylistTitleUpdatesMatchingPlaylist() {
+        self.viewModel.addToLibrary(playlist: TestFixtures.makePlaylist(id: "VL123", title: "Old Title"))
+
+        self.viewModel.updatePlaylistTitle(playlistId: "VL123", newTitle: "Renamed Title")
+
+        #expect(self.viewModel.playlists.count == 1)
+        #expect(self.viewModel.playlists[0].id == "VL123")
+        #expect(self.viewModel.playlists[0].title == "Renamed Title")
+    }
+
     // MARK: - Artist Library Tests
 
     @Test("isInLibrary normalizes MPLAUC artist IDs to channel IDs")

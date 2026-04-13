@@ -240,6 +240,25 @@ final class LibraryViewModel {
         }
     }
 
+    /// Updates a playlist title in the local library snapshot for immediate UI feedback.
+    func updatePlaylistTitle(playlistId: String, newTitle: String) {
+        let normalizedPlaylistId = Self.normalizedPlaylistId(playlistId)
+        guard let index = self.playlists.firstIndex(where: { Self.normalizedPlaylistId($0.id) == normalizedPlaylistId }) else {
+            return
+        }
+
+        self.markLibraryStateChanged()
+        let current = self.playlists[index]
+        self.playlists[index] = Playlist(
+            id: current.id,
+            title: newTitle,
+            description: current.description,
+            thumbnailURL: current.thumbnailURL,
+            trackCount: current.trackCount,
+            author: current.author
+        )
+    }
+
     /// Adds a podcast to the library (called after successful subscription).
     /// Updates both the ID set and the shows array for immediate UI update.
     func addToLibrary(podcast: PodcastShow) {
@@ -438,5 +457,12 @@ final class LibraryViewModel {
         }
 
         await self.load()
+    }
+
+    /// Forces a network-backed refresh by clearing response caches first.
+    func refreshFromNetwork() async {
+        APICache.shared.invalidate(matching: "browse:")
+        URLCache.shared.removeAllCachedResponses()
+        await self.refresh()
     }
 }

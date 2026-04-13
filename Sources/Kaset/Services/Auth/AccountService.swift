@@ -125,6 +125,7 @@ final class AccountService {
             }
 
             SongLikeStatusManager.shared.setActiveAccountID(self.currentAccount?.id)
+            PlaylistMembershipManager.shared.setActiveAccountID(self.currentAccount?.id)
 
             let currentLabel = self.currentAccount?.brandId ?? "primary"
             self.logger.info("AccountService: Fetched \(self.accounts.count) accounts, current: \(self.currentAccount?.name ?? "none") (brandId=\(currentLabel))")
@@ -171,6 +172,7 @@ final class AccountService {
             // Reset client session state to avoid leaking continuations across accounts
             self.ytMusicClient.resetSessionStateForAccountSwitch()
             SongLikeStatusManager.shared.setActiveAccountID(account.id)
+            PlaylistMembershipManager.shared.setActiveAccountID(account.id)
 
             let brandLabel = account.brandId ?? "primary"
             self.logger.info("AccountService: Active account brandId=\(brandLabel)")
@@ -184,6 +186,7 @@ final class AccountService {
             self.logger.error("AccountService: Failed to switch account: \(error.localizedDescription)")
             self.currentAccount = previousAccount
             SongLikeStatusManager.shared.setActiveAccountID(previousAccount?.id)
+            PlaylistMembershipManager.shared.setActiveAccountID(previousAccount?.id)
             self.lastError = error
             self.lastErrorWasFetch = false
             self.errorSequence += 1
@@ -202,6 +205,8 @@ final class AccountService {
         UserDefaults.standard.removeObject(forKey: self.selectedBrandIdKey)
         SongLikeStatusManager.shared.clearCache()
         SongLikeStatusManager.shared.setActiveAccountID(nil)
+        PlaylistMembershipManager.shared.clearCache()
+        PlaylistMembershipManager.shared.setActiveAccountID(nil)
 
         self.logger.debug("AccountService: Accounts cleared")
     }

@@ -7,6 +7,7 @@ import SwiftUI
 struct QueueView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @Environment(\.showCommandBar) private var showCommandBar
 
     /// Whether the user has manually scrolled (pauses auto-scroll).
@@ -119,6 +120,8 @@ struct QueueView: View {
                             index: index,
                             favoritesManager: self.favoritesManager,
                             playerService: self.playerService,
+                            client: self.libraryViewModel?.client,
+                            libraryViewModel: self.libraryViewModel,
                             onRemove: {
                                 self.playerService.removeFromQueue(videoIds: Set([song.videoId]))
                             },
@@ -191,6 +194,8 @@ private struct QueueRowView: View {
     let index: Int
     let favoritesManager: FavoritesManager
     let playerService: PlayerService
+    let client: (any YTMusicClientProtocol)?
+    let libraryViewModel: LibraryViewModel?
     let onRemove: () -> Void
     let onTap: () -> Void
 
@@ -273,6 +278,16 @@ private struct QueueRowView: View {
             Divider()
 
             ShareContextMenu.menuItem(for: self.song)
+
+            if let client = self.client {
+                Divider()
+
+                AddToPlaylistContextMenu(
+                    song: self.song,
+                    client: client,
+                    libraryViewModel: self.libraryViewModel
+                )
+            }
 
             if !self.isCurrentTrack {
                 Button(role: .destructive) {

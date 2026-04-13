@@ -6,7 +6,7 @@ extension EnvironmentValues {
 }
 
 extension EnvironmentValues {
-    @Entry var navigationSelection: Binding<NavigationItem?> = .constant(nil)
+    @Entry var navigationSelection: Binding<SidebarSelection?> = .constant(nil)
 }
 
 extension EnvironmentValues {
@@ -42,7 +42,7 @@ struct KasetApp: App {
     @State private var searchFocusTrigger = false
 
     /// Current navigation selection for keyboard navigation.
-    @State private var navigationSelection: NavigationItem? = SettingsManager.shared.launchNavigationItem
+    @State private var navigationSelection: SidebarSelection? = .navigation(SettingsManager.shared.launchNavigationItem)
 
     /// Whether the command bar is visible.
     @State private var showCommandBar = false
@@ -245,19 +245,19 @@ struct KasetApp: App {
             CommandGroup(replacing: .sidebar) {
                 // Home - ⌘1
                 Button("Home") {
-                    self.navigationSelection = .home
+                    self.navigationSelection = .navigation(.home)
                 }
                 .keyboardShortcut("1", modifiers: .command)
 
                 // Explore - ⌘2
                 Button("Explore") {
-                    self.navigationSelection = .explore
+                    self.navigationSelection = .navigation(.explore)
                 }
                 .keyboardShortcut("2", modifiers: .command)
 
                 // Library - ⌘3
                 Button("Library") {
-                    self.navigationSelection = .library
+                    self.navigationSelection = .navigation(.library)
                 }
                 .keyboardShortcut("3", modifiers: .command)
 
@@ -265,7 +265,7 @@ struct KasetApp: App {
 
                 // Search - ⌘F
                 Button("Search") {
-                    self.navigationSelection = .search
+                    self.navigationSelection = .navigation(.search)
                     // Trigger focus after a brief delay to allow view to appear
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(100))

@@ -56,6 +56,10 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Centralized storage for continuation tokens keyed by content type.
     private var continuationTokens: [PaginatedContentType: String] = [:]
 
+    /// Podcasts discovery is served through the home browse endpoint with the Podcasts chip selected.
+    /// `FEmusic_podcasts` now returns HTTP 404.
+    private static let podcastsBrowseParams = "ggNCSgQIDBADSgQICRABSgQIBBABSgQIBxABSgQICBABSgQIAxABSgQIDRABSgQIDhABSgQIChABSgQIBRABSgQIBhAB"
+
     init(authService: AuthService, webKitManager: WebKitManager = .shared) {
         self.authService = authService
         self.webKitManager = webKitManager
@@ -213,7 +217,8 @@ final class YTMusicClient: YTMusicClientProtocol {
         self.logger.info("Fetching podcasts page")
 
         let body: [String: Any] = [
-            "browseId": PaginatedContentType.podcasts.rawValue,
+            "browseId": PaginatedContentType.home.rawValue,
+            "params": Self.podcastsBrowseParams,
         ]
 
         let data = try await request("browse", body: body, ttl: APICache.TTL.home)
@@ -1154,6 +1159,144 @@ final class YTMusicClient: YTMusicClientProtocol {
         APICache.shared.invalidate(matching: "browse:")
     }
 
+    /// Fetches playlist targets for the Add-to-Playlist flow.
+    func getAddToPlaylistEntries(videoId: String) async throws -> [AddToPlaylistEntry] {
+        self.logger.info("Fetching Add-to-Playlist targets for video: \(videoId)")
+
+        let body: [String: Any] = [
+            "videoIds": [videoId],
+        ]
+
+        let data = try await self.request("playlist/get_add_to_playlist", body: body)
+        let entries = PlaylistParser.parseAddToPlaylistEntries(data)
+        self.logger.info("Fetched \(entries.count) Add-to-Playlist targets")
+        return entries
+    }
+
+    /// Creates a new playlist.
+    func createPlaylist(title: String, privacy: PlaylistPrivacy) async throws -> Playlist {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            throw YTMusicError.invalidInput("Playlist title cannot be empty")
+        }
+
+        self.logger.info("Creating playlist: \(normalizedTitle)")
+
+        let body: [String: Any] = [
+            "title": normalizedTitle,
+            "privacyStatus": privacy.rawValue,
+        ]
+
+        let data = try await self.request("playlist/create", body: body)
+        guard let playlist = PlaylistParser.parseCreatedPlaylist(data) else {
+            throw YTMusicError.parseError(message: "Failed to parse created playlist")
+        }
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Created playlist \(playlist.id)")
+        return playlist
+    }
+
+    /// Renames an existing playlist.
+    func renamePlaylist(playlistId: String, newTitle: String) async throws {
+        let normalizedTitle = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTitle.isEmpty else {
+            throw YTMusicError.invalidInput("Playlist title cannot be empty")
+        }
+
+        let cleanPlaylistId = Self.normalizedPlaylistIdForMutation(playlistId)
+        self.logger.info("Renaming playlist \(cleanPlaylistId)")
+
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+            "actions": [
+                [
+                    "action": "ACTION_SET_PLAYLIST_NAME",
+                    "playlistName": normalizedTitle,
+                ],
+            ],
+        ]
+
+        let data = try await self.request("browse/edit_playlist", body: body)
+        try Self.validatePlaylistEditSucceeded(data)
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Renamed playlist \(cleanPlaylistId)")
+    }
+
+    /// Deletes a playlist.
+    func deletePlaylist(playlistId: String) async throws {
+        let cleanPlaylistId = Self.normalizedPlaylistIdForMutation(playlistId)
+        self.logger.info("Deleting playlist \(cleanPlaylistId)")
+
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+        ]
+
+        _ = try await self.request("playlist/delete", body: body)
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Deleted playlist \(cleanPlaylistId)")
+    }
+
+    /// Adds a song to a playlist.
+    func addSongToPlaylist(videoId: String, playlistId: String) async throws -> PlaylistVideoAddResult {
+        let cleanPlaylistId = Self.normalizedPlaylistIdForMutation(playlistId)
+        self.logger.info("Adding song \(videoId) to playlist \(cleanPlaylistId)")
+
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+            "actions": [
+                [
+                    "action": "ACTION_ADD_VIDEO",
+                    "addedVideoId": videoId,
+                    "dedupeOption": "DEDUPE_OPTION_CHECK",
+                ],
+            ],
+        ]
+
+        let data = try await self.request("browse/edit_playlist", body: body)
+        try Self.validatePlaylistEditSucceeded(data)
+
+        let setVideoId = Self.extractSetVideoId(fromPlaylistEditResponse: data)
+        let status = data["status"] as? String
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Added song to playlist \(cleanPlaylistId)")
+        return PlaylistVideoAddResult(setVideoId: setVideoId, status: status)
+    }
+
+    /// Removes a song from a playlist.
+    func removeSongFromPlaylist(videoId: String, playlistId: String, setVideoId: String?) async throws {
+        let cleanPlaylistId = Self.normalizedPlaylistIdForMutation(playlistId)
+        self.logger.info("Removing song \(videoId) from playlist \(cleanPlaylistId)")
+
+        let action: [String: Any]
+        if let setVideoId {
+            action = [
+                "action": "ACTION_REMOVE_VIDEO",
+                "removedVideoId": videoId,
+                "setVideoId": setVideoId,
+            ]
+        } else {
+            action = [
+                "action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID",
+                "removedVideoId": videoId,
+            ]
+        }
+
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+            "actions": [action],
+        ]
+
+        let data = try await self.request("browse/edit_playlist", body: body)
+        try Self.validatePlaylistEditSucceeded(data)
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Removed song from playlist \(cleanPlaylistId)")
+    }
+
     // MARK: - Podcast ID Conversion
 
     /// Converts a podcast show ID (MPSPP prefix) to a playlist ID (PL prefix) for the like/unlike API.
@@ -1182,6 +1325,88 @@ final class YTMusicClient: YTMusicClientProtocol {
         }
 
         return "P" + suffix // "P" + "LXz2p9..." = "PLXz2p9..."
+    }
+
+    private static func normalizedPlaylistIdForMutation(_ playlistId: String) -> String {
+        if playlistId.hasPrefix("VL") {
+            return String(playlistId.dropFirst(2))
+        }
+        return playlistId
+    }
+
+    private static func validatePlaylistEditSucceeded(_ data: [String: Any]) throws {
+        guard let status = data["status"] as? String else {
+            // Some edit responses don't include an explicit status; absence is treated as success.
+            return
+        }
+
+        if status != "STATUS_SUCCEEDED" {
+            if let message = Self.extractPlaylistEditFailureMessage(fromPlaylistEditResponse: data) {
+                throw YTMusicError.apiError(message: message, code: nil)
+            }
+            throw YTMusicError.apiError(message: "Playlist edit failed with status \(status)", code: nil)
+        }
+    }
+
+    private static func extractPlaylistEditFailureMessage(fromPlaylistEditResponse data: [String: Any]) -> String? {
+        guard let actions = data["actions"] as? [[String: Any]] else {
+            return nil
+        }
+
+        for action in actions {
+            if let message = Self.extractNotificationResponseText(from: action), !message.isEmpty {
+                return message
+            }
+        }
+
+        return nil
+    }
+
+    private static func extractNotificationResponseText(from node: Any) -> String? {
+        if let dict = node as? [String: Any] {
+            if let renderer = dict["notificationActionRenderer"] as? [String: Any],
+               let responseText = renderer["responseText"] as? [String: Any],
+               let runs = responseText["runs"] as? [[String: Any]]
+            {
+                let text = runs.compactMap { $0["text"] as? String }.joined()
+                if !text.isEmpty {
+                    return text
+                }
+            }
+
+            for value in dict.values {
+                if let message = Self.extractNotificationResponseText(from: value) {
+                    return message
+                }
+            }
+            return nil
+        }
+
+        if let array = node as? [Any] {
+            for value in array {
+                if let message = Self.extractNotificationResponseText(from: value) {
+                    return message
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func extractSetVideoId(fromPlaylistEditResponse data: [String: Any]) -> String? {
+        guard let results = data["playlistEditResults"] as? [[String: Any]] else {
+            return nil
+        }
+
+        for result in results {
+            if let addResult = result["playlistEditVideoAddedResultData"] as? [String: Any],
+               let setVideoId = addResult["setVideoId"] as? String
+            {
+                return setVideoId
+            }
+        }
+
+        return nil
     }
 
     /// Subscribes to a podcast show (adds to library).

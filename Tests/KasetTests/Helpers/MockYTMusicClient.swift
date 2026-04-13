@@ -59,6 +59,9 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     var mixQueueContinuationResults: [RadioQueueResult] = []
     var songResponses: [String: Song] = [:]
     var accountsListResponse: AccountsListResponse = .init(googleEmail: "test@gmail.com", accounts: [])
+    var addToPlaylistEntries: [AddToPlaylistEntry] = []
+    var createPlaylistResult: Playlist?
+    var nextAddSongSetVideoId: String?
 
     // MARK: - Call Tracking
 
@@ -157,6 +160,23 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     private(set) var subscribeToPlaylistIds: [String] = []
     private(set) var unsubscribeFromPlaylistCalled = false
     private(set) var unsubscribeFromPlaylistIds: [String] = []
+    private(set) var getAddToPlaylistEntriesCalled = false
+    private(set) var getAddToPlaylistEntriesVideoIds: [String] = []
+    private(set) var createPlaylistCalled = false
+    private(set) var createPlaylistTitles: [String] = []
+    private(set) var createPlaylistPrivacyStatuses: [PlaylistPrivacy] = []
+    private(set) var renamePlaylistCalled = false
+    private(set) var renamePlaylistIds: [String] = []
+    private(set) var renamePlaylistTitles: [String] = []
+    private(set) var deletePlaylistCalled = false
+    private(set) var deletePlaylistIds: [String] = []
+    private(set) var addSongToPlaylistCalled = false
+    private(set) var addSongToPlaylistVideoIds: [String] = []
+    private(set) var addSongToPlaylistPlaylistIds: [String] = []
+    private(set) var removeSongFromPlaylistCalled = false
+    private(set) var removeSongFromPlaylistVideoIds: [String] = []
+    private(set) var removeSongFromPlaylistPlaylistIds: [String] = []
+    private(set) var removeSongFromPlaylistSetVideoIds: [String?] = []
     private(set) var subscribeToArtistCalled = false
     private(set) var subscribeToArtistIds: [String] = []
     private(set) var unsubscribeFromArtistCalled = false
@@ -602,6 +622,77 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         }
     }
 
+    func getAddToPlaylistEntries(videoId: String) async throws -> [AddToPlaylistEntry] {
+        self.getAddToPlaylistEntriesCalled = true
+        self.getAddToPlaylistEntriesVideoIds.append(videoId)
+        if let error = shouldThrowError { throw error }
+        return self.addToPlaylistEntries
+    }
+
+    func createPlaylist(title: String, privacy: PlaylistPrivacy) async throws -> Playlist {
+        self.createPlaylistCalled = true
+        self.createPlaylistTitles.append(title)
+        self.createPlaylistPrivacyStatuses.append(privacy)
+        if let error = shouldThrowError { throw error }
+
+        let playlist = self.createPlaylistResult ?? TestFixtures.makePlaylist(
+            id: "PL-mock-created-\(self.createPlaylistTitles.count)",
+            title: title
+        )
+
+        if self.shouldAutoUpdatePlaylistLibraryOnMutation {
+            self.libraryPlaylists.insert(playlist, at: 0)
+        }
+
+        return playlist
+    }
+
+    func renamePlaylist(playlistId: String, newTitle: String) async throws {
+        self.renamePlaylistCalled = true
+        self.renamePlaylistIds.append(playlistId)
+        self.renamePlaylistTitles.append(newTitle)
+        if let error = shouldThrowError { throw error }
+
+        if let index = self.libraryPlaylists.firstIndex(where: { Self.normalizedPlaylistId($0.id) == Self.normalizedPlaylistId(playlistId) }) {
+            let current = self.libraryPlaylists[index]
+            self.libraryPlaylists[index] = Playlist(
+                id: current.id,
+                title: newTitle,
+                description: current.description,
+                thumbnailURL: current.thumbnailURL,
+                trackCount: current.trackCount,
+                author: current.author
+            )
+        }
+    }
+
+    func deletePlaylist(playlistId: String) async throws {
+        self.deletePlaylistCalled = true
+        self.deletePlaylistIds.append(playlistId)
+        if let error = shouldThrowError { throw error }
+
+        let normalizedPlaylistId = Self.normalizedPlaylistId(playlistId)
+        self.libraryPlaylists.removeAll { Self.normalizedPlaylistId($0.id) == normalizedPlaylistId }
+    }
+
+    func addSongToPlaylist(videoId: String, playlistId: String) async throws -> PlaylistVideoAddResult {
+        self.addSongToPlaylistCalled = true
+        self.addSongToPlaylistVideoIds.append(videoId)
+        self.addSongToPlaylistPlaylistIds.append(playlistId)
+        if let error = shouldThrowError { throw error }
+
+        let setVideoId = self.nextAddSongSetVideoId ?? "mock-set-video-id"
+        return PlaylistVideoAddResult(setVideoId: setVideoId, status: "STATUS_SUCCEEDED")
+    }
+
+    func removeSongFromPlaylist(videoId: String, playlistId: String, setVideoId: String?) async throws {
+        self.removeSongFromPlaylistCalled = true
+        self.removeSongFromPlaylistVideoIds.append(videoId)
+        self.removeSongFromPlaylistPlaylistIds.append(playlistId)
+        self.removeSongFromPlaylistSetVideoIds.append(setVideoId)
+        if let error = shouldThrowError { throw error }
+    }
+
     func subscribeToPodcast(showId: String) async throws {
         if let error = shouldThrowError { throw error }
         // Validate podcast show ID format (mirrors real YTMusicClient behavior)
@@ -782,6 +873,23 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.subscribeToPlaylistIds = []
         self.unsubscribeFromPlaylistCalled = false
         self.unsubscribeFromPlaylistIds = []
+        self.getAddToPlaylistEntriesCalled = false
+        self.getAddToPlaylistEntriesVideoIds = []
+        self.createPlaylistCalled = false
+        self.createPlaylistTitles = []
+        self.createPlaylistPrivacyStatuses = []
+        self.renamePlaylistCalled = false
+        self.renamePlaylistIds = []
+        self.renamePlaylistTitles = []
+        self.deletePlaylistCalled = false
+        self.deletePlaylistIds = []
+        self.addSongToPlaylistCalled = false
+        self.addSongToPlaylistVideoIds = []
+        self.addSongToPlaylistPlaylistIds = []
+        self.removeSongFromPlaylistCalled = false
+        self.removeSongFromPlaylistVideoIds = []
+        self.removeSongFromPlaylistPlaylistIds = []
+        self.removeSongFromPlaylistSetVideoIds = []
         self.subscribeToArtistCalled = false
         self.subscribeToArtistIds = []
         self.unsubscribeFromArtistCalled = false
@@ -798,6 +906,9 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.getMixQueueContinuationTokens = []
         self.mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
         self.mixQueueContinuationResults = []
+        self.addToPlaylistEntries = []
+        self.createPlaylistResult = nil
+        self.nextAddSongSetVideoId = nil
         self.moodCategoryCalled = false
         self.shouldThrowError = nil
     }

@@ -42,7 +42,7 @@ struct MainWindow: View {
     @Environment(\.showWhatsNew) private var showWhatsNew
 
     /// Binding to navigation selection for keyboard shortcut control from parent.
-    @Binding var navigationSelection: NavigationItem?
+    @Binding var navigationSelection: SidebarSelection?
 
     /// Shared API client used by all views and services.
     let client: any YTMusicClientProtocol
@@ -66,7 +66,7 @@ struct MainWindow: View {
     /// Column visibility state for NavigationSplitView - persisted to fix restoration from dock.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
-    init(navigationSelection: Binding<NavigationItem?>, client: any YTMusicClientProtocol) {
+    init(navigationSelection: Binding<SidebarSelection?>, client: any YTMusicClientProtocol) {
         self._navigationSelection = navigationSelection
         self.client = client
         _homeViewModel = State(initialValue: HomeViewModel(client: client))
@@ -355,6 +355,7 @@ struct MainWindow: View {
             // Main navigation content
             NavigationSplitView(columnVisibility: self.$columnVisibility) {
                 Sidebar(selection: self.$navigationSelection)
+                    .environment(self.libraryViewModel)
             } detail: {
                 self.detailView(for: self.navigationSelection, client: self.client)
             }
@@ -444,16 +445,66 @@ struct MainWindow: View {
             && (!self.playerService.currentTrackHasVideo || self.playerService.miniPlayerVideoAspectRatio == nil)
     }
 
-    private func detailView(for item: NavigationItem?, client _: any YTMusicClientProtocol) -> some View {
+    private func detailView(for selection: SidebarSelection?, client _: any YTMusicClientProtocol) -> some View {
         Group {
-            if let item {
-                self.viewForNavigationItem(item)
+            if let selection {
+                self.viewForSidebarSelection(selection)
             } else {
                 Text("Select an item from the sidebar", comment: "Placeholder shown when no sidebar item is selected")
                     .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func viewForSidebarSelection(_ selection: SidebarSelection) -> some View {
+        Group {
+            switch selection {
+            case let .navigation(item):
+                self.viewForNavigationItem(item)
+            case let .playlist(playlistId):
+                let playlist = self.sidebarPlaylist(for: playlistId)
+                PlaylistDetailView(
+                    playlist: playlist,
+                    viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client)
+                )
+                .id(playlist.id)
+            }
+        }
+    }
+
+    private func sidebarPlaylist(for playlistId: String) -> Playlist {
+        guard let libraryViewModel else {
+            return Playlist(
+                id: playlistId,
+                title: String(localized: "Playlist"),
+                description: nil,
+                thumbnailURL: nil,
+                trackCount: nil,
+                author: nil
+            )
+        }
+
+        let normalizedPlaylistId = Self.normalizedPlaylistId(playlistId)
+        if let playlist = libraryViewModel.playlists.first(where: { Self.normalizedPlaylistId($0.id) == normalizedPlaylistId }) {
+            return playlist
+        }
+
+        return Playlist(
+            id: playlistId,
+            title: String(localized: "Playlist"),
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: nil,
+            author: nil
+        )
+    }
+
+    private static func normalizedPlaylistId(_ playlistId: String) -> String {
+        if playlistId.hasPrefix("VL") {
+            return String(playlistId.dropFirst(2))
+        }
+        return playlistId
     }
 
     /// Returns the view for a specific navigation item.
@@ -644,9 +695,14 @@ enum NavigationItem: String, Hashable, CaseIterable, Identifiable {
     }
 }
 
+enum SidebarSelection: Hashable {
+    case navigation(NavigationItem)
+    case playlist(String)
+}
+
 @available(macOS 26.0, *)
 #Preview {
-    @Previewable @State var navSelection: NavigationItem? = .home
+    @Previewable @State var navSelection: SidebarSelection? = .navigation(.home)
     let authService = AuthService()
     let ytMusicClient = YTMusicClient(authService: authService)
     let accountService = AccountService(ytMusicClient: ytMusicClient, authService: authService)

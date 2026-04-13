@@ -191,6 +191,25 @@ protocol YTMusicClientProtocol: Sendable {
     /// Removes a playlist from the user's library.
     func unsubscribeFromPlaylist(playlistId: String) async throws
 
+    /// Fetches playlist targets for the Add-to-Playlist flow for a specific video.
+    func getAddToPlaylistEntries(videoId: String) async throws -> [AddToPlaylistEntry]
+
+    /// Creates a new playlist.
+    func createPlaylist(title: String, privacy: PlaylistPrivacy) async throws -> Playlist
+
+    /// Renames a playlist.
+    func renamePlaylist(playlistId: String, newTitle: String) async throws
+
+    /// Deletes a playlist.
+    func deletePlaylist(playlistId: String) async throws
+
+    /// Adds a song to a playlist.
+    func addSongToPlaylist(videoId: String, playlistId: String) async throws -> PlaylistVideoAddResult
+
+    /// Removes a song from a playlist.
+    /// - Parameter setVideoId: Optional per-item playlist entry identifier when removing an exact duplicate occurrence.
+    func removeSongFromPlaylist(videoId: String, playlistId: String, setVideoId: String?) async throws
+
     /// Subscribes to a podcast show (adds to library).
     func subscribeToPodcast(showId: String) async throws
 
