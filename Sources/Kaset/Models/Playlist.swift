@@ -156,3 +156,40 @@ struct PlaylistContinuationResponse {
         self.continuationToken != nil
     }
 }
+
+// MARK: - Playlist Management
+
+/// Privacy options supported by YouTube Music playlist creation/editing.
+enum PlaylistPrivacy: String, CaseIterable, Codable, Sendable {
+    case `private` = "PRIVATE"
+    case unlisted = "UNLISTED"
+    case `public` = "PUBLIC"
+
+    var displayName: String {
+        switch self {
+        case .private:
+            String(localized: "Private")
+        case .unlisted:
+            String(localized: "Unlisted")
+        case .public:
+            String(localized: "Public")
+        }
+    }
+}
+
+/// A playlist entry returned by the Add-to-Playlist API for a specific song.
+struct AddToPlaylistEntry: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let thumbnailURL: URL?
+    let canAddVideo: Bool
+    let canRemoveVideoById: Bool
+    let containsVideo: Bool
+}
+
+/// Result metadata from adding a song to a playlist.
+struct PlaylistVideoAddResult: Sendable {
+    let setVideoId: String?
+    let status: String?
+}

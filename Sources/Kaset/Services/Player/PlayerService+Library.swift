@@ -167,8 +167,15 @@ extension PlayerService {
            let cachedStatus = SongLikeStatusManager.shared.status(for: videoId)
         {
             self.currentTrackLikeStatus = cachedStatus
-        } else {
+        } else if status != .indifferent {
             self.currentTrackLikeStatus = status
+        } else if let trackStatus = self.currentTrack?.likeStatus,
+                  trackStatus != .indifferent
+        {
+            self.currentTrackLikeStatus = trackStatus
+        } else {
+            // Ignore uncertain .indifferent WebView updates when we have no trusted source.
+            // This avoids flipping the thumb state incorrectly during transient WebView sync.
         }
     }
 
@@ -206,7 +213,14 @@ extension PlayerService {
             guard SongLikeStatusManager.shared.activeAccountID == activeAccountID else { return }
 
             let cachedLikeStatus = SongLikeStatusManager.shared.status(for: videoId)
-            let resolvedLikeStatus = songData.likeStatus ?? cachedLikeStatus
+            let metadataLikeStatus = songData.likeStatus
+            let resolvedLikeStatus: LikeStatus? = {
+                if let metadataLikeStatus, metadataLikeStatus != .indifferent {
+                    return metadataLikeStatus
+                }
+
+                return cachedLikeStatus
+            }()
 
             // Update current track with full metadata if it's still the same song
             if self.currentTrack?.videoId == videoId {
@@ -231,7 +245,7 @@ extension PlayerService {
                 // Update service state and sync with SongLikeStatusManager.
                 // Unknown like status stays out of the cache so it cannot override
                 // a known rating from the WebView or a prior user action.
-                if let likeStatus = songData.likeStatus {
+                if let likeStatus = metadataLikeStatus, likeStatus != .indifferent {
                     self.currentTrackLikeStatus = likeStatus
                     SongLikeStatusManager.shared.setStatus(likeStatus, for: videoId)
                 } else if let cachedLikeStatus {

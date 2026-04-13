@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct FavoritesSection: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @State private var draggedItem: FavoriteItem?
     @State private var navigationPath: NavigationPath?
 
@@ -174,6 +175,15 @@ struct FavoritesSection: View {
         if case let .song(song) = item.itemType {
             Divider()
             AddToQueueContextMenu(song: song, playerService: self.playerService)
+
+            if let libraryViewModel = self.libraryViewModel {
+                Divider()
+                AddToPlaylistContextMenu(
+                    song: song,
+                    client: libraryViewModel.client,
+                    libraryViewModel: libraryViewModel
+                )
+            }
         }
 
         Divider()

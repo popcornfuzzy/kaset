@@ -78,6 +78,34 @@ final class SidebarUITests: KasetUITestCase {
         XCTAssertTrue(waitForElement(navigationTitle), "Library navigation title should be visible")
     }
 
+    func testLibraryDisclosureIsVisibleByDefault() {
+        launchDefault()
+
+        navigateToLibrary()
+
+        let libraryDisclosure = app.otherElements[TestAccessibilityID.Sidebar.libraryDisclosure].firstMatch
+        XCTAssertTrue(
+            libraryDisclosure.waitForExistence(timeout: 10),
+            "Library disclosure should be visible in sidebar"
+        )
+    }
+
+    func testNavigateToPlaylistFromSidebar() {
+        launchDefault()
+
+        let libraryDisclosure = app.otherElements[TestAccessibilityID.Sidebar.libraryDisclosure].firstMatch
+        XCTAssertTrue(libraryDisclosure.waitForExistence(timeout: 10), "Library disclosure should be visible in sidebar")
+        libraryDisclosure.click()
+
+        let playlistItem = app.buttons[TestAccessibilityID.Sidebar.playlistItem("playlist-0")].firstMatch
+        XCTAssertTrue(playlistItem.waitForExistence(timeout: 10), "First playlist should be visible in sidebar")
+
+        playlistItem.click()
+
+        let detailTitle = app.staticTexts["My Playlist 1"].firstMatch
+        XCTAssertTrue(waitForElement(detailTitle), "Playlist detail title should be visible after sidebar navigation")
+    }
+
     // MARK: - Navigation Persistence
 
     func testNavigationPersistsAfterSwitching() {

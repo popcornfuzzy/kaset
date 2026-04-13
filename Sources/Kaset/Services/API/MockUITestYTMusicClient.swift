@@ -319,6 +319,52 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         // No-op for UI tests
     }
 
+    func getAddToPlaylistEntries(videoId _: String) async throws -> [AddToPlaylistEntry] {
+        try? await Task.sleep(for: .milliseconds(100))
+
+        return self.playlists.map { playlist in
+            AddToPlaylistEntry(
+                id: playlist.id,
+                title: playlist.title,
+                subtitle: playlist.trackCountDisplay.isEmpty ? nil : playlist.trackCountDisplay,
+                thumbnailURL: playlist.thumbnailURL,
+                canAddVideo: true,
+                canRemoveVideoById: false,
+                containsVideo: false
+            )
+        }
+    }
+
+    func createPlaylist(title: String, privacy _: PlaylistPrivacy) async throws -> Playlist {
+        try? await Task.sleep(for: .milliseconds(100))
+
+        return Playlist(
+            id: "mock-created-\(title.lowercased().replacingOccurrences(of: " ", with: "-"))",
+            title: title,
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: 0,
+            author: "UI Test"
+        )
+    }
+
+    func renamePlaylist(playlistId _: String, newTitle _: String) async throws {
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    func deletePlaylist(playlistId _: String) async throws {
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    func addSongToPlaylist(videoId _: String, playlistId _: String) async throws -> PlaylistVideoAddResult {
+        try? await Task.sleep(for: .milliseconds(100))
+        return PlaylistVideoAddResult(setVideoId: "mock-ui-set-video-id", status: "STATUS_SUCCEEDED")
+    }
+
+    func removeSongFromPlaylist(videoId _: String, playlistId _: String, setVideoId _: String?) async throws {
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
     func subscribeToPodcast(showId _: String) async throws {
         // No-op for UI tests
     }

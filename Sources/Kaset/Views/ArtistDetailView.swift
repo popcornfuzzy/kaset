@@ -8,6 +8,7 @@ struct ArtistDetailView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
     var body: some View {
         Group {
@@ -253,119 +254,139 @@ struct ArtistDetailView: View {
 
     /// Song row for top songs section - fetches all songs and plays as queue.
     private func topSongRow(_ song: Song, index: Int) -> some View {
-        Button {
-            // Fetch all songs and play as queue starting from the selected song
-            Task {
-                let allSongs = await self.viewModel.getAllSongs()
-                // Find the index of the selected song in the full list
-                let startIndex = allSongs.firstIndex(where: { $0.videoId == song.videoId }) ?? index
-                await self.playerService.playQueue(allSongs, startingAt: startIndex)
-            }
-        } label: {
-            HStack(spacing: 12) {
-                // Thumbnail
-                CachedAsyncImage(url: song.thumbnailURL?.highQualityThumbnailURL) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    Rectangle()
-                        .fill(.quaternary)
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(.rect(cornerRadius: 4))
-
-                // Title
-                Text(song.title)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                // Artist column
-                Text(song.artistsDisplay)
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(width: 150, alignment: .leading)
-
-                // Album column (if available)
-                if let album = song.album {
-                    Text(album.title)
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(width: 150, alignment: .leading)
-                } else {
-                    Text("")
-                        .frame(width: 150, alignment: .leading)
-                }
-
-                // Duration
-                Text(song.durationDisplay)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 50, alignment: .trailing)
-            }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
+        HStack(spacing: 8) {
             Button {
+                // Fetch all songs and play as queue starting from the selected song
                 Task {
                     let allSongs = await self.viewModel.getAllSongs()
+                    // Find the index of the selected song in the full list
                     let startIndex = allSongs.firstIndex(where: { $0.videoId == song.videoId }) ?? index
                     await self.playerService.playQueue(allSongs, startingAt: startIndex)
                 }
             } label: {
-                Label("Play", systemImage: "play.fill")
+                HStack(spacing: 12) {
+                    // Thumbnail
+                    CachedAsyncImage(url: song.thumbnailURL?.highQualityThumbnailURL) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Rectangle()
+                            .fill(.quaternary)
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(.rect(cornerRadius: 4))
+
+                    // Title
+                    Text(song.title)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Artist column
+                    Text(song.artistsDisplay)
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(width: 150, alignment: .leading)
+
+                    // Album column (if available)
+                    if let album = song.album {
+                        Text(album.title)
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(width: 150, alignment: .leading)
+                    } else {
+                        Text("")
+                            .frame(width: 150, alignment: .leading)
+                    }
+
+                    // Duration
+                    Text(song.durationDisplay)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 50, alignment: .trailing)
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    Task {
+                        let allSongs = await self.viewModel.getAllSongs()
+                        let startIndex = allSongs.firstIndex(where: { $0.videoId == song.videoId }) ?? index
+                        await self.playerService.playQueue(allSongs, startingAt: startIndex)
+                    }
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                }
 
-            Divider()
-
-            FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
-
-            Divider()
-
-            LikeDislikeContextMenu(song: song, likeStatusManager: self.likeStatusManager)
-
-            Divider()
-
-            StartRadioContextMenu.menuItem(for: song, playerService: self.playerService)
-
-            Divider()
-
-            Button {
-                SongActionsHelper.addToLibrary(song, playerService: self.playerService)
-            } label: {
-                Label("Add to Library", systemImage: "plus.circle")
-            }
-
-            Divider()
-
-            ShareContextMenu.menuItem(for: song)
-
-            Divider()
-
-            AddToQueueContextMenu(song: song, playerService: self.playerService)
-
-            // Go to Album - show if album has valid browse ID
-            if let album = song.album, album.hasNavigableId {
                 Divider()
 
-                let playlist = Playlist(
-                    id: album.id,
-                    title: album.title,
-                    description: nil,
-                    thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
-                    trackCount: album.trackCount,
-                    author: album.artistsDisplay
-                )
-                NavigationLink(value: playlist) {
-                    Label("Go to Album", systemImage: "square.stack")
+                FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
+
+                Divider()
+
+                LikeDislikeContextMenu(song: song, likeStatusManager: self.likeStatusManager)
+
+                Divider()
+
+                StartRadioContextMenu.menuItem(for: song, playerService: self.playerService)
+
+                Divider()
+
+                Button {
+                    SongActionsHelper.addToLibrary(song, playerService: self.playerService)
+                } label: {
+                    Label("Add to Library", systemImage: "plus.circle")
                 }
+
+                Divider()
+
+                ShareContextMenu.menuItem(for: song)
+
+                Divider()
+
+                AddToQueueContextMenu(song: song, playerService: self.playerService)
+
+                Divider()
+
+                AddToPlaylistContextMenu(
+                    song: song,
+                    client: self.viewModel.client,
+                    libraryViewModel: self.libraryViewModel
+                )
+
+                // Go to Album - show if album has valid browse ID
+                if let album = song.album, album.hasNavigableId {
+                    Divider()
+
+                    let playlist = Playlist(
+                        id: album.id,
+                        title: album.title,
+                        description: nil,
+                        thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
+                        trackCount: album.trackCount,
+                        author: album.artistsDisplay
+                    )
+                    NavigationLink(value: playlist) {
+                        Label("Go to Album", systemImage: "square.stack")
+                    }
+                }
+            }
+
+            if let libraryViewModel = self.libraryViewModel {
+                AddToPlaylistPopoverButton(
+                    song: song,
+                    client: self.viewModel.client,
+                    libraryViewModel: libraryViewModel,
+                    icon: "text.badge.plus"
+                )
+                .frame(width: 20)
             }
         }
     }
