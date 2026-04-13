@@ -124,8 +124,7 @@ struct Sidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
-                .scrollIndicators(.hidden)
-                .background(SidebarScrollBarConfigurator())
+                .background(SidebarScrollBarStyleConfigurator())
                 .clipShape(Rectangle())
                 .animation(nil, value: self.selection)
                 .accessibilityIdentifier(AccessibilityID.Sidebar.container)
@@ -168,8 +167,7 @@ struct Sidebar: View {
     }
 }
 
-@available(macOS 26.0, *)
-private struct SidebarScrollBarConfigurator: NSViewRepresentable {
+private struct SidebarScrollBarStyleConfigurator: NSViewRepresentable {
     func makeNSView(context _: Context) -> NSView {
         let view = NSView(frame: .zero)
         Self.configureIfPossible(from: view)
@@ -185,7 +183,7 @@ private struct SidebarScrollBarConfigurator: NSViewRepresentable {
         let candidates = self.findSidebarScrollViews(from: view)
         if !candidates.isEmpty {
             for scrollView in candidates {
-                self.hideScrollbars(on: scrollView)
+                self.applySubtleStyle(on: scrollView)
             }
             return
         }
@@ -195,21 +193,20 @@ private struct SidebarScrollBarConfigurator: NSViewRepresentable {
             let candidates = self.findSidebarScrollViews(from: view)
             guard !candidates.isEmpty else { return }
             for scrollView in candidates {
-                self.hideScrollbars(on: scrollView)
+                self.applySubtleStyle(on: scrollView)
             }
         }
     }
 
     @MainActor
-    private static func hideScrollbars(on scrollView: NSScrollView) {
-        // Keep wheel/trackpad scrolling active while hiding visible scrollers.
+    private static func applySubtleStyle(on scrollView: NSScrollView) {
+        // Keep scrolling fully intact, only make scrollers less visually dominant.
         scrollView.scrollerStyle = .overlay
+        scrollView.scrollerKnobStyle = .default
         scrollView.autohidesScrollers = true
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        scrollView.verticalScroller?.alphaValue = 0
-        scrollView.verticalScroller?.isHidden = true
-        scrollView.horizontalScroller?.isHidden = true
+        scrollView.verticalScroller?.alphaValue = 0.55
     }
 
     @MainActor
