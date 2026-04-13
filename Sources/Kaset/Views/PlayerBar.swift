@@ -182,7 +182,10 @@ struct PlayerBar: View {
     private var trackInfoView: some View {
         HStack(spacing: 10) {
             // Thumbnail
-            CachedAsyncImage(url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(
+                url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
+                fallbackURL: self.playerService.currentTrack?.thumbnailURL
+            ) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)

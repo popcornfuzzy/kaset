@@ -198,9 +198,26 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         let songId = song.id
         self.currentSongId = songId
         self.imageLoadTask?.cancel()
-        if let url = song.thumbnailURL?.highQualityThumbnailURL {
+        if let primaryURL = song.thumbnailURL?.highQualityThumbnailURL {
+            let fallbackURL = song.thumbnailURL
             self.imageLoadTask = Task { [weak self] in
-                let image = await ImageCache.shared.image(for: url, targetSize: CGSize(width: 40, height: 40))
+                var candidates: [URL] = [primaryURL]
+                if let fallbackURL {
+                    let hqCandidates = fallbackURL.highQualityThumbnailCandidates.filter { $0 != fallbackURL }
+                    candidates.append(contentsOf: hqCandidates)
+                    candidates.append(fallbackURL)
+                }
+
+                var image: NSImage?
+                var seen: Set<String> = []
+                for candidate in candidates {
+                    guard seen.insert(candidate.absoluteString).inserted else { continue }
+                    image = await ImageCache.shared.image(for: candidate, targetSize: CGSize(width: 40, height: 40))
+                    if image != nil {
+                        break
+                    }
+                }
+
                 guard !Task.isCancelled, self?.currentSongId == songId else { return }
                 self?.thumbnailImageView.image = image
             }

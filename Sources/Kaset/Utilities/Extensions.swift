@@ -57,17 +57,71 @@ extension View {
 extension URL {
     /// Returns a higher quality YouTube thumbnail URL.
     var highQualityThumbnailURL: URL? {
+        self.highQualityThumbnailCandidates.first
+    }
+
+    /// Returns ordered high-quality thumbnail URL candidates.
+    /// The first candidate is the preferred HQ variant.
+    var highQualityThumbnailCandidates: [URL] {
         guard host?.contains("ytimg.com") == true || host?.contains("googleusercontent.com") == true else {
-            return self
+            return [self]
         }
 
-        var urlString = absoluteString
+        let original = self
+        let originalString = original.absoluteString
+        var candidates: [URL] = []
+        var seen: Set<String> = []
 
-        // Replace size parameters for higher quality
-        urlString = urlString.replacingOccurrences(of: "w60-h60", with: "w226-h226")
-        urlString = urlString.replacingOccurrences(of: "w120-h120", with: "w226-h226")
+        func appendCandidate(_ urlString: String) {
+            guard let url = URL(string: urlString) else { return }
+            guard seen.insert(url.absoluteString).inserted else { return }
+            candidates.append(url)
+        }
 
-        return URL(string: urlString)
+        // 1) Promote known YouTube-style size tokens (largest first).
+        let sizeUpgrades = [
+            "w60-h60": ["w544-h544", "w320-h320", "w226-h226"],
+            "w120-h120": ["w544-h544", "w320-h320", "w226-h226"],
+            "w180-h180": ["w544-h544", "w320-h320", "w226-h226"],
+            "w226-h226": ["w544-h544", "w320-h320"],
+        ]
+
+        for (token, replacements) in sizeUpgrades {
+            guard originalString.contains(token) else { continue }
+            for replacement in replacements {
+                appendCandidate(originalString.replacingOccurrences(of: token, with: replacement))
+            }
+        }
+
+        // 2) Promote googleusercontent '=sXX' style size parameters.
+        let scalarUpgrades = ["=s60", "=s88", "=s120", "=s160"]
+        for token in scalarUpgrades where originalString.contains(token) {
+            appendCandidate(originalString.replacingOccurrences(of: token, with: "=s544"))
+            appendCandidate(originalString.replacingOccurrences(of: token, with: "=s320"))
+            appendCandidate(originalString.replacingOccurrences(of: token, with: "=s226"))
+        }
+
+        // 3) Promote classic ytimg default thumbnail variants.
+        if host?.contains("ytimg.com") == true {
+            if originalString.contains("/default.jpg") {
+                appendCandidate(originalString.replacingOccurrences(of: "/default.jpg", with: "/maxresdefault.jpg"))
+                appendCandidate(originalString.replacingOccurrences(of: "/default.jpg", with: "/sddefault.jpg"))
+                appendCandidate(originalString.replacingOccurrences(of: "/default.jpg", with: "/hqdefault.jpg"))
+            } else if originalString.contains("/hqdefault.jpg") {
+                appendCandidate(originalString.replacingOccurrences(of: "/hqdefault.jpg", with: "/maxresdefault.jpg"))
+                appendCandidate(originalString.replacingOccurrences(of: "/hqdefault.jpg", with: "/sddefault.jpg"))
+            }
+        }
+
+        // Keep previous behavior as a deterministic fallback candidate.
+        appendCandidate(originalString.replacingOccurrences(of: "w60-h60", with: "w226-h226"))
+        appendCandidate(originalString.replacingOccurrences(of: "w120-h120", with: "w226-h226"))
+
+        if candidates.isEmpty {
+            appendCandidate(originalString)
+        }
+
+        return candidates
     }
 }
 

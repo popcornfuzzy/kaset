@@ -209,7 +209,10 @@ private struct QueueRowView: View {
                     .frame(width: 24)
 
                 // Thumbnail
-                CachedAsyncImage(url: self.song.thumbnailURL?.highQualityThumbnailURL) { image in
+                CachedAsyncImage(
+                    url: self.song.thumbnailURL?.highQualityThumbnailURL,
+                    fallbackURL: self.song.thumbnailURL
+                ) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
