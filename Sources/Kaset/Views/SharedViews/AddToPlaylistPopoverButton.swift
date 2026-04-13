@@ -140,6 +140,8 @@ struct AddToPlaylistContextMenu: View {
 
 @available(macOS 26.0, *)
 struct AddToPlaylistPopoverContent: View {
+    @Environment(SongLikeStatusManager.self) private var likeStatusManager
+
     let song: Song
     let client: any YTMusicClientProtocol
     let libraryViewModel: LibraryViewModel?
@@ -152,7 +154,6 @@ struct AddToPlaylistPopoverContent: View {
     @State private var showCreateComposer = false
     @State private var createTitle = ""
     @State private var isCreating = false
-    @State private var likeStatusManager = SongLikeStatusManager.shared
     @State private var resolvedMembershipByPlaylistId: [String: Bool] = [:]
     @State private var probingMembershipPlaylistIds: Set<String> = []
 
@@ -354,7 +355,15 @@ struct AddToPlaylistPopoverContent: View {
     }
 
     private static func isLikedSongsPlaylistId(_ playlistId: String) -> Bool {
-        playlistId == "LM" || playlistId == "VLLM"
+        if playlistId == "LM" || playlistId == "VLLM" {
+            return true
+        }
+
+        if playlistId.hasPrefix("VL") {
+            return String(playlistId.dropFirst(2)) == "LM"
+        }
+
+        return false
     }
 
     private static func isAlreadyInPlaylistError(_ error: any Error) -> Bool {
@@ -376,10 +385,19 @@ struct AddToPlaylistPopoverContent: View {
         defer { self.mutatingIds.remove(entry.id) }
 
         let containsVideo = self.containsVideo(for: entry)
+        let activeAccountID = self.likeStatusManager.activeAccountID
         let finalStatus: LikeStatus = if containsVideo {
-            await SongLikeStatusManager.shared.unlike(self.song, client: self.client)
+            await SongLikeStatusManager.shared.unlike(
+                self.song,
+                accountID: activeAccountID,
+                client: self.client
+            )
         } else {
-            await SongLikeStatusManager.shared.like(self.song, client: self.client)
+            await SongLikeStatusManager.shared.like(
+                self.song,
+                accountID: activeAccountID,
+                client: self.client
+            )
         }
 
         do {

@@ -633,7 +633,12 @@ struct PlaylistDetailView: View {
     // MARK: - Actions
 
     private func playTrackInQueue(tracks: [Song], startingAt index: Int, fallbackArtist: String? = nil, fallbackAlbum: Album? = nil) {
-        let cleanedTracks = self.cleanTracks(tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum)
+        let cleanedTracks = self.cleanTracks(
+            tracks,
+            fallbackArtist: fallbackArtist,
+            fallbackAlbum: fallbackAlbum,
+            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+        )
         Task {
             await self.playerService.playQueue(cleanedTracks, startingAt: index)
         }
@@ -641,7 +646,12 @@ struct PlaylistDetailView: View {
 
     private func playAll(_ tracks: [Song], fallbackArtist: String? = nil, fallbackAlbum: Album? = nil) {
         guard !tracks.isEmpty else { return }
-        let cleanedTracks = self.cleanTracks(tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum)
+        let cleanedTracks = self.cleanTracks(
+            tracks,
+            fallbackArtist: fallbackArtist,
+            fallbackAlbum: fallbackAlbum,
+            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+        )
         Task {
             await self.playerService.playQueue(cleanedTracks, startingAt: 0)
         }
@@ -649,7 +659,12 @@ struct PlaylistDetailView: View {
 
     private func playShuffled(_ tracks: [Song], fallbackArtist: String? = nil, fallbackAlbum: Album? = nil) {
         guard !tracks.isEmpty else { return }
-        let cleanedTracks = self.cleanTracks(tracks, fallbackArtist: fallbackArtist, fallbackAlbum: fallbackAlbum)
+        let cleanedTracks = self.cleanTracks(
+            tracks,
+            fallbackArtist: fallbackArtist,
+            fallbackAlbum: fallbackAlbum,
+            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+        )
         let shuffledTracks = cleanedTracks.shuffled()
         Task {
             await self.playerService.playQueue(shuffledTracks, startingAt: 0)
@@ -657,7 +672,12 @@ struct PlaylistDetailView: View {
     }
 
     /// Cleans track artists and applies fallback artist/album when needed.
-    private func cleanTracks(_ tracks: [Song], fallbackArtist: String?, fallbackAlbum: Album? = nil) -> [Song] {
+    private func cleanTracks(
+        _ tracks: [Song],
+        fallbackArtist: String?,
+        fallbackAlbum: Album? = nil,
+        forceLikedStatus: Bool = false
+    ) -> [Song] {
         tracks.map { song in
             var cleanedArtists = song.artists.compactMap { artist -> Artist? in
                 if artist.name == "Album" { return nil }
@@ -690,6 +710,7 @@ struct PlaylistDetailView: View {
             let finalAlbum = song.album ?? fallbackAlbum
             // Use fallback thumbnail if song doesn't have one
             let finalThumbnail = song.thumbnailURL ?? fallbackAlbum?.thumbnailURL
+            let finalLikeStatus = forceLikedStatus ? .like : song.likeStatus
 
             return Song(
                 id: song.id,
@@ -698,7 +719,12 @@ struct PlaylistDetailView: View {
                 album: finalAlbum,
                 duration: song.duration,
                 thumbnailURL: finalThumbnail,
-                videoId: song.videoId
+                videoId: song.videoId,
+                hasVideo: song.hasVideo,
+                musicVideoType: song.musicVideoType,
+                likeStatus: finalLikeStatus,
+                isInLibrary: song.isInLibrary,
+                feedbackTokens: song.feedbackTokens
             )
         }
     }
