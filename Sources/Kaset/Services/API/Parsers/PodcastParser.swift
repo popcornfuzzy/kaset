@@ -183,15 +183,45 @@ enum PodcastParser {
             return nil
         }
 
-        guard let navigationEndpoint = data["navigationEndpoint"] as? [String: Any],
-              let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
-              let browseId = browseEndpoint["browseId"] as? String
-        else {
+        // Some two-row podcast cards expose both show browse IDs and episode video IDs.
+        // Prioritize episode parsing whenever a video ID is present.
+        if let videoId = Self.extractEpisodeVideoId(from: data) {
+            let showBrowseId: String?
+            if let navigationEndpoint = data["navigationEndpoint"] as? [String: Any],
+               let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
+               let browseId = browseEndpoint["browseId"] as? String,
+               browseId.hasPrefix("MPSPP")
+            {
+                showBrowseId = browseId
+            } else {
+                showBrowseId = nil
+            }
+
+            let playbackMetadata = Self.extractPlaybackMetadata(from: data)
+            let episode = PodcastEpisode(
+                id: videoId,
+                title: title,
+                showTitle: ParsingHelpers.extractSubtitle(from: data),
+                showBrowseId: showBrowseId,
+                description: nil,
+                thumbnailURL: thumbnailURL,
+                publishedDate: nil,
+                duration: nil,
+                durationSeconds: nil,
+                playbackProgress: playbackMetadata.progress,
+                isPlayed: playbackMetadata.isPlayed
+            )
+            return .episode(episode)
+        }
+
+        guard let navigationEndpoint = data["navigationEndpoint"] as? [String: Any] else {
             return nil
         }
 
-        // Check if this is a podcast show (MPSPP prefix)
-        if browseId.hasPrefix("MPSPP") {
+        if let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
+           let browseId = browseEndpoint["browseId"] as? String,
+           browseId.hasPrefix("MPSPP")
+        {
             let author = ParsingHelpers.extractSubtitle(from: data)
             let show = PodcastShow(
                 id: browseId,
@@ -204,36 +234,12 @@ enum PodcastParser {
             return .show(show)
         }
 
-        // Otherwise it might be an episode with watchEndpoint
-        if let watchEndpoint = navigationEndpoint["watchEndpoint"] as? [String: Any],
-           let videoId = watchEndpoint["videoId"] as? String
-        {
-            let episode = PodcastEpisode(
-                id: videoId,
-                title: title,
-                showTitle: ParsingHelpers.extractSubtitle(from: data),
-                showBrowseId: nil,
-                description: nil,
-                thumbnailURL: thumbnailURL,
-                publishedDate: nil,
-                duration: nil,
-                durationSeconds: nil,
-                playbackProgress: 0,
-                isPlayed: false
-            )
-            return .episode(episode)
-        }
-
         return nil
     }
 
     /// Parses a multi-row list item (podcast episodes with playback progress).
     private static func parseMultiRowListItem(_ data: [String: Any]) -> PodcastSectionItem? {
-        // Extract video ID from navigation
-        guard let onTap = data["onTap"] as? [String: Any],
-              let watchEndpoint = onTap["watchEndpoint"] as? [String: Any],
-              let videoId = watchEndpoint["videoId"] as? String
-        else {
+        guard let videoId = Self.extractEpisodeVideoId(from: data) else {
             return nil
         }
 
@@ -250,26 +256,7 @@ enum PodcastParser {
         // Extract show browse ID for navigation
         let showBrowseId = Self.extractShowBrowseId(from: data)
 
-        // Extract playback progress (0-100 or 0.0-1.0)
-        var playbackProgress: Double = 0
-        var isPlayed = false
-
-        if let playbackProgressPercent = data["playbackProgress"] as? [String: Any],
-           let percentage = playbackProgressPercent["playbackProgressPercentage"] as? Int
-        {
-            playbackProgress = Double(percentage) / 100.0
-            isPlayed = percentage >= 95
-        }
-
-        // Check for "Played" text in played text field
-        if let playedTextRuns = data["playedText"] as? [String: Any],
-           let runs = playedTextRuns["runs"] as? [[String: Any]],
-           let text = runs.first?["text"] as? String,
-           text.lowercased() == "played"
-        {
-            isPlayed = true
-            playbackProgress = 1.0
-        }
+        let playbackMetadata = Self.extractPlaybackMetadata(from: data)
 
         // Extract duration
         var duration: String?
@@ -310,8 +297,8 @@ enum PodcastParser {
             publishedDate: publishedDate,
             duration: duration,
             durationSeconds: durationSeconds,
-            playbackProgress: playbackProgress,
-            isPlayed: isPlayed
+            playbackProgress: playbackMetadata.progress,
+            isPlayed: playbackMetadata.isPlayed
         )
 
         return .episode(episode)
@@ -319,7 +306,7 @@ enum PodcastParser {
 
     /// Parses a responsive list item (fallback for some episodes).
     private static func parseResponsiveListItem(_ data: [String: Any]) -> PodcastSectionItem? {
-        guard let videoId = ParsingHelpers.extractVideoId(from: data) else {
+        guard let videoId = Self.extractEpisodeVideoId(from: data) else {
             // Might be a podcast show
             if let browseId = ParsingHelpers.extractBrowseId(from: data),
                browseId.hasPrefix("MPSPP")
@@ -346,6 +333,7 @@ enum PodcastParser {
         let thumbnails = ParsingHelpers.extractThumbnails(from: data)
         let thumbnailURL = thumbnails.last.flatMap { URL(string: $0) }
         let showTitle = ParsingHelpers.extractSubtitleFromFlexColumns(data)
+        let playbackMetadata = Self.extractPlaybackMetadata(from: data)
 
         let episode = PodcastEpisode(
             id: videoId,
@@ -357,8 +345,8 @@ enum PodcastParser {
             publishedDate: nil,
             duration: nil,
             durationSeconds: nil,
-            playbackProgress: 0,
-            isPlayed: false
+            playbackProgress: playbackMetadata.progress,
+            isPlayed: playbackMetadata.isPlayed
         )
 
         return .episode(episode)
@@ -626,6 +614,181 @@ enum PodcastParser {
             return components[0] * 60 + components[1]
         } else if components.count == 3 {
             return components[0] * 3600 + components[1] * 60 + components[2]
+        }
+
+        return nil
+    }
+
+    /// Resolves podcast episode video IDs from multiple endpoint shapes.
+    /// Priority matters: explicit row tap endpoints should win over generic fallbacks.
+    private static func extractEpisodeVideoId(from data: [String: Any]) -> String? {
+        if let onTap = data["onTap"] as? [String: Any] {
+            if let watchEndpoint = onTap["watchEndpoint"] as? [String: Any],
+               let videoId = watchEndpoint["videoId"] as? String,
+               !videoId.isEmpty
+            {
+                return videoId
+            }
+
+            if let watchPlaylistEndpoint = onTap["watchPlaylistEndpoint"] as? [String: Any],
+               let videoId = watchPlaylistEndpoint["videoId"] as? String,
+               !videoId.isEmpty
+            {
+                return videoId
+            }
+        }
+
+        if let navigationEndpoint = data["navigationEndpoint"] as? [String: Any] {
+            if let watchEndpoint = navigationEndpoint["watchEndpoint"] as? [String: Any],
+               let videoId = watchEndpoint["videoId"] as? String,
+               !videoId.isEmpty
+            {
+                return videoId
+            }
+
+            if let watchPlaylistEndpoint = navigationEndpoint["watchPlaylistEndpoint"] as? [String: Any],
+               let videoId = watchPlaylistEndpoint["videoId"] as? String,
+               !videoId.isEmpty
+            {
+                return videoId
+            }
+
+            // Podcast episode detail pages often encode the video ID as MPED{videoId}.
+            if let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
+               let browseId = browseEndpoint["browseId"] as? String,
+               browseId.hasPrefix("MPED")
+            {
+                let encodedVideoId = String(browseId.dropFirst(4))
+                if !encodedVideoId.isEmpty {
+                    return encodedVideoId
+                }
+            }
+        }
+
+        return ParsingHelpers.extractVideoId(from: data)
+    }
+
+    private static func extractPlaybackMetadata(from data: [String: Any]) -> (progress: Double, isPlayed: Bool) {
+        var progress = 0.0
+        var isPlayed = false
+
+        if let playbackProgressField = data["playbackProgress"] as? [String: Any] {
+            if let percentage = playbackProgressField["playbackProgressPercentage"] as? Int {
+                progress = Double(percentage) / 100.0
+            } else if let percentage = playbackProgressField["playbackProgressPercentage"] as? Double {
+                progress = percentage > 1 ? percentage / 100.0 : percentage
+            }
+        }
+
+        // Some YT Music payloads place resume progress in nested thumbnail overlays.
+        if progress == 0,
+           let nestedProgress = Self.extractNestedProgressPercentage(from: data)
+        {
+            progress = nestedProgress > 1 ? nestedProgress / 100.0 : nestedProgress
+        }
+
+        if let nestedPlayed = Self.extractNestedPlayedFlag(from: data) {
+            isPlayed = nestedPlayed
+        }
+
+        // Keep the explicit "Played" signal as a fallback for payloads without percentages.
+        if let playedTextRuns = data["playedText"] as? [String: Any],
+           let runs = playedTextRuns["runs"] as? [[String: Any]],
+           let text = runs.first?["text"] as? String,
+           text.lowercased() == "played"
+        {
+            isPlayed = true
+            progress = 1.0
+        }
+
+        progress = min(max(progress, 0), 1)
+        if progress >= 0.95 {
+            isPlayed = true
+        }
+
+        return (progress, isPlayed)
+    }
+
+    private static func extractNestedProgressPercentage(from root: [String: Any]) -> Double? {
+        Self.findFirstNumericValue(in: root, matching: [
+            "playbackProgressPercentage",
+            "percentDurationWatched",
+        ])
+    }
+
+    private static func extractNestedPlayedFlag(from root: [String: Any]) -> Bool? {
+        Self.findFirstBoolValue(in: root, matching: [
+            "isPlayed",
+            "played",
+            "isWatched",
+        ])
+    }
+
+    private static func findFirstNumericValue(in value: Any, matching keys: Set<String>) -> Double? {
+        if let dict = value as? [String: Any] {
+            for (key, nestedValue) in dict {
+                if keys.contains(key) {
+                    if let intValue = nestedValue as? Int {
+                        return Double(intValue)
+                    }
+                    if let doubleValue = nestedValue as? Double {
+                        return doubleValue
+                    }
+                    if let floatValue = nestedValue as? Float {
+                        return Double(floatValue)
+                    }
+                    if let stringValue = nestedValue as? String,
+                       let doubleValue = Double(stringValue)
+                    {
+                        return doubleValue
+                    }
+                }
+                if let nestedMatch = Self.findFirstNumericValue(in: nestedValue, matching: keys) {
+                    return nestedMatch
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array {
+                if let nestedMatch = Self.findFirstNumericValue(in: item, matching: keys) {
+                    return nestedMatch
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func findFirstBoolValue(in value: Any, matching keys: Set<String>) -> Bool? {
+        if let dict = value as? [String: Any] {
+            for (key, nestedValue) in dict {
+                if keys.contains(key) {
+                    if let boolValue = nestedValue as? Bool {
+                        return boolValue
+                    }
+                    if let intValue = nestedValue as? Int {
+                        return intValue != 0
+                    }
+                    if let stringValue = nestedValue as? String {
+                        let normalized = stringValue.lowercased()
+                        if normalized == "true" || normalized == "yes" || normalized == "1" {
+                            return true
+                        }
+                        if normalized == "false" || normalized == "no" || normalized == "0" {
+                            return false
+                        }
+                    }
+                }
+
+                if let nestedMatch = Self.findFirstBoolValue(in: nestedValue, matching: keys) {
+                    return nestedMatch
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array {
+                if let nestedMatch = Self.findFirstBoolValue(in: item, matching: keys) {
+                    return nestedMatch
+                }
+            }
         }
 
         return nil
