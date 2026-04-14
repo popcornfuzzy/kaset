@@ -33,15 +33,9 @@ swift build
 # Unit Tests (never combine with UI tests)
 swift test --skip KasetUITests
 
-# Lint & Format
-swiftlint --strict && swiftformat .
+# Lint
+swiftlint --strict
 ```
-
-> ⚠️ **SwiftFormat `--self insert` rule**: The project uses `--self insert` in `.swiftformat`. This means:
-> - In static methods, call other static methods with `Self.methodName()` (not bare `methodName()`)
-> - In instance methods, use `self.property` explicitly
->
-> Always run `swiftformat .` before completing work to auto-fix these issues.
 
 ## API Discovery
 
