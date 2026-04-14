@@ -94,13 +94,15 @@ enum WhatsNewProvider {
         for version: WhatsNew.Version,
         session: URLSession = .shared
     ) async -> WhatsNew? {
-        // Try exact tag (v1.2.3), then minor (v1.2.0)
+        // Try exact version first, then minor fallback.
+        // Include both three-part and short tags (for example: v0.5.0 and v0.5).
         var tags: [String] = []
 
         for candidate in [version, version.minorRelease] {
-            let tag = "v\(candidate.description)"
-            if !tags.contains(tag) {
-                tags.append(tag)
+            for tag in Self.tagCandidates(for: candidate) {
+                if !tags.contains(tag) {
+                    tags.append(tag)
+                }
             }
         }
 
@@ -113,6 +115,27 @@ enum WhatsNewProvider {
         // Do not fall back to "latest" for automatic display; we only want
         // notes matching the currently running version (or minor release).
         return nil
+    }
+
+    private static func tagCandidates(for version: WhatsNew.Version) -> [String] {
+        var candidates: [String] = []
+
+        func appendUnique(_ tag: String) {
+            guard !tag.isEmpty, !candidates.contains(tag) else { return }
+            candidates.append(tag)
+        }
+
+        let full = version.description
+        appendUnique("v\(full)")
+        appendUnique(full)
+
+        if version.patch == 0 {
+            let short = "\(version.major).\(version.minor)"
+            appendUnique("v\(short)")
+            appendUnique(short)
+        }
+
+        return candidates
     }
 
     /// Fetches a release by tag — useful for testing a specific version.
