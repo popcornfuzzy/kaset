@@ -122,7 +122,7 @@ struct Sidebar: View {
                         }
                         .accessibilityIdentifier(AccessibilityID.Sidebar.likedMusicItem)
 
-                        NavigationLink(value: NavigationItem.history) {
+                        NavigationLink(value: SidebarSelection.navigation(.history)) {
                             Label(NavigationItem.history.displayName, systemImage: NavigationItem.history.icon)
                         }
                         .accessibilityIdentifier(AccessibilityID.Sidebar.historyItem)
