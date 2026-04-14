@@ -380,7 +380,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettingsView(updaterService: self.updaterService)
+            GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gearshape")
                 }
@@ -394,6 +394,11 @@ struct SettingsView: View {
                 .environment(self.scrobblingCoordinator)
                 .tabItem {
                     Label("Scrobbling", systemImage: "music.note.list")
+                }
+
+            AboutSettingsView(updaterService: self.updaterService)
+                .tabItem {
+                    Label("About", systemImage: "info.circle")
                 }
         }
         .frame(width: 450, height: 400)

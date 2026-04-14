@@ -38,6 +38,11 @@ struct WhatsNewVersionStore: @unchecked Sendable {
         self.defaults.set(true, forKey: Self.key(for: version))
     }
 
+    /// Clears the presented marker for a version so it can be shown again.
+    func clearPresented(_ version: WhatsNew.Version) {
+        self.defaults.removeObject(forKey: Self.key(for: version))
+    }
+
     // MARK: - Private
 
     private static func key(for version: WhatsNew.Version) -> String {
