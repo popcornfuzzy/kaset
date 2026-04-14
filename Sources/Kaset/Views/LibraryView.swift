@@ -45,6 +45,7 @@ struct LibraryView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @State private var networkMonitor = NetworkMonitor.shared
+    @State private var isRefreshing = false
 
     @State private var navigationPath = NavigationPath()
     @State private var selectedFilter: LibraryFilter = .all
@@ -58,7 +59,7 @@ struct LibraryView: View {
                         title: String(localized: "No Connection"),
                         message: String(localized: "Please check your internet connection and try again.")
                     ) {
-                        Task { await self.viewModel.refreshFromNetwork() }
+                        Task { await self.performRefresh() }
                     }
                 } else {
                     switch self.viewModel.loadingState {
@@ -68,13 +69,29 @@ struct LibraryView: View {
                         self.contentView
                     case let .error(error):
                         ErrorView(error: error) {
-                            Task { await self.viewModel.refreshFromNetwork() }
+                            Task { await self.performRefresh() }
                         }
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Library")
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        Task { await self.performRefresh() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .rotationEffect(.degrees(self.isRefreshing ? 360 : 0))
+                            .animation(
+                                self.isRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
+                                value: self.isRefreshing
+                            )
+                    }
+                    .help(String(localized: "Refresh Library"))
+                    .disabled(self.isRefreshing || self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
+                }
+            }
             .navigationDestination(for: Playlist.self) { playlist in
                 PlaylistDetailView(
                     playlist: playlist,
@@ -113,7 +130,7 @@ struct LibraryView: View {
             await self.viewModel.reloadIfNeededOnActivation()
         }
         .refreshable {
-            await self.viewModel.refreshFromNetwork()
+            await self.performRefresh()
         }
     }
 
@@ -139,25 +156,13 @@ struct LibraryView: View {
                 self.filterChip(filter)
             }
             Spacer()
-
-            Button {
-                Task {
-                    await self.viewModel.refreshFromNetwork()
-                }
-            } label: {
-                if self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .disabled(self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
-            .help(String(localized: "Refresh Library"))
         }
+    }
+
+    private func performRefresh() async {
+        self.isRefreshing = true
+        await self.viewModel.refreshFromNetwork()
+        self.isRefreshing = false
     }
 
     private func filterChip(_ filter: LibraryFilter) -> some View {

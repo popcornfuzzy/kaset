@@ -47,6 +47,9 @@ struct PlaylistDetailView: View {
     /// Whether a delete request is currently in progress.
     @State private var isDeletingPlaylist: Bool = false
 
+    /// Whether a refresh request is currently in progress.
+    @State private var isRefreshing: Bool = false
+
     /// Error message for playlist management actions.
     @State private var playlistActionError: String?
 
@@ -89,6 +92,22 @@ struct PlaylistDetailView: View {
         }
         .accentBackground(from: self.viewModel.playlistDetail?.thumbnailURL?.highQualityThumbnailURL)
         .navigationTitle(self.viewModel.playlistDetail?.title ?? self.playlist.title)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    Task { await self.performRefresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .rotationEffect(.degrees(self.isRefreshing ? 360 : 0))
+                        .animation(
+                            self.isRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
+                            value: self.isRefreshing
+                        )
+                }
+                .help(String(localized: "Refresh"))
+                .disabled(self.isRefreshing || self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
+            }
+        }
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
@@ -101,7 +120,7 @@ struct PlaylistDetailView: View {
             }
         }
         .refreshable {
-            await self.viewModel.refresh()
+            await self.performRefresh()
         }
         .sheet(isPresented: self.$showRefineSheet) {
             if let detail = viewModel.playlistDetail {
@@ -313,18 +332,6 @@ struct PlaylistDetailView: View {
                     }
 
                     Button {
-                        Task {
-                            await self.viewModel.refresh()
-                            await self.libraryViewModel?.refreshFromNetwork()
-                        }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
-
-                    Button {
                         self.showRefineSheet = true
                     } label: {
                         Label("Refine", systemImage: "sparkles")
@@ -354,6 +361,13 @@ struct PlaylistDetailView: View {
         }
 
         return detail.trackCountDisplay
+    }
+
+    private func performRefresh() async {
+        self.isRefreshing = true
+        await self.viewModel.refresh()
+        await self.libraryViewModel?.refreshFromNetwork()
+        self.isRefreshing = false
     }
 
     private var renamePlaylistPopover: some View {
