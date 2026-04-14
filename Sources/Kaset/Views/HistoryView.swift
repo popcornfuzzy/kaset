@@ -162,7 +162,19 @@ struct HistoryView: View {
             }
         } label: {
             HStack(spacing: 12) {
-                SongThumbnailView(song: song)
+                CachedAsyncImage(
+                    url: song.thumbnailURL?.highQualityThumbnailURL,
+                    fallbackURL: song.thumbnailURL
+                ) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.2))
+                }
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.title)
