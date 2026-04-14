@@ -113,8 +113,14 @@ struct PodcastsView: View {
             thumbnailURL: episode.thumbnailURL,
             videoId: episode.id
         )
+
+        DiagnosticsLogger.api.debug(
+            "PodcastsView.playEpisode tapped episode '\(episode.title)' with videoId=\(episode.id)"
+        )
+
         Task {
-            await self.playerService.play(song: song)
+            // Use an explicit queue to avoid stale queue sync selecting a different track.
+            await self.playerService.playQueue([song], startingAt: 0)
         }
     }
 }
@@ -183,6 +189,21 @@ private struct PodcastEpisodeCard: View {
                     .frame(width: 200, height: 112)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
 
+                    if self.episode.playbackProgress > 0 {
+                        VStack {
+                            Spacer()
+                            PodcastPlaybackProgressBar(
+                                progress: self.episode.playbackProgress,
+                                isPlayed: self.episode.isPlayed,
+                                trackColor: .black.opacity(0.24),
+                                fillColor: self.episode.isPlayed ? .white.opacity(0.55) : .white.opacity(0.88),
+                                height: 2
+                            )
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.bottom, 5)
+                    }
+
                     // Duration badge
                     if let duration = episode.formattedDuration {
                         Text(duration)
@@ -192,7 +213,8 @@ private struct PodcastEpisodeCard: View {
                             .padding(.vertical, 2)
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 4))
-                            .padding(6)
+                            .padding(.horizontal, 6)
+                            .padding(.bottom, self.episode.playbackProgress > 0 ? 10 : 6)
                     }
                 }
 
@@ -219,11 +241,6 @@ private struct PodcastEpisodeCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                // Progress bar (Apple Podcasts style)
-                if self.episode.playbackProgress > 0 {
-                    ProgressView(value: self.episode.playbackProgress)
-                        .tint(self.episode.isPlayed ? .secondary : .accentColor)
-                }
             }
             .frame(width: 200)
         }
@@ -547,15 +564,48 @@ struct PodcastEpisodeRow: View {
                     }
 
                     // Progress bar
-                    if self.episode.playbackProgress > 0, !self.episode.isPlayed {
-                        ProgressView(value: self.episode.playbackProgress)
-                            .tint(.accentColor)
+                    if self.episode.playbackProgress > 0 {
+                        PodcastPlaybackProgressBar(
+                            progress: self.episode.playbackProgress,
+                            isPlayed: self.episode.isPlayed,
+                            trackColor: .primary.opacity(0.08),
+                            fillColor: self.episode.isPlayed ? .secondary.opacity(0.5) : .accentColor.opacity(0.7),
+                            height: 2
+                        )
                     }
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+@available(macOS 26.0, *)
+private struct PodcastPlaybackProgressBar: View {
+    let progress: Double
+    let isPlayed: Bool
+    let trackColor: Color
+    let fillColor: Color
+    let height: CGFloat
+
+    private var clampedProgress: CGFloat {
+        CGFloat(min(max(self.progress, 0), 1))
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(self.trackColor)
+
+                Capsule()
+                    .fill(self.fillColor)
+                    .frame(width: geometry.size.width * self.clampedProgress)
+            }
+        }
+        .frame(height: self.height)
+        .accessibilityHidden(true)
     }
 }
 

@@ -37,6 +37,65 @@ struct PodcastParserTests {
         #expect(sections.count == 2)
     }
 
+    @Test("Parse two-row podcast episode includes playback progress")
+    func parseTwoRowPodcastEpisodeWithProgress() {
+        let data = self.makeDiscoveryDataWithTwoRowEpisodeProgress()
+        let sections = PodcastParser.parseDiscovery(data)
+        guard let firstSection = sections.first,
+              case let .episode(episode) = firstSection.items.first
+        else {
+            Issue.record("Expected first discovery item to be a podcast episode")
+            return
+        }
+
+        #expect(episode.playbackProgress == 0.42)
+        #expect(episode.isPlayed == false)
+    }
+
+    @Test("Parse two-row item with show browse and watch endpoint as episode")
+    func parseTwoRowItemWithBrowseAndWatchPrefersEpisode() {
+        let data = self.makeDiscoveryDataWithTwoRowBrowseAndWatchEpisodeProgress()
+        let sections = PodcastParser.parseDiscovery(data)
+        guard let firstSection = sections.first,
+              case let .episode(episode) = firstSection.items.first
+        else {
+            Issue.record("Expected first discovery item to be parsed as episode")
+            return
+        }
+
+        #expect(episode.id == "ep-browse-watch")
+        #expect(episode.showBrowseId == "MPSPPshow123")
+        #expect(episode.playbackProgress == 0.28)
+    }
+
+    @Test("Parse multi-row onTap watchPlaylistEndpoint videoId")
+    func parseMultiRowOnTapWatchPlaylistEndpointVideoId() {
+        let data = self.makeDiscoveryDataWithMultiRowWatchPlaylistEpisode()
+        let sections = PodcastParser.parseDiscovery(data)
+        guard let firstSection = sections.first,
+              case let .episode(episode) = firstSection.items.first
+        else {
+            Issue.record("Expected first discovery item to be parsed as episode")
+            return
+        }
+
+        #expect(episode.id == "ep-ontap-playlist")
+    }
+
+    @Test("Parse two-row MPED browseId as episode videoId")
+    func parseTwoRowMPEDBrowseIdVideoId() {
+        let data = self.makeDiscoveryDataWithTwoRowMPEDBrowseEpisode()
+        let sections = PodcastParser.parseDiscovery(data)
+        guard let firstSection = sections.first,
+              case let .episode(episode) = firstSection.items.first
+        else {
+            Issue.record("Expected first discovery item to be parsed as episode")
+            return
+        }
+
+        #expect(episode.id == "correct-from-mped")
+    }
+
     // MARK: - parseContinuation Tests
 
     @Test("Parse empty continuation returns empty sections")
@@ -92,6 +151,26 @@ struct PodcastParserTests {
         let detail = PodcastParser.parseShowDetail(data, showId: "MPSPP123")
         #expect(detail.continuationToken == "token123")
         #expect(detail.hasMore == true)
+    }
+
+    @Test("Parse show detail responsive episodes with playback progress")
+    func parseShowDetailWithResponsiveEpisodeProgress() {
+        let data = self.makeShowDetailDataWithEpisodeProgress()
+        let detail = PodcastParser.parseShowDetail(data, showId: "MPSPP123")
+
+        #expect(detail.episodes.count == 1)
+        #expect(detail.episodes.first?.playbackProgress == 0.64)
+        #expect(detail.episodes.first?.isPlayed == false)
+    }
+
+    @Test("Parse show detail responsive episodes with nested resume overlay progress")
+    func parseShowDetailWithNestedResumeProgress() {
+        let data = self.makeShowDetailDataWithNestedResumeProgress()
+        let detail = PodcastParser.parseShowDetail(data, showId: "MPSPP123")
+
+        #expect(detail.episodes.count == 1)
+        #expect(detail.episodes.first?.playbackProgress == 0.37)
+        #expect(detail.episodes.first?.isPlayed == false)
     }
 
     // MARK: - parseEpisodesContinuation Tests
@@ -353,6 +432,226 @@ struct PodcastParserTests {
         return [
             "continuationContents": [
                 "musicShelfContinuation": shelfContinuation,
+            ],
+        ]
+    }
+
+    private func makeDiscoveryDataWithTwoRowEpisodeProgress() -> [String: Any] {
+        [
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCarouselShelfRenderer": [
+                                            "header": [
+                                                "musicCarouselShelfBasicHeaderRenderer": [
+                                                    "title": ["runs": [["text": "Keep listening"]]],
+                                                ],
+                                            ],
+                                            "contents": [[
+                                                "musicTwoRowItemRenderer": [
+                                                    "title": ["runs": [["text": "Episode with progress"]]],
+                                                    "navigationEndpoint": [
+                                                        "watchEndpoint": ["videoId": "ep-progress"],
+                                                    ],
+                                                    "subtitle": ["runs": [["text": "Podcast Show"]]],
+                                                    "playbackProgress": ["playbackProgressPercentage": 42],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
+    private func makeDiscoveryDataWithTwoRowBrowseAndWatchEpisodeProgress() -> [String: Any] {
+        [
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCarouselShelfRenderer": [
+                                            "header": [
+                                                "musicCarouselShelfBasicHeaderRenderer": [
+                                                    "title": ["runs": [["text": "Keep listening"]]],
+                                                ],
+                                            ],
+                                            "contents": [[
+                                                "musicTwoRowItemRenderer": [
+                                                    "title": ["runs": [["text": "Episode browse+watch"]]],
+                                                    "navigationEndpoint": [
+                                                        "browseEndpoint": ["browseId": "MPSPPshow123"],
+                                                        "watchEndpoint": ["videoId": "ep-browse-watch"],
+                                                    ],
+                                                    "subtitle": ["runs": [["text": "Podcast Show"]]],
+                                                    "playbackProgress": ["playbackProgressPercentage": 28],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
+    private func makeDiscoveryDataWithMultiRowWatchPlaylistEpisode() -> [String: Any] {
+        [
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicShelfRenderer": [
+                                            "title": ["runs": [["text": "Your new episodes"]]],
+                                            "contents": [[
+                                                "musicMultiRowListItemRenderer": [
+                                                    "title": ["runs": [["text": "Episode via watchPlaylistEndpoint"]]],
+                                                    "onTap": [
+                                                        "watchPlaylistEndpoint": [
+                                                            "videoId": "ep-ontap-playlist",
+                                                            "playlistId": "PL123",
+                                                        ],
+                                                    ],
+                                                    // Intentionally conflicting fallback endpoint to verify priority.
+                                                    "navigationEndpoint": [
+                                                        "watchEndpoint": ["videoId": "ep-fallback-wrong"],
+                                                    ],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
+    private func makeDiscoveryDataWithTwoRowMPEDBrowseEpisode() -> [String: Any] {
+        [
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCarouselShelfRenderer": [
+                                            "header": [
+                                                "musicCarouselShelfBasicHeaderRenderer": [
+                                                    "title": ["runs": [["text": "Your new episodes"]]],
+                                                ],
+                                            ],
+                                            "contents": [[
+                                                "musicTwoRowItemRenderer": [
+                                                    "title": ["runs": [["text": "Episode from MPED"]]],
+                                                    "navigationEndpoint": [
+                                                        "browseEndpoint": ["browseId": "MPEDcorrect-from-mped"],
+                                                    ],
+                                                    // Conflicting fallback that should not win.
+                                                    "thumbnailOverlay": [
+                                                        "musicItemThumbnailOverlayRenderer": [
+                                                            "content": [
+                                                                "musicPlayButtonRenderer": [
+                                                                    "playNavigationEndpoint": [
+                                                                        "watchEndpoint": ["videoId": "wrong-fallback-id"],
+                                                                    ],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
+    private func makeShowDetailDataWithEpisodeProgress() -> [String: Any] {
+        [
+            "contents": [
+                "twoColumnBrowseResultsRenderer": [
+                    "secondaryContents": [
+                        "sectionListRenderer": [
+                            "contents": [[
+                                "musicShelfRenderer": [
+                                    "contents": [[
+                                        "musicResponsiveListItemRenderer": [
+                                            "playlistItemData": ["videoId": "ep-progress"],
+                                            "flexColumns": [[
+                                                "musicResponsiveListItemFlexColumnRenderer": [
+                                                    "text": ["runs": [["text": "Episode with progress"]]],
+                                                ],
+                                            ]],
+                                            "playbackProgress": ["playbackProgressPercentage": 64],
+                                        ],
+                                    ]],
+                                ],
+                            ]],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
+
+    private func makeShowDetailDataWithNestedResumeProgress() -> [String: Any] {
+        [
+            "contents": [
+                "twoColumnBrowseResultsRenderer": [
+                    "secondaryContents": [
+                        "sectionListRenderer": [
+                            "contents": [[
+                                "musicShelfRenderer": [
+                                    "contents": [[
+                                        "musicResponsiveListItemRenderer": [
+                                            "playlistItemData": ["videoId": "ep-progress-overlay"],
+                                            "flexColumns": [[
+                                                "musicResponsiveListItemFlexColumnRenderer": [
+                                                    "text": ["runs": [["text": "Episode with nested progress"]]],
+                                                ],
+                                            ]],
+                                            "overlay": [
+                                                "musicItemThumbnailOverlayRenderer": [
+                                                    "content": [
+                                                        "thumbnailOverlayResumePlaybackRenderer": [
+                                                            "percentDurationWatched": 37,
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ]],
+                        ],
+                    ],
+                ],
             ],
         ]
     }
