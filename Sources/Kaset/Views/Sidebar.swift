@@ -121,6 +121,11 @@ struct Sidebar: View {
                             Label(NavigationItem.likedMusic.displayName, systemImage: NavigationItem.likedMusic.icon)
                         }
                         .accessibilityIdentifier(AccessibilityID.Sidebar.likedMusicItem)
+
+                        NavigationLink(value: SidebarSelection.navigation(.history)) {
+                            Label(NavigationItem.history.displayName, systemImage: NavigationItem.history.icon)
+                        }
+                        .accessibilityIdentifier(AccessibilityID.Sidebar.historyItem)
                     }
                 }
                 .listStyle(.sidebar)
