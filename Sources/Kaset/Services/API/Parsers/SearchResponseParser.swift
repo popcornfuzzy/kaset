@@ -210,7 +210,7 @@ enum SearchResponseParser {
                 description: nil,
                 thumbnailURL: thumbnailURL,
                 trackCount: nil,
-                author: subtitle
+                author: subtitle.map { Artist.inline(name: $0, namespace: "playlist-author") }
             )
             return .playlist(playlist)
         }

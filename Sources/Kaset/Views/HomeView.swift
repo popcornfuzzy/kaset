@@ -174,7 +174,7 @@ struct HomeView: View {
                     description: nil,
                     thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
                     trackCount: album.trackCount,
-                    author: album.artistsDisplay
+                    author: album.preferredPlaylistAuthor
                 )
                 NavigationLink(value: playlist) {
                     Label("Go to Album", systemImage: "square.stack")
@@ -298,7 +298,7 @@ struct HomeView: View {
                 description: nil,
                 thumbnailURL: album.thumbnailURL,
                 trackCount: album.trackCount,
-                author: album.artistsDisplay
+                author: album.preferredPlaylistAuthor
             )
             self.navigationPath.append(playlist)
         case let .artist(artist):
@@ -306,6 +306,7 @@ struct HomeView: View {
             self.navigationPath.append(artist)
         }
     }
+
 }
 
 #Preview {

@@ -122,7 +122,7 @@ struct MoodCategoryDetailView: View {
                 description: nil,
                 thumbnailURL: album.thumbnailURL,
                 trackCount: album.trackCount,
-                author: album.artistsDisplay
+                author: album.preferredPlaylistAuthor
             )
             NavigationLink(value: playlist) {
                 ItemCardContent(item: item)

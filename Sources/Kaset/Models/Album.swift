@@ -72,4 +72,26 @@ extension Album {
             self.trackCount = nil
         }
     }
+
+    /// Best-effort author used when an album is represented as a playlist destination.
+    /// Prefers a navigable artist so playlist detail headers can link to artist pages.
+    var preferredPlaylistAuthor: Artist? {
+        if let navigableArtist = self.artists?.first(where: \.hasNavigableId) {
+            return navigableArtist
+        }
+
+        if let firstArtist = self.artists?.first {
+            let name = firstArtist.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                return Artist.inline(name: name, namespace: "album-artist")
+            }
+        }
+
+        let display = self.artistsDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !display.isEmpty {
+            return Artist.inline(name: display, namespace: "album-artist")
+        }
+
+        return nil
+    }
 }

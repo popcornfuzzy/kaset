@@ -64,7 +64,7 @@ struct FavoritesSection: View {
                 description: nil,
                 thumbnailURL: album.thumbnailURL,
                 trackCount: album.trackCount,
-                author: album.artistsDisplay
+                author: album.preferredPlaylistAuthor
             )
             self.onNavigate?(playlist)
         case let .playlist(playlist):
@@ -206,7 +206,7 @@ struct FavoritesSection: View {
                     description: nil,
                     thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
                     trackCount: album.trackCount,
-                    author: album.artistsDisplay
+                    author: album.preferredPlaylistAuthor
                 )
                 Button {
                     self.onNavigate?(playlist)

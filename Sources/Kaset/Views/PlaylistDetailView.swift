@@ -157,12 +157,12 @@ struct PlaylistDetailView: View {
                 let fallbackAlbum = Album(
                     id: detail.id,
                     title: detail.title,
-                    artists: detail.author.map { [Artist(id: "unknown", name: $0)] },
+                    artists: detail.author.map { [$0] },
                     thumbnailURL: detail.thumbnailURL,
                     year: nil,
                     trackCount: detail.trackCount ?? detail.tracks.count
                 )
-                self.tracksView(detail.tracks, isAlbum: detail.isAlbum, author: detail.author, fallbackAlbum: fallbackAlbum)
+                self.tracksView(detail.tracks, isAlbum: detail.isAlbum, author: detail.author?.name, fallbackAlbum: fallbackAlbum)
             }
             .padding(24)
         }
@@ -199,11 +199,7 @@ struct PlaylistDetailView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
-                if let author = detail.author {
-                    Text(author)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                self.headerAuthorView(detail)
 
                 Spacer()
 
@@ -217,11 +213,44 @@ struct PlaylistDetailView: View {
         Album(
             id: detail.id,
             title: detail.title,
-            artists: detail.author.map { [Artist(id: "unknown", name: $0)] },
+            artists: detail.author.map { [$0] },
             thumbnailURL: detail.thumbnailURL,
             year: nil,
             trackCount: detail.trackCount ?? detail.tracks.count
         )
+    }
+
+    @ViewBuilder
+    private func headerAuthorView(_ detail: PlaylistDetail) -> some View {
+        if let author = detail.author {
+            if author.hasNavigableId {
+                HoverUnderlineNavigationLink(value: author, title: author.name)
+            } else if let linkedArtist = self.primaryAlbumArtist(from: detail) {
+                HoverUnderlineNavigationLink(value: linkedArtist, title: author.name)
+            } else {
+                Text(author.name)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let linkedArtist = self.primaryAlbumArtist(from: detail) {
+            HoverUnderlineNavigationLink(value: linkedArtist, title: linkedArtist.name)
+        }
+    }
+
+    private func primaryAlbumArtist(from detail: PlaylistDetail) -> Artist? {
+        guard detail.isAlbum || self.playlist.isAlbum else { return nil }
+
+        let artists = detail.tracks.flatMap(\.artists)
+
+        if let authorName = detail.author?.name,
+           let matchingArtist = artists.first(where: {
+               $0.hasNavigableId && $0.name.caseInsensitiveCompare(authorName) == .orderedSame
+           })
+        {
+            return matchingArtist
+        }
+
+        return artists.first(where: \.hasNavigableId)
     }
 
     private func headerButtons(_ detail: PlaylistDetail) -> some View {
@@ -230,7 +259,7 @@ struct PlaylistDetailView: View {
                 // Play all button
                 Button {
                     let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    self.playAll(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
+                    self.playAll(detail.tracks, fallbackArtist: detail.author?.name, fallbackAlbum: fallbackAlbum)
                 } label: {
                     Label("Play", systemImage: "play.fill")
                 }
@@ -241,7 +270,7 @@ struct PlaylistDetailView: View {
                 // Shuffle button
                 Button {
                     let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    self.playShuffled(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
+                    self.playShuffled(detail.tracks, fallbackArtist: detail.author?.name, fallbackAlbum: fallbackAlbum)
                 } label: {
                     Image(systemName: "shuffle")
                 }
@@ -255,7 +284,7 @@ struct PlaylistDetailView: View {
                     SongActionsHelper.addSongsToQueueNext(
                         detail.tracks,
                         playerService: self.playerService,
-                        fallbackArtist: detail.author,
+                        fallbackArtist: detail.author?.name,
                         fallbackAlbum: fallbackAlbum
                     )
                 } label: {
@@ -271,7 +300,7 @@ struct PlaylistDetailView: View {
                     SongActionsHelper.addSongsToQueueLast(
                         detail.tracks,
                         playerService: self.playerService,
-                        fallbackArtist: detail.author,
+                        fallbackArtist: detail.author?.name,
                         fallbackAlbum: fallbackAlbum
                     )
                 } label: {
@@ -619,7 +648,7 @@ struct PlaylistDetailView: View {
                 description: nil,
                 thumbnailURL: album.thumbnailURL ?? track.thumbnailURL,
                 trackCount: album.trackCount,
-                author: album.artistsDisplay
+                author: album.preferredPlaylistAuthor
             )
             NavigationLink(value: playlist) {
                 Label("Go to Album", systemImage: "square.stack")
@@ -913,6 +942,28 @@ struct PlaylistDetailView: View {
     }
 }
 
+// MARK: - HoverUnderlineNavigationLink
+
+private struct HoverUnderlineNavigationLink<Value: Hashable>: View {
+    let value: Value
+    let title: String
+
+    @State private var isHovering = false
+
+    var body: some View {
+        NavigationLink(value: self.value) {
+            Text(self.title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .underline(self.isHovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            self.isHovering = hovering
+        }
+    }
+}
+
 // MARK: - RefinePlaylistSheet
 
 @available(macOS 26.0, *)
@@ -1184,7 +1235,7 @@ private struct RefinePlaylistSheet: View {
         description: nil,
         thumbnailURL: nil,
         trackCount: 10,
-        author: "Test Author"
+        author: Artist.inline(name: "Test Author", namespace: "playlist-author")
     )
     let authService = AuthService()
     let client = YTMusicClient(authService: authService, webKitManager: .shared)

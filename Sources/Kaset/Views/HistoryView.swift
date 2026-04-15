@@ -240,7 +240,7 @@ struct HistoryView: View {
                     description: nil,
                     thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
                     trackCount: album.trackCount,
-                    author: album.artistsDisplay
+                    author: album.preferredPlaylistAuthor
                 )
                 NavigationLink(value: playlist) {
                     Label(String(localized: "Go to Album"), systemImage: "square.stack")

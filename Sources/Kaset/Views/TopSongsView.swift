@@ -187,7 +187,7 @@ struct TopSongsView: View {
                         description: nil,
                         thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
                         trackCount: album.trackCount,
-                        author: album.artistsDisplay
+                        author: album.preferredPlaylistAuthor
                     )
                     NavigationLink(value: playlist) {
                         Label("Go to Album", systemImage: "square.stack")
