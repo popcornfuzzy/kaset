@@ -81,9 +81,15 @@ struct FullscreenNowPlayingView: View {
         }
         .onChange(of: self.playerService.currentTrack?.title) { _, _ in
             guard let videoId = self.playerService.currentTrack?.videoId else { return }
+
+            let hasSyncedLyrics: Bool = {
+                if case .synced = self.syncedLyricsService.currentLyrics, self.syncedLyricsService.currentLyricsVideoId == videoId { return true }
+                return false
+            }()
+
             // Re-trigger if metadata stabilized after a skipped or failed fetch
             guard videoId != self.lastLoadedVideoId
-                || (!self.hasLyricsForCurrentTrack && !self.syncedLyricsService.isLoading)
+                || (!hasSyncedLyrics && !self.syncedLyricsService.isLoading)
             else { return }
             Task {
                 await self.loadLyrics(for: videoId)
