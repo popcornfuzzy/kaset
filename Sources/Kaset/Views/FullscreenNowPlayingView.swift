@@ -79,6 +79,16 @@ struct FullscreenNowPlayingView: View {
                 }
             }
         }
+        .onChange(of: self.playerService.currentTrack?.title) { _, _ in
+            guard let videoId = self.playerService.currentTrack?.videoId else { return }
+            // Re-trigger if metadata stabilized after a skipped or failed fetch
+            guard videoId != self.lastLoadedVideoId
+                || (!self.hasLyricsForCurrentTrack && !self.syncedLyricsService.isLoading)
+            else { return }
+            Task {
+                await self.loadLyrics(for: videoId)
+            }
+        }
         .onChange(of: self.syncedLyricsService.currentLyrics) { _, newLyrics in
             self.updateLyricsPolling(for: newLyrics)
         }
@@ -461,11 +471,19 @@ struct FullscreenNowPlayingView: View {
 
     @MainActor
     private func loadLyrics(for videoId: String) async {
-        self.lastLoadedVideoId = videoId
         self.isLoadingFallback = false
 
         guard let track = self.playerService.currentTrack else { return }
         guard track.videoId == videoId else { return }
+
+        // Skip fetch if metadata hasn't stabilized yet — a later onChange on
+        // the track's title will re-trigger loading with correct metadata.
+        guard !track.title.isEmpty,
+              track.title != "Loading...",
+              !track.artistsDisplay.isEmpty
+        else { return }
+
+        self.lastLoadedVideoId = videoId
 
         let info = LyricsSearchInfo(
             title: track.title,
