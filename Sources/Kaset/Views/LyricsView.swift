@@ -67,9 +67,21 @@ struct LyricsView: View {
             }()
 
             // Re-trigger if metadata stabilized after a skipped or failed fetch
-            guard videoId != self.lastLoadedVideoId
-                || (!hasSyncedLyrics && !self.syncedLyricsService.isLoading)
-            else { return }
+            guard videoId != self.lastLoadedVideoId || !hasSyncedLyrics else { return }
+            Task {
+                await self.loadLyrics(for: videoId)
+            }
+        }
+        .onChange(of: self.playerService.duration) { _, newDuration in
+            guard let videoId = self.playerService.currentTrack?.videoId else { return }
+            guard newDuration > 0 else { return }
+
+            let hasSyncedLyrics: Bool = {
+                if case .synced = self.syncedLyricsService.currentLyrics, self.syncedLyricsService.currentLyricsVideoId == videoId { return true }
+                return false
+            }()
+
+            guard !hasSyncedLyrics else { return }
             Task {
                 await self.loadLyrics(for: videoId)
             }
@@ -438,7 +450,7 @@ struct LyricsView: View {
             title: track.title,
             artist: track.artistsDisplay,
             album: track.album?.title,
-            duration: track.duration,
+            duration: self.playerService.duration > 0 ? self.playerService.duration : track.duration,
             videoId: track.videoId
         )
 
