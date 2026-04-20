@@ -22,9 +22,9 @@ source "$ROOT/version.env"
 CONF=${1:-release}
 SIGNING_MODE=${KASET_SIGNING:-dev}
 APP_NAME="Kaset"
-BUNDLE_ID="${KASET_BUNDLE_ID:-com.sertacozercan.Kaset}"
+BUNDLE_ID="${KASET_BUNDLE_ID:-com.popcornfuzzy.Kaset}"
 SU_FEED_URL="${KASET_SU_FEED_URL:-https://raw.githubusercontent.com/popcornfuzzy/kaset/main/appcast.xml}"
-SU_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_KEY:-qa2zoeXHqn+pluxQSGjn5HyIYA/iFtrEJz7S1BoslpI=}"
+SU_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_KEY:-o1vx9iHiGFhq2hdvof0Zv1pxf3uQSBxwSCW4WBDk2Wo=}"
 BUILD_DIR="$ROOT/.build/app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 
