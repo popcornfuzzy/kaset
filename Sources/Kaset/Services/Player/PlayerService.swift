@@ -53,6 +53,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Currently playing track.
     var currentTrack: Song?
 
+    /// Artist-page episode backing the current playback, when applicable.
+    var currentEpisode: ArtistEpisode?
+
     /// Whether playback is active.
     var isPlaying: Bool {
         self.state.isPlaying
@@ -241,7 +244,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
         // Restore volumeBeforeMute for proper unmute behavior
         if UserDefaults.standard.object(forKey: Self.volumeBeforeMuteKey) != nil {
-            let savedVolumeBeforeMute = UserDefaults.standard.double(forKey: Self.volumeBeforeMuteKey)
+            let savedVolumeBeforeMute = UserDefaults.standard.double(
+                forKey: Self.volumeBeforeMuteKey)
             self.volumeBeforeMute = savedVolumeBeforeMute > 0 ? savedVolumeBeforeMute : 1.0
             self.logger.info("Restored volumeBeforeMute: \(self.volumeBeforeMute)")
         } else {
@@ -264,7 +268,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
                 case "off":
                     self.repeatMode = .off
                 default:
-                    self.logger.warning("Unexpected repeat mode value in UserDefaults: \(savedRepeatMode), defaulting to off")
+                    self.logger.warning(
+                        "Unexpected repeat mode value in UserDefaults: \(savedRepeatMode), defaulting to off"
+                    )
                     self.repeatMode = .off
                 }
                 self.logger.info("Restored repeat mode: \(String(describing: self.repeatMode))")
@@ -273,7 +279,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         // Restore queue display mode
         if let savedMode = UserDefaults.standard.string(forKey: Self.queueDisplayModeKey),
-           let mode = QueueDisplayMode(rawValue: savedMode)
+            let mode = QueueDisplayMode(rawValue: savedMode)
         {
             self.queueDisplayMode = mode
             self.logger.info("Restored queue display mode: \(mode.displayName)")
@@ -375,7 +381,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
             self.showMiniPlayer = true
             self.shouldAutoDismissMiniPlayerOnPlaybackStart = true
-            self.logger.info("Mini player fallback shown because hidden song playback did not start quickly")
+            self.logger.info(
+                "Mini player fallback shown because hidden song playback did not start quickly")
         }
     }
 
@@ -415,7 +422,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             self.queueUndoHistory.removeFirst()
         }
         self.queueRedoHistory.removeAll()
-        self.logger.debug("Recorded queue state for undo, undo count: \(self.queueUndoHistory.count)")
+        self.logger.debug(
+            "Recorded queue state for undo, undo count: \(self.queueUndoHistory.count)")
     }
 
     /// Restores the previous queue state. Does nothing if undo history is empty.
@@ -427,7 +435,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.queue = previousQueue
         self.currentIndex = min(previousIndex, max(0, previousQueue.count - 1))
         self.saveQueueForPersistence()
-        self.logger.info("Undid queue to \(previousQueue.count) songs at index \(self.currentIndex)")
+        self.logger.info(
+            "Undid queue to \(previousQueue.count) songs at index \(self.currentIndex)")
         self.clearForwardSkipNavigationStack()
     }
 
@@ -462,11 +471,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         // Load mock current track
         if let jsonString = UITestConfig.environmentValue(for: UITestConfig.mockCurrentTrackKey),
-           let data = jsonString.data(using: .utf8),
-           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let id = dict["id"] as? String,
-           let title = dict["title"] as? String,
-           let videoId = dict["videoId"] as? String
+            let data = jsonString.data(using: .utf8),
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let id = dict["id"] as? String,
+            let title = dict["title"] as? String,
+            let videoId = dict["videoId"] as? String
         {
             let artist = dict["artist"] as? String ?? "Unknown Artist"
             let duration: TimeInterval? = (dict["duration"] as? Int).map { TimeInterval($0) }
@@ -510,6 +519,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.logger.info("Playing video: \(videoId)")
         self.clearRestoredPlaybackSessionState()
         self.deactivateYouTubeAutoplayOutsideQueueState()
+        self.currentEpisode = nil
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
@@ -542,11 +552,17 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Plays a song.
     /// - Parameter webLoadStrategy: Controls duplicate-`videoId` behavior in ``SingletonPlayerWebView/loadVideo(videoId:strategy:)``
     ///   (repeat-one prefers in-place restart; queue drift correction may force a full page load).
-    func play(song: Song, webLoadStrategy: SingletonPlayerWebView.VideoLoadStrategy) async {
+    /// - Parameter episode: Artist episode metadata to preserve for standalone episode playback.
+    func play(
+        song: Song,
+        webLoadStrategy: SingletonPlayerWebView.VideoLoadStrategy,
+        episode: ArtistEpisode? = nil
+    ) async {
         self.logger.info("Playing song: \(song.title)")
         self.logger.debug("Web load strategy: \(String(describing: webLoadStrategy))")
         self.clearRestoredPlaybackSessionState()
         self.deactivateYouTubeAutoplayOutsideQueueState()
+        self.currentEpisode = episode
         // Brief `.loading` until the observer reports playback; in-place restarts may flash loading briefly.
         self.state = .loading
         self.songNearingEnd = false
@@ -573,7 +589,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         self.pendingPlayVideoId = song.videoId
 
-        self.applyMiniPlayerPolicyForPlayback(videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
+        self.applyMiniPlayerPolicyForPlayback(
+            videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
         SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
 
         // Fetch full song metadata if we don't have feedbackTokens
@@ -695,7 +712,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         guard ratio.isFinite, ratio >= 0.3, ratio <= 4.0 else { return }
 
         if let currentRatio = self.miniPlayerVideoAspectRatio,
-           abs(currentRatio - ratio) < 0.001
+            abs(currentRatio - ratio) < 0.001
         {
             return
         }
@@ -707,7 +724,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     func playPause() async {
         self.logger.debug("Toggle play/pause")
 
-        if self.isPendingRestoredLoadDeferred || self.pendingPlayVideoId != nil && self.shouldLoadPendingVideoBeforePlayback {
+        if self.isPendingRestoredLoadDeferred
+            || self.pendingPlayVideoId != nil && self.shouldLoadPendingVideoBeforePlayback
+        {
             await self.resume()
             return
         }
@@ -784,7 +803,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
             // Handle shuffle mode - pick random track
             if self.shuffleEnabled {
-                let randomIndex = Int.random(in: 0 ..< self.queue.count)
+                let randomIndex = Int.random(in: 0..<self.queue.count)
                 self.pushForwardSkipStackIfLeavingIndex(for: randomIndex)
                 self.currentIndex = randomIndex
                 if let nextSong = queue[safe: currentIndex] {
@@ -829,6 +848,13 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             return
         }
 
+        // Standalone artist episodes are intentionally not in the local queue.
+        // Do not let them fall through to YouTube Music's ambient next button.
+        guard self.currentEpisode == nil else {
+            self.logger.debug("Ignoring next for standalone artist episode playback")
+            return
+        }
+
         // Fall back to YouTube's next if no local queue
         if self.pendingPlayVideoId != nil {
             SingletonPlayerWebView.shared.next()
@@ -860,7 +886,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
                 return
             }
 
-            if let priorIndex = self.forwardSkipIndexStack.popLast(), self.queue.indices.contains(priorIndex) {
+            if let priorIndex = self.forwardSkipIndexStack.popLast(),
+                self.queue.indices.contains(priorIndex)
+            {
                 self.currentIndex = priorIndex
                 if let prevSong = self.queue[safe: priorIndex] {
                     await self.play(song: prevSong)
@@ -882,13 +910,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             return
         }
 
+        // Standalone artist episodes are intentionally not in the local queue.
+        // Do not restart them or fall through to YouTube Music's ambient previous button.
+        guard self.currentEpisode == nil else {
+            self.logger.debug("Ignoring previous for standalone artist episode playback")
+            return
+        }
+
         // Fall back to YouTube's previous if no local queue
         if self.progress > 3 {
-            if self.pendingPlayVideoId != nil {
-                await self.seek(to: 0)
-            } else {
-                await self.seek(to: 0)
-            }
+            await self.seek(to: 0)
         } else {
             SingletonPlayerWebView.shared.previous()
         }
@@ -978,14 +1009,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
         // Persist repeat mode to UserDefaults if setting is enabled
         if SettingsManager.shared.rememberPlaybackSettings {
-            let modeString = switch self.repeatMode {
-            case .off:
-                "off"
-            case .all:
-                "all"
-            case .one:
-                "one"
-            }
+            let modeString =
+                switch self.repeatMode {
+                case .off:
+                    "off"
+                case .all:
+                    "all"
+                case .one:
+                    "one"
+                }
             UserDefaults.standard.set(modeString, forKey: Self.repeatModeKey)
         }
         let mode = self.repeatMode
@@ -1002,6 +1034,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.songNearingEnd = false
         self.isKasetInitiatedPlayback = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        self.currentEpisode = nil
         self.currentTrack = nil
         self.progress = 0
         self.duration = 0
@@ -1049,9 +1082,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     private func shouldAcceptRemoteSkip(_ direction: RemoteSkipDirection) -> Bool {
         let now = ContinuousClock.now
         if let lastInstant = self.lastRemoteSkipInstant,
-           let lastDirection = self.lastRemoteSkipDirection,
-           lastDirection == direction,
-           now - lastInstant < .milliseconds(350)
+            let lastDirection = self.lastRemoteSkipDirection,
+            lastDirection == direction,
+            now - lastInstant < .milliseconds(350)
         {
             return false
         }
