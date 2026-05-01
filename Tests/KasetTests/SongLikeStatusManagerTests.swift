@@ -41,7 +41,8 @@ struct SongLikeStatusManagerTests {
             title: "Test",
             artists: [],
             videoId: "test-video",
-            likeStatus: .dislike
+            likeStatus: .dislike,
+            feedbackTokens: FeedbackTokens(add: "add", remove: "remove")
         )
         self.manager.setStatus(.like, for: "test-video")
 
@@ -57,13 +58,29 @@ struct SongLikeStatusManagerTests {
             title: "Test",
             artists: [],
             videoId: "test-video",
-            likeStatus: .dislike
+            likeStatus: .dislike,
+            feedbackTokens: FeedbackTokens(add: "add", remove: "remove")
         )
         // No cache set
 
         let status = self.manager.status(for: song)
 
         #expect(status == .dislike)
+    }
+
+    @Test("status for song ignores like status without feedback tokens")
+    func statusForSongIgnoresUntrustedLikeStatus() {
+        let song = Song(
+            id: "test-video",
+            title: "Test",
+            artists: [],
+            videoId: "test-video",
+            likeStatus: .like
+        )
+
+        let status = self.manager.status(for: song)
+
+        #expect(status == nil)
     }
 
     @Test("isLiked returns true when liked")

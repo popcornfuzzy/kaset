@@ -112,6 +112,42 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
     }
 
+    @Test("fetchSongMetadata clears stale like cache when API returns indifferent")
+    func fetchSongMetadataClearsStaleLikeCacheWhenApiIndifferent() async {
+        SongLikeStatusManager.shared.clearCache()
+        SongLikeStatusManager.shared.setActiveAccountID(nil)
+        defer { SongLikeStatusManager.shared.clearCache() }
+
+        let videoId = "stale-like-video"
+        self.playerService.currentTrack = Song(
+            id: videoId,
+            title: "Stale Like",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: videoId
+        )
+        self.playerService.currentTrackLikeStatus = .like
+        SongLikeStatusManager.shared.setStatus(.like, for: videoId)
+
+        self.mockClient.songResponses[videoId] = Song(
+            id: videoId,
+            title: "Stale Like",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: videoId,
+            likeStatus: .indifferent
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: videoId)
+
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(SongLikeStatusManager.shared.status(for: videoId) == .indifferent)
+    }
+
     @Test("likeCurrentTrack uses captured client even if singleton client changes before task runs")
     func likeCurrentTrackUsesCapturedClient() async {
         let replacementClient = MockYTMusicClient()
@@ -357,7 +393,7 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
         self.playerService.updateLikeStatus(.indifferent)
-        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(self.playerService.currentTrackLikeStatus == .dislike)
     }
 
     @Test("fetchSongMetadata preserves cached like status when API like status is unknown")

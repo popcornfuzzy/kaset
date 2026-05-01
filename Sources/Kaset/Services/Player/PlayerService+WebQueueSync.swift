@@ -651,7 +651,8 @@ extension PlayerService {
 
         let artistObj = Artist(id: "unknown", name: artist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
-        if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
+        let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId })
+        if let queuedSong {
             self.updateCurrentPlaybackKind(using: queuedSong)
         } else if self.currentTrack?.videoId == resolvedVideoId {
             self.updateCurrentPlaybackKind(using: self.currentTrack)
@@ -660,8 +661,13 @@ extension PlayerService {
         }
 
         let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
-            ?? self.queue.first(where: { $0.videoId == resolvedVideoId })?.thumbnailURL
+            ?? queuedSong?.thumbnailURL
             ?? self.currentTrack?.thumbnailURL
+        let cachedLikeStatus = SongLikeStatusManager.shared.status(for: resolvedVideoId)
+        let trustedQueuedLikeStatus: LikeStatus? = {
+            guard queuedSong?.feedbackTokens != nil else { return nil }
+            return queuedSong?.likeStatus
+        }()
         let trackChanged = self.currentTrack?.title != title
             || self.currentTrack?.artistsDisplay != artist
             || self.currentTrack?.videoId != resolvedVideoId
@@ -735,14 +741,18 @@ extension PlayerService {
             album: nil,
             duration: self.duration > 0 ? self.duration : nil,
             thumbnailURL: thumbnailURL,
-            videoId: resolvedVideoId
+            videoId: resolvedVideoId,
+            likeStatus: cachedLikeStatus ?? trustedQueuedLikeStatus
         )
 
         if trackChanged {
             self.resetTrackStatus()
             // Immediately restore like status from SongLikeStatusManager cache
-            if let cachedStatus = SongLikeStatusManager.shared.status(for: resolvedVideoId) {
-                self.currentTrackLikeStatus = cachedStatus
+            if let cachedLikeStatus {
+                self.currentTrackLikeStatus = cachedLikeStatus
+            } else if let trustedQueuedLikeStatus {
+                self.currentTrackLikeStatus = trustedQueuedLikeStatus
+                SongLikeStatusManager.shared.setStatus(trustedQueuedLikeStatus, for: resolvedVideoId)
             }
         }
     }

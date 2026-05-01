@@ -650,8 +650,7 @@ struct PlaylistDetailView: View {
         let cleanedTracks = self.cleanTracks(
             tracks,
             fallbackArtist: fallbackArtist,
-            fallbackAlbum: fallbackAlbum,
-            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+            fallbackAlbum: fallbackAlbum
         )
         Task {
             await self.playerService.playQueue(cleanedTracks, startingAt: index)
@@ -663,8 +662,7 @@ struct PlaylistDetailView: View {
         let cleanedTracks = self.cleanTracks(
             tracks,
             fallbackArtist: fallbackArtist,
-            fallbackAlbum: fallbackAlbum,
-            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+            fallbackAlbum: fallbackAlbum
         )
         Task {
             await self.playerService.playQueue(cleanedTracks, startingAt: 0)
@@ -676,8 +674,7 @@ struct PlaylistDetailView: View {
         let cleanedTracks = self.cleanTracks(
             tracks,
             fallbackArtist: fallbackArtist,
-            fallbackAlbum: fallbackAlbum,
-            forceLikedStatus: Self.isLikedMusicPlaylistId(self.playlist.id)
+            fallbackAlbum: fallbackAlbum
         )
         let shuffledTracks = cleanedTracks.shuffled()
         Task {
@@ -689,8 +686,7 @@ struct PlaylistDetailView: View {
     private func cleanTracks(
         _ tracks: [Song],
         fallbackArtist: String?,
-        fallbackAlbum: Album? = nil,
-        forceLikedStatus: Bool = false
+        fallbackAlbum: Album? = nil
     ) -> [Song] {
         tracks.map { song in
             var cleanedArtists = song.artists.compactMap { artist -> Artist? in
@@ -724,7 +720,6 @@ struct PlaylistDetailView: View {
             let finalAlbum = song.album ?? fallbackAlbum
             // Use fallback thumbnail if song doesn't have one
             let finalThumbnail = song.thumbnailURL ?? fallbackAlbum?.thumbnailURL
-            let finalLikeStatus = forceLikedStatus ? .like : song.likeStatus
 
             return Song(
                 id: song.id,
@@ -736,7 +731,7 @@ struct PlaylistDetailView: View {
                 videoId: song.videoId,
                 hasVideo: song.hasVideo,
                 musicVideoType: song.musicVideoType,
-                likeStatus: finalLikeStatus,
+                likeStatus: song.likeStatus,
                 isInLibrary: song.isInLibrary,
                 feedbackTokens: song.feedbackTokens
             )

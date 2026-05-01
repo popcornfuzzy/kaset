@@ -340,6 +340,47 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.isKasetInitiatedPlayback == false)
     }
 
+    @Test("UpdateTrackMetadata ignores untrusted queued like status")
+    func updateTrackMetadataIgnoresUntrustedQueuedLikeStatus() async {
+        SongLikeStatusManager.shared.clearCache()
+        SongLikeStatusManager.shared.setActiveAccountID(nil)
+        defer { SongLikeStatusManager.shared.clearCache() }
+
+        let likedSong = Song(
+            id: "v1",
+            title: "Liked Song",
+            artists: [Artist(id: "artist-1", name: "Liked Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "v1",
+            likeStatus: .like
+        )
+
+        self.playerService.queue = [likedSong]
+        self.playerService.currentIndex = 0
+        self.playerService.currentTrack = Song(
+            id: "v1",
+            title: "Loading...",
+            artists: [],
+            album: nil,
+            duration: nil,
+            thumbnailURL: nil,
+            videoId: "v1"
+        )
+        self.playerService.currentTrackLikeStatus = .indifferent
+
+        self.playerService.updateTrackMetadata(
+            title: "Liked Song",
+            artist: "Liked Artist",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(SongLikeStatusManager.shared.status(for: "v1") == nil)
+    }
+
     @Test("Near-end videoId-only transition keeps expected queue song visible")
     func nearEndVideoIdOnlyTransitionKeepsExpectedQueueSongVisible() async {
         let songs = [

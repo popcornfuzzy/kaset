@@ -592,7 +592,10 @@ struct AddToPlaylistPopoverContent: View {
             return cachedStatus == .like
         }
 
-        if let songLikeStatus = self.song.likeStatus, songLikeStatus != .indifferent {
+        if let songLikeStatus = self.song.likeStatus,
+           songLikeStatus != .indifferent,
+           self.song.feedbackTokens != nil
+        {
             return songLikeStatus == .like
         }
 

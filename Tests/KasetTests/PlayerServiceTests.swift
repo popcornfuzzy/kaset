@@ -124,6 +124,54 @@ struct PlayerServiceTests {
         #expect(self.playerService.currentTrack?.thumbnailURL == nil)
     }
 
+    @Test("Play song seeds like status cache when missing")
+    func playSongSeedsLikeStatusCacheWhenMissing() async {
+        SongLikeStatusManager.shared.clearCache()
+        SongLikeStatusManager.shared.setActiveAccountID(nil)
+        defer { SongLikeStatusManager.shared.clearCache() }
+
+        let song = Song(
+            id: "liked-song",
+            title: "Liked Song",
+            artists: [Artist(id: "artist-1", name: "Liked Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "liked-video",
+            likeStatus: .like,
+            isInLibrary: false,
+            feedbackTokens: FeedbackTokens(add: "add-token", remove: "remove-token")
+        )
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+        #expect(SongLikeStatusManager.shared.status(for: "liked-video") == .like)
+    }
+
+    @Test("Play song ignores like status without feedback tokens")
+    func playSongIgnoresLikeStatusWithoutFeedbackTokens() async {
+        SongLikeStatusManager.shared.clearCache()
+        SongLikeStatusManager.shared.setActiveAccountID(nil)
+        defer { SongLikeStatusManager.shared.clearCache() }
+
+        let song = Song(
+            id: "untrusted-song",
+            title: "Untrusted",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "untrusted-video",
+            likeStatus: .like
+        )
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(SongLikeStatusManager.shared.status(for: "untrusted-video") == nil)
+    }
+
     @Test("Update ad playback state")
     func updateAdPlaybackState() {
         #expect(self.playerService.isAdPlaying == false)
