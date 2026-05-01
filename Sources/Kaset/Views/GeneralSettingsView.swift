@@ -4,9 +4,11 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct GeneralSettingsView: View {
     @Environment(AuthService.self) private var authService
+    @Environment(SyncedLyricsService.self) private var syncedLyricsService
     @State private var settings = SettingsManager.shared
     @State private var cacheSize: String = .init(localized: "Calculating...")
     @State private var isClearing = false
+    @State private var isClearingLyricsCache = false
 
     var body: some View {
         Form {
@@ -42,6 +44,23 @@ struct GeneralSettingsView: View {
                 // Synced Lyrics
                 Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
                     .help("Fetch and display real-time synced lyrics when available")
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Lyrics Cache")
+                        Text("Clears cached lyrics for previously played songs.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(self.isClearingLyricsCache ? String(localized: "Clearing...") : String(localized: "Clear Cache")) {
+                        Task {
+                            await self.clearLyricsCache()
+                        }
+                    }
+                    .disabled(self.isClearingLyricsCache)
+                }
+                .padding(.vertical, 4)
 
                 // Safe Ad Blocking
                 Toggle("Enable Ad Blocking", isOn: self.$settings.safeAdBlockingEnabled)
@@ -123,5 +142,11 @@ struct GeneralSettingsView: View {
         await ImageCache.shared.clearAllCaches()
         await self.updateCacheSize()
         self.isClearing = false
+    }
+
+    private func clearLyricsCache() async {
+        self.isClearingLyricsCache = true
+        self.syncedLyricsService.clearCache(keepCurrent: true)
+        self.isClearingLyricsCache = false
     }
 }

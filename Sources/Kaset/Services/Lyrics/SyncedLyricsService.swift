@@ -33,6 +33,15 @@ final class SyncedLyricsService {
         self.providers = providers
     }
 
+    func clearCache(keepCurrent: Bool = true) {
+        self.cache.removeAll()
+        if !keepCurrent {
+            self.currentLyrics = .unavailable
+            self.activeProvider = nil
+            self.currentLyricsVideoId = nil
+        }
+    }
+
     func isCachedUnavailable(for videoId: String) -> Bool {
         if case .unavailable? = self.cache[videoId] {
             return true
