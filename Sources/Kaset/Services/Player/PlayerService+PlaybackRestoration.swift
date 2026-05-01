@@ -58,21 +58,23 @@ extension PlayerService {
         if let tokens = currentSong.feedbackTokens {
             self.currentTrackFeedbackTokens = tokens
             self.currentTrackInLibrary = currentSong.isInLibrary ?? false
-            self.currentTrackLikeStatus = currentSong.likeStatus ?? .indifferent
         } else {
             self.resetTrackStatus()
         }
 
-        // Seed the SongLikeStatusManager cache from the persisted song's likeStatus
-        // so that fetchSongMetadata won't overwrite it with a parsed .indifferent default.
-        if let persistedLikeStatus = currentSong.likeStatus, persistedLikeStatus != .indifferent {
-            SongLikeStatusManager.shared.setStatus(persistedLikeStatus, for: currentSong.videoId)
-            self.currentTrackLikeStatus = persistedLikeStatus
-        }
+        let trustedLikeStatus: LikeStatus? = {
+            guard currentSong.feedbackTokens != nil else { return nil }
+            return currentSong.likeStatus
+        }()
 
-        // SongLikeStatusManager cache is the most up-to-date source for like status
-        if let cachedStatus = SongLikeStatusManager.shared.status(for: currentSong.videoId) {
+        let cachedStatus = SongLikeStatusManager.shared.status(for: currentSong.videoId)
+        if let cachedStatus {
             self.currentTrackLikeStatus = cachedStatus
+        } else if let trustedLikeStatus {
+            self.currentTrackLikeStatus = trustedLikeStatus
+            SongLikeStatusManager.shared.setStatus(trustedLikeStatus, for: currentSong.videoId)
+        } else {
+            self.currentTrackLikeStatus = .indifferent
         }
 
         // At app launch the cache may be empty and the persisted song may lack likeStatus.

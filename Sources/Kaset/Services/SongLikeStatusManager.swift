@@ -76,7 +76,12 @@ final class SongLikeStatusManager {
     /// - Parameter song: The song to check.
     /// - Returns: The status from cache, song property, or nil.
     func status(for song: Song) -> LikeStatus? {
-        self.status(for: song.videoId) ?? song.likeStatus
+        if let cached = self.status(for: song.videoId) {
+            return cached
+        }
+
+        guard song.feedbackTokens != nil else { return nil }
+        return song.likeStatus
     }
 
     /// Checks if a song is liked.

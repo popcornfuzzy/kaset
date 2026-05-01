@@ -525,6 +525,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             videoId: videoId
         )
 
+        let cachedStatus = SongLikeStatusManager.shared.status(for: videoId)
+        self.currentTrackLikeStatus = cachedStatus ?? .indifferent
+
         self.pendingPlayVideoId = videoId
 
         self.applyMiniPlayerPolicyForPlayback(videoId: videoId, isPodcast: false)
@@ -556,19 +559,26 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         // Mark that we initiated this playback (to detect and correct YouTube's autoplay override)
         self.isKasetInitiatedPlayback = true
 
+        let trustedLikeStatus: LikeStatus? = {
+            guard song.feedbackTokens != nil else { return nil }
+            return song.likeStatus
+        }()
+
         // Use existing feedbackTokens if the song already has them
         if let tokens = song.feedbackTokens {
             self.currentTrackFeedbackTokens = tokens
             self.currentTrackInLibrary = song.isInLibrary ?? false
-            if let likeStatus = song.likeStatus {
-                self.currentTrackLikeStatus = likeStatus
-            }
         }
 
-        // SongLikeStatusManager cache is the most up-to-date source for like status;
-        // use it to correct stale/missing song.likeStatus immediately.
-        if let cachedStatus = SongLikeStatusManager.shared.status(for: song.videoId) {
+        // Cache wins; otherwise only trust likeStatus that came with full metadata.
+        let cachedStatus = SongLikeStatusManager.shared.status(for: song.videoId)
+        if let cachedStatus {
             self.currentTrackLikeStatus = cachedStatus
+        } else if let trustedLikeStatus {
+            self.currentTrackLikeStatus = trustedLikeStatus
+            SongLikeStatusManager.shared.setStatus(trustedLikeStatus, for: song.videoId)
+        } else {
+            self.currentTrackLikeStatus = .indifferent
         }
 
         self.pendingPlayVideoId = song.videoId

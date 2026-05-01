@@ -170,7 +170,8 @@ extension PlayerService {
         } else if status != .indifferent {
             self.currentTrackLikeStatus = status
         } else if let trackStatus = self.currentTrack?.likeStatus,
-                  trackStatus != .indifferent
+                  trackStatus != .indifferent,
+                  self.currentTrack?.feedbackTokens != nil
         {
             self.currentTrackLikeStatus = trackStatus
         } else {
@@ -214,13 +215,7 @@ extension PlayerService {
 
             let cachedLikeStatus = SongLikeStatusManager.shared.status(for: videoId)
             let metadataLikeStatus = songData.likeStatus
-            let resolvedLikeStatus: LikeStatus? = {
-                if let metadataLikeStatus, metadataLikeStatus != .indifferent {
-                    return metadataLikeStatus
-                }
-
-                return cachedLikeStatus
-            }()
+            let resolvedLikeStatus: LikeStatus? = metadataLikeStatus ?? cachedLikeStatus
 
             // Update current track with full metadata if it's still the same song
             if self.currentTrack?.videoId == videoId {
@@ -243,11 +238,10 @@ extension PlayerService {
                 )
 
                 // Update service state and sync with SongLikeStatusManager.
-                // Unknown like status stays out of the cache so it cannot override
-                // a known rating from the WebView or a prior user action.
-                if let likeStatus = metadataLikeStatus, likeStatus != .indifferent {
-                    self.currentTrackLikeStatus = likeStatus
-                    SongLikeStatusManager.shared.setStatus(likeStatus, for: videoId)
+                // API-provided status (including .indifferent) is authoritative for this account.
+                if let metadataLikeStatus {
+                    self.currentTrackLikeStatus = metadataLikeStatus
+                    SongLikeStatusManager.shared.setStatus(metadataLikeStatus, for: videoId)
                 } else if let cachedLikeStatus {
                     self.currentTrackLikeStatus = cachedLikeStatus
                 }
