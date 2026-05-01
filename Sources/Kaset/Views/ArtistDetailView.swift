@@ -32,6 +32,7 @@ struct ArtistDetailView: View {
         .accentBackground(from: self.viewModel.artistDetail?.thumbnailURL?.highQualityThumbnailURL)
         .navigationTitle(self.artist.name)
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
                 PlayerBar()
