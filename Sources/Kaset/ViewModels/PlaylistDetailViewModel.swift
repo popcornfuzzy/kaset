@@ -51,85 +51,12 @@ final class PlaylistDetailViewModel {
         self.logger.info("Loading playlist: \(playlistTitle), ID: \(playlistId)")
 
         do {
-            // For radio playlists (RDCLAK prefix), use the queue API to get all tracks at once
-            // This bypasses the broken continuation pagination for these playlists
-            // Check for both VL-prefixed and raw RDCLAK IDs
-            let isRadioPlaylist = playlistId.contains("RDCLAK") || playlistId.hasPrefix("RD")
-            self.logger.debug("Playlist ID: \(playlistId), isRadioPlaylist: \(isRadioPlaylist)")
-
-            let response = try await client.getPlaylist(id: self.playlist.id)
-            var detail = response.detail
-            self.hasMore = response.hasMore
-
-            // If it's a radio playlist, always fetch all tracks via queue API
-            // The browse API often returns hasMore=false even when there are more tracks
-            if isRadioPlaylist {
-                self.logger.info("Radio playlist detected, fetching all tracks via queue API")
-                do {
-                    let allTracks = try await client.getPlaylistAllTracks(playlistId: self.playlist.id)
-                    if allTracks.count > detail.tracks.count {
-                        self.logger.info("Queue API returned \(allTracks.count) tracks (vs \(detail.tracks.count) from browse)")
-                        // Update the detail with all tracks from queue API
-                        let updatedPlaylist = Playlist(
-                            id: detail.id,
-                            title: detail.title,
-                            description: detail.description,
-                            thumbnailURL: detail.thumbnailURL,
-                            trackCount: allTracks.count,
-                            author: detail.author
-                        )
-                        detail = PlaylistDetail(
-                            playlist: updatedPlaylist,
-                            tracks: allTracks,
-                            duration: detail.duration
-                        )
-                        self.hasMore = false
-                    }
-                } catch {
-                    // If queue API fails, fall back to browse results
-                    self.logger.warning("Queue API failed, using browse results: \(error.localizedDescription)")
-                }
-            }
-
-            // Determine the best thumbnail to use:
-            // 1. API response header thumbnail
-            // 2. Original playlist thumbnail (from navigation)
-            // 3. First track's thumbnail as fallback
-            let resolvedThumbnailURL = detail.thumbnailURL
-                ?? self.playlist.thumbnailURL
-                ?? detail.tracks.first?.thumbnailURL
-
-            // Check if we need to merge with original playlist info
-            let needsMerge = detail.title == "Unknown Playlist" && self.playlist.title != "Unknown Playlist"
-            let thumbnailMissing = detail.thumbnailURL == nil && resolvedThumbnailURL != nil
-
-            if needsMerge || thumbnailMissing {
-                let mergedTrackCount = max(
-                    detail.tracks.count,
-                    max(detail.trackCount ?? 0, self.playlist.trackCount ?? 0)
-                )
-
-                // Merge with original playlist info or add fallback thumbnail
-                // Strip song counts from fallback author since we display the count separately
-                let mergedPlaylist = Playlist(
-                    id: playlist.id,
-                    title: needsMerge ? self.playlist.title : detail.title,
-                    description: detail.description ?? self.playlist.description,
-                    thumbnailURL: resolvedThumbnailURL,
-                    trackCount: mergedTrackCount,
-                    author: detail.author ?? self.stripSongCount(from: self.playlist.author)
-                )
-                detail = PlaylistDetail(
-                    playlist: mergedPlaylist,
-                    tracks: detail.tracks,
-                    duration: detail.duration
-                )
-            }
-
-            self.playlistDetail = detail
+            let result = try await self.fetchPlaylistDetail()
+            self.playlistDetail = result.detail
+            self.hasMore = result.hasMore
             self.loadingState = .loaded
-            let loadedTrackCount = detail.tracks.count
-            let totalTrackCount = detail.trackCount ?? loadedTrackCount
+            let loadedTrackCount = result.detail.tracks.count
+            let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
             self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
         } catch is CancellationError {
             // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
@@ -139,6 +66,86 @@ final class PlaylistDetailViewModel {
             self.logger.error("Failed to load playlist: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))
         }
+    }
+
+    private func fetchPlaylistDetail() async throws -> (detail: PlaylistDetail, hasMore: Bool) {
+        // For radio playlists (RDCLAK prefix), use the queue API to get all tracks at once
+        // This bypasses the broken continuation pagination for these playlists
+        // Check for both VL-prefixed and raw RDCLAK IDs
+        let playlistId = self.playlist.id
+        let isRadioPlaylist = playlistId.contains("RDCLAK") || playlistId.hasPrefix("RD")
+        self.logger.debug("Playlist ID: \(playlistId), isRadioPlaylist: \(isRadioPlaylist)")
+
+        let response = try await client.getPlaylist(id: playlistId)
+        var detail = response.detail
+        var hasMore = response.hasMore
+
+        // If it's a radio playlist, always fetch all tracks via queue API
+        // The browse API often returns hasMore=false even when there are more tracks
+        if isRadioPlaylist {
+            self.logger.info("Radio playlist detected, fetching all tracks via queue API")
+            do {
+                let allTracks = try await client.getPlaylistAllTracks(playlistId: playlistId)
+                if allTracks.count > detail.tracks.count {
+                    self.logger.info("Queue API returned \(allTracks.count) tracks (vs \(detail.tracks.count) from browse)")
+                    // Update the detail with all tracks from queue API
+                    let updatedPlaylist = Playlist(
+                        id: detail.id,
+                        title: detail.title,
+                        description: detail.description,
+                        thumbnailURL: detail.thumbnailURL,
+                        trackCount: allTracks.count,
+                        author: detail.author
+                    )
+                    detail = PlaylistDetail(
+                        playlist: updatedPlaylist,
+                        tracks: allTracks,
+                        duration: detail.duration
+                    )
+                    hasMore = false
+                }
+            } catch {
+                // If queue API fails, fall back to browse results
+                self.logger.warning("Queue API failed, using browse results: \(error.localizedDescription)")
+            }
+        }
+
+        // Determine the best thumbnail to use:
+        // 1. API response header thumbnail
+        // 2. Original playlist thumbnail (from navigation)
+        // 3. First track's thumbnail as fallback
+        let resolvedThumbnailURL = detail.thumbnailURL
+            ?? self.playlist.thumbnailURL
+            ?? detail.tracks.first?.thumbnailURL
+
+        // Check if we need to merge with original playlist info
+        let needsMerge = detail.title == "Unknown Playlist" && self.playlist.title != "Unknown Playlist"
+        let thumbnailMissing = detail.thumbnailURL == nil && resolvedThumbnailURL != nil
+
+        if needsMerge || thumbnailMissing {
+            let mergedTrackCount = max(
+                detail.tracks.count,
+                max(detail.trackCount ?? 0, self.playlist.trackCount ?? 0)
+            )
+
+            // Merge with original playlist info or add fallback thumbnail
+            // Strip song counts from fallback author since we display the count separately
+            let mergedPlaylist = Playlist(
+                id: playlistId,
+                title: needsMerge ? self.playlist.title : detail.title,
+                description: detail.description ?? self.playlist.description,
+                thumbnailURL: resolvedThumbnailURL,
+                trackCount: mergedTrackCount,
+                author: detail.author ?? self.stripSongCount(from: self.playlist.author)
+            )
+            detail = PlaylistDetail(
+                playlist: mergedPlaylist,
+                tracks: detail.tracks,
+                duration: detail.duration
+            )
+        }
+
+        return (detail: detail, hasMore: hasMore)
     }
 
     /// Loads more tracks via continuation.
@@ -204,8 +211,31 @@ final class PlaylistDetailViewModel {
     func refresh() async {
         // Manual refresh should fetch fresh data instead of reusing browse cache.
         APICache.shared.invalidate(matching: "browse:")
-        self.playlistDetail = nil
-        self.hasMore = false
-        await self.load()
+        guard self.loadingState != .loading, self.loadingState != .loadingMore else { return }
+
+        guard self.playlistDetail != nil, self.loadingState == .loaded else {
+            self.playlistDetail = nil
+            self.hasMore = false
+            await self.load()
+            return
+        }
+
+        let playlistTitle = self.playlist.title
+        let playlistId = self.playlist.id
+        self.logger.info("Refreshing playlist in background: \(playlistTitle), ID: \(playlistId)")
+
+        do {
+            let result = try await self.fetchPlaylistDetail()
+            self.playlistDetail = result.detail
+            self.hasMore = result.hasMore
+            let loadedTrackCount = result.detail.tracks.count
+            let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
+            self.logger.info("Playlist refreshed: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+        } catch is CancellationError {
+            self.logger.debug("Playlist refresh cancelled")
+        } catch {
+            // Keep showing the existing detail while refresh fails.
+            self.logger.warning("Playlist refresh failed, keeping existing detail: \(error.localizedDescription)")
+        }
     }
 }
