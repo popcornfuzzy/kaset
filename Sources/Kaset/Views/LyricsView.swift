@@ -502,6 +502,12 @@ struct LyricsView: View {
                 DiagnosticsLogger.api.error("Failed to load plain lyrics fallback: \(error.localizedDescription)")
             }
         }
+
+        if self.lastLoadedVideoId == videoId,
+           self.playerService.currentTrack?.videoId == videoId
+        {
+            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+        }
     }
 
     @MainActor

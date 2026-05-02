@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Lyrics
 
 /// Represents lyrics for a song from YouTube Music.
-struct Lyrics: Equatable {
+struct Lyrics: Equatable, Codable {
     /// The lyrics text, with line breaks preserved.
     let text: String
 

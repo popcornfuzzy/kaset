@@ -3,6 +3,14 @@ import Foundation
 @MainActor
 @Observable
 final class SyncedLyricsService {
+    private struct PersistedCache: Codable {
+        let version: Int
+        let entries: [String: LyricResult]
+    }
+
+    private static let cacheVersion = 1
+    private static let cacheFileName = "lyrics-cache.json"
+
     private struct ResolvedLyrics {
         let result: LyricResult
         let activeProvider: String?
@@ -23,6 +31,11 @@ final class SyncedLyricsService {
     /// All registered providers, ordered by priority.
     private let providers: [LyricsProvider]
 
+    private let cacheFileURL: URL
+    private let skipPersistence: Bool
+    private var saveTask: Task<Void, Never>?
+    private let logger = DiagnosticsLogger.app
+
     /// In-memory cache keyed by videoId.
     private var cache: [String: LyricResult] = [:]
 
@@ -31,6 +44,12 @@ final class SyncedLyricsService {
 
     init(providers: [LyricsProvider] = [LRCLibProvider()]) {
         self.providers = providers
+        self.cacheFileURL = Self.makeCacheFileURL()
+        self.skipPersistence = UITestConfig.isUITestMode || UITestConfig.isRunningUnitTests
+
+        if !self.skipPersistence {
+            self.loadCacheFromDisk()
+        }
     }
 
     func clearCache(keepCurrent: Bool = true) {
@@ -40,6 +59,7 @@ final class SyncedLyricsService {
             self.activeProvider = nil
             self.currentLyricsVideoId = nil
         }
+        self.scheduleCacheSave()
     }
 
     func isCachedUnavailable(for videoId: String) -> Bool {
@@ -117,6 +137,8 @@ final class SyncedLyricsService {
             self.currentLyricsVideoId = videoId
             self.cache[videoId] = .unavailable
         }
+
+        self.scheduleCacheSave()
     }
 
     private func score(result: LyricResult, providerName: String) -> Int {
@@ -142,6 +164,7 @@ final class SyncedLyricsService {
             switch best.result {
             case .synced:
                 self.cache[videoId] = best.result
+                self.scheduleCacheSave()
                 return .init(result: best.result, activeProvider: best.provider)
             case .plain:
                 if case let .plain(cachedPlain)? = cached {
@@ -149,6 +172,7 @@ final class SyncedLyricsService {
                 }
 
                 self.cache[videoId] = best.result
+                self.scheduleCacheSave()
                 return .init(result: best.result, activeProvider: best.provider)
             case .unavailable:
                 break
@@ -160,6 +184,7 @@ final class SyncedLyricsService {
         }
 
         self.cache[videoId] = .unavailable
+        self.scheduleCacheSave()
         return .init(result: .unavailable, activeProvider: nil)
     }
 
@@ -180,6 +205,55 @@ final class SyncedLyricsService {
             lyrics.source
         case .unavailable:
             nil
+        }
+    }
+
+    private static func makeCacheFileURL() -> URL {
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let appDirectory = (base ?? fileManager.temporaryDirectory)
+            .appendingPathComponent("Kaset", isDirectory: true)
+        try? fileManager.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        return appDirectory.appendingPathComponent(Self.cacheFileName)
+    }
+
+    private func loadCacheFromDisk() {
+        do {
+            guard FileManager.default.fileExists(atPath: self.cacheFileURL.path) else { return }
+            let data = try Data(contentsOf: self.cacheFileURL)
+            let decoded = try JSONDecoder().decode(PersistedCache.self, from: data)
+            guard decoded.version == Self.cacheVersion else {
+                self.logger.info("Lyrics cache version mismatch, ignoring persisted cache")
+                return
+            }
+            self.cache = decoded.entries
+            self.logger.info("Loaded lyrics cache entries: \(decoded.entries.count)")
+        } catch {
+            self.logger.error("Failed to load lyrics cache: \(error.localizedDescription)")
+        }
+    }
+
+    private func scheduleCacheSave() {
+        guard !self.skipPersistence else { return }
+
+        self.saveTask?.cancel()
+        let snapshot = self.cache
+        let url = self.cacheFileURL
+        let version = Self.cacheVersion
+
+        self.saveTask = Task.detached(priority: .utility) { [snapshot, url] in
+            if snapshot.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+
+            do {
+                let payload = PersistedCache(version: version, entries: snapshot)
+                let data = try JSONEncoder().encode(payload)
+                try data.write(to: url, options: [.atomic])
+            } catch {
+                DiagnosticsLogger.app.error("Failed to save lyrics cache: \(error.localizedDescription)")
+            }
         }
     }
 }
