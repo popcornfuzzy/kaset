@@ -33,12 +33,28 @@ final class SyncedLyricsService {
         self.providers = providers
     }
 
-    func fetchLyrics(for info: LyricsSearchInfo) async {
+    func clearCache(keepCurrent: Bool = true) {
+        self.cache.removeAll()
+        if !keepCurrent {
+            self.currentLyrics = .unavailable
+            self.activeProvider = nil
+            self.currentLyricsVideoId = nil
+        }
+    }
+
+    func isCachedUnavailable(for videoId: String) -> Bool {
+        if case .unavailable? = self.cache[videoId] {
+            return true
+        }
+        return false
+    }
+
+    func fetchLyrics(for info: LyricsSearchInfo, forceRefresh: Bool = false) async {
         self.fetchGeneration += 1
         let requestID = self.fetchGeneration
-        let cached = self.cache[info.videoId]
+        let cached = forceRefresh ? nil : self.cache[info.videoId]
 
-        if let cached, case .synced = cached {
+        if let cached {
             self.applyResolvedLyrics(
                 .init(
                     result: cached,
@@ -48,12 +64,6 @@ final class SyncedLyricsService {
                 videoId: info.videoId
             )
             return
-        }
-
-        if let cached {
-            self.currentLyrics = cached
-            self.activeProvider = Self.cachedProviderName(for: cached)
-            self.currentLyricsVideoId = info.videoId
         }
 
         self.isLoading = true

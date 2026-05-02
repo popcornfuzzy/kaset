@@ -152,6 +152,7 @@ struct KasetApp: App {
                 .environment(self.authService)
                 .environment(self.updaterService)
                 .environment(self.scrobblingCoordinator)
+                .environment(self.syncedLyricsService)
         }
         .commands {
             // Check for Updates command in app menu
