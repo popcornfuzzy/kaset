@@ -197,8 +197,8 @@ struct PlaylistDetailViewModelTests {
 
     // MARK: - Refresh Tests
 
-    @Test("Refresh clears detail and reloads")
-    func refreshClearsDetailAndReloads() async {
+    @Test("Refresh updates detail without clearing")
+    func refreshUpdatesDetailWithoutClearing() async {
         let playlistDetail = TestFixtures.makePlaylistDetail(
             playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
             trackCount: 5
@@ -218,6 +218,26 @@ struct PlaylistDetailViewModelTests {
         await self.viewModel.refresh()
 
         #expect(self.viewModel.playlistDetail?.tracks.count == 8)
+        #expect(self.viewModel.loadingState == .loaded)
+    }
+
+    @Test("Refresh keeps existing detail on error")
+    func refreshKeepsDetailOnError() async {
+        let playlistDetail = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 5
+        )
+        self.mockClient.playlistDetails["VL-test-playlist"] = playlistDetail
+
+        await self.viewModel.load()
+        #expect(self.viewModel.playlistDetail?.tracks.count == 5)
+
+        self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
+
+        await self.viewModel.refresh()
+
+        #expect(self.viewModel.playlistDetail?.tracks.count == 5)
+        #expect(self.viewModel.loadingState == .loaded)
     }
 
     // MARK: - Fallback Tests
