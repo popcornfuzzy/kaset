@@ -232,6 +232,10 @@ extension SingletonPlayerWebView {
                 }
             };
 
+            if (window.__kasetLyricsPollRequested) {
+                window.startLyricsPoll();
+            }
+
             function startPolling() {
                 if (isPollingActive) return;
                 isPollingActive = true;

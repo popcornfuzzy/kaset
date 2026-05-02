@@ -238,6 +238,7 @@ final class SingletonPlayerWebView {
     private var miniPlayerPresentationEnabled = false
     private var miniPlayerPrefersVideo = false
     private var miniPlayerViewportSize = CGSize(width: 320, height: 180)
+    private var lyricsPollRequested = false
 
     private init() {
         self.mediaControlUsesNextPrev = SettingsManager.shared.mediaControlStyle == .nextPreviousTrack
@@ -282,6 +283,13 @@ final class SingletonPlayerWebView {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(adBlockingFlagScript)
+
+        let lyricsPollRequestScript = WKUserScript(
+            source: "window.__kasetLyricsPollRequested = \(self.lyricsPollRequested ? "true" : "false");",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(lyricsPollRequestScript)
 
         if SettingsManager.shared.safeAdBlockingEnabled {
             // Strip ad payload fields from player responses before YouTube Music consumes them.
@@ -606,12 +614,14 @@ final class SingletonPlayerWebView {
 
     /// Starts high frequency polling for synced lyrics
     func startLyricsPoll() {
-        self.webView?.evaluateJavaScript("if (window.startLyricsPoll) { window.startLyricsPoll(); }")
+        self.lyricsPollRequested = true
+        self.webView?.evaluateJavaScript("window.__kasetLyricsPollRequested = true; if (window.startLyricsPoll) { window.startLyricsPoll(); }")
     }
 
     /// Stops high frequency polling for synced lyrics
     func stopLyricsPoll() {
-        self.webView?.evaluateJavaScript("if (window.stopLyricsPoll) { window.stopLyricsPoll(); }")
+        self.lyricsPollRequested = false
+        self.webView?.evaluateJavaScript("window.__kasetLyricsPollRequested = false; if (window.stopLyricsPoll) { window.stopLyricsPoll(); }")
     }
 
     /// Updates runtime ad-blocking flag inside the persistent WebView without requiring a reload.
