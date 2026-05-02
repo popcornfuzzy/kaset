@@ -130,6 +130,19 @@ struct LyricsView: View {
                 .foregroundStyle(.primary)
             Spacer()
 
+            Button {
+                Task {
+                    await self.refreshLyrics()
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help(String(localized: "Refresh lyrics"))
+            .accessibilityLabel(String(localized: "Refresh lyrics"))
+            .disabled(self.playerService.currentTrack == nil || self.syncedLyricsService.isLoading || self.isLoadingFallback)
+
             // Explain button (AI-powered)
             if self.syncedLyricsService.currentLyrics.isAvailable {
                 Button {
@@ -429,7 +442,7 @@ struct LyricsView: View {
     // MARK: - Data Loading
 
     @MainActor
-    private func loadLyrics(for videoId: String) async {
+    private func loadLyrics(for videoId: String, forceRefresh: Bool = false) async {
         self.isLoadingFallback = false
 
         guard let track = playerService.currentTrack else { return }
@@ -455,7 +468,7 @@ struct LyricsView: View {
         )
 
         if SettingsManager.shared.syncedLyricsEnabled {
-            await self.syncedLyricsService.fetchLyrics(for: info)
+            await self.syncedLyricsService.fetchLyrics(for: info, forceRefresh: forceRefresh)
         } else {
             self.syncedLyricsService.currentLyrics = .unavailable
             self.syncedLyricsService.activeProvider = nil
@@ -467,6 +480,10 @@ struct LyricsView: View {
 
         // As a fallback to provide plain lyrics
         if case .unavailable = self.syncedLyricsService.currentLyrics {
+            if !forceRefresh, self.syncedLyricsService.isCachedUnavailable(for: videoId) {
+                return
+            }
+
             self.isLoadingFallback = true
             defer {
                 if self.lastLoadedVideoId == videoId {
@@ -485,6 +502,18 @@ struct LyricsView: View {
                 DiagnosticsLogger.api.error("Failed to load plain lyrics fallback: \(error.localizedDescription)")
             }
         }
+    }
+
+    @MainActor
+    private func refreshLyrics() async {
+        guard let videoId = self.playerService.currentTrack?.videoId else { return }
+
+        self.lyricsSummary = nil
+        self.partialSummary = nil
+        self.showExplanation = false
+        self.explanationError = nil
+
+        await self.loadLyrics(for: videoId, forceRefresh: true)
     }
 
     private func explainLyrics() async {

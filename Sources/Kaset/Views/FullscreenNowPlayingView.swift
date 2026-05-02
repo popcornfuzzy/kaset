@@ -523,6 +523,10 @@ struct FullscreenNowPlayingView: View {
         guard self.playerService.currentTrack?.videoId == videoId else { return }
 
         if case .unavailable = self.syncedLyricsService.currentLyrics {
+            if self.syncedLyricsService.isCachedUnavailable(for: videoId) {
+                return
+            }
+
             self.isLoadingFallback = true
             defer {
                 if self.lastLoadedVideoId == videoId {

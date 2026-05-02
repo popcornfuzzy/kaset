@@ -85,8 +85,8 @@ struct SyncedLyricsServiceTests {
         #expect(service.activeProvider == "Cached Source")
     }
 
-    @Test("fetchLyrics retries after a cached unavailable result")
-    func fetchLyricsRetriesAfterCachedUnavailableResult() async {
+    @Test("fetchLyrics returns cached unavailable results without refetching")
+    func fetchLyricsReturnsCachedUnavailableWithoutRefetching() async {
         let provider = MockLyricsProvider(name: "UnavailableProvider", result: .unavailable)
         let service = SyncedLyricsService(providers: [provider])
         let info = Self.makeSearchInfo(videoId: "video-unavailable")
@@ -102,7 +102,7 @@ struct SyncedLyricsServiceTests {
 
         #expect(service.currentLyrics == .unavailable)
         #expect(service.activeProvider == nil)
-        #expect(await provider.callCount() == 2)
+        #expect(await provider.callCount() == 1)
     }
 
     @Test("fetchLyrics updates loading state while a search is in flight")
@@ -146,7 +146,7 @@ struct SyncedLyricsServiceTests {
         #expect(service.currentLyrics == .plain(plain))
         #expect(service.activeProvider == "Lyrics by LyricFind")
 
-        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: videoId))
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: videoId), forceRefresh: true)
 
         #expect(service.currentLyrics == .synced(synced))
         #expect(service.activeProvider == "SyncedProvider")
@@ -166,7 +166,23 @@ struct SyncedLyricsServiceTests {
 
         #expect(service.currentLyrics == .plain(plain))
         #expect(service.activeProvider == "Lyrics by LyricFind")
+        #expect(await provider.callCount() == 0)
+    }
+
+    @Test("fetchLyrics forceRefresh retries after cached unavailable result")
+    func fetchLyricsForceRefreshRetriesAfterCachedUnavailableResult() async {
+        let provider = MockLyricsProvider(name: "UnavailableProvider", result: .unavailable)
+        let service = SyncedLyricsService(providers: [provider])
+        let info = Self.makeSearchInfo(videoId: "video-unavailable-refresh")
+
+        await service.fetchLyrics(for: info)
         #expect(await provider.callCount() == 1)
+
+        await service.fetchLyrics(for: info, forceRefresh: true)
+
+        #expect(service.currentLyrics == .unavailable)
+        #expect(service.activeProvider == nil)
+        #expect(await provider.callCount() == 2)
     }
 
     @Test("stale in-flight fetches do not overwrite a newer result")
