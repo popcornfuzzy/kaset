@@ -40,6 +40,20 @@ extension PlayerService {
         title.isEmpty || artist.isEmpty || !self.metadataMatchesSong(title: title, artist: artist, song: song)
     }
 
+    private func isQueueMetadataPlaceholder(_ song: Song) -> Bool {
+        let trimmedTitle = song.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTitle.isEmpty || trimmedTitle == "Loading..." || trimmedTitle == "Unknown Title" {
+            return true
+        }
+
+        guard !song.artists.isEmpty else { return true }
+        let hasKnownArtist = song.artists.contains { artist in
+            let trimmedName = artist.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmedName.isEmpty && trimmedName != "Unknown Artist"
+        }
+        return !hasKnownArtist
+    }
+
     private var canAdvanceNativeQueueAfterTrackEnd: Bool {
         self.shuffleEnabled
             || self.repeatMode == .one
@@ -731,6 +745,17 @@ extension PlayerService {
         // Repeat one: never replace the queue-driven `currentTrack` with YouTube's row (autoplay after idle/end).
         if self.repeatMode == .one, let queued = self.queue[safe: self.currentIndex] {
             self.keepQueueSongVisible(queued, thumbnailUrl: thumbnailUrl)
+            return
+        }
+
+        if let matchingSong = self.queue.first(where: { $0.videoId == resolvedVideoId }),
+           !self.isQueueMetadataPlaceholder(matchingSong),
+           self.shouldKeepQueueMetadata(title: title, artist: artist, song: matchingSong)
+        {
+            self.logger.debug(
+                "Keeping queue metadata for \(resolvedVideoId) due to incomplete web metadata: '\(title)'"
+            )
+            self.keepQueueSongVisible(matchingSong, thumbnailUrl: thumbnailUrl)
             return
         }
 
