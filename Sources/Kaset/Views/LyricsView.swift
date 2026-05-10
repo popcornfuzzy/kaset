@@ -56,6 +56,7 @@ struct LyricsView: View {
                 Task {
                     await self.loadLyrics(for: videoId)
                 }
+                self.restartLyricsPollingIfNeeded()
             }
         }
         .onChange(of: self.playerService.currentTrack?.title) { _, _ in
@@ -85,6 +86,10 @@ struct LyricsView: View {
             Task {
                 await self.loadLyrics(for: videoId)
             }
+            if case .synced = self.syncedLyricsService.currentLyrics {
+                self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+            }
+            self.restartLyricsPollingIfNeeded()
         }
         .task {
             if let videoId = playerService.currentTrack?.videoId {
@@ -115,10 +120,18 @@ struct LyricsView: View {
 
     private func updateLyricsPolling(for result: LyricResult) {
         if case .synced = result {
+            guard self.playerService.duration > 0 else { return }
             SingletonPlayerWebView.shared.startLyricsPoll()
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
         }
+    }
+
+    private func restartLyricsPollingIfNeeded() {
+        guard self.playerService.duration > 0 else { return }
+        guard case .synced = self.syncedLyricsService.currentLyrics else { return }
+        SingletonPlayerWebView.shared.stopLyricsPoll()
+        SingletonPlayerWebView.shared.startLyricsPoll(forceRestart: true)
     }
 
     // MARK: - Header
@@ -235,6 +248,7 @@ struct LyricsView: View {
                     Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                 }
             )
+            .id(self.playerService.currentTrack?.videoId ?? "")
             .background(Color.clear)
         }
     }
@@ -477,6 +491,10 @@ struct LyricsView: View {
 
         guard self.lastLoadedVideoId == videoId else { return }
         guard self.playerService.currentTrack?.videoId == videoId else { return }
+
+        if self.syncedLyricsService.currentLyricsVideoId == videoId {
+            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+        }
 
         // As a fallback to provide plain lyrics
         if case .unavailable = self.syncedLyricsService.currentLyrics {

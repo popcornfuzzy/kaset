@@ -746,6 +746,7 @@ extension PlayerService {
         )
 
         if trackChanged {
+            self.resetLyricsTime()
             self.resetTrackStatus()
             // Immediately restore like status from SongLikeStatusManager cache
             if let cachedLikeStatus {

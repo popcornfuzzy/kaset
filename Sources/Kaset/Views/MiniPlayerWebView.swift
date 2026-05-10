@@ -613,9 +613,10 @@ final class SingletonPlayerWebView {
     }
 
     /// Starts high frequency polling for synced lyrics
-    func startLyricsPoll() {
+    func startLyricsPoll(forceRestart: Bool = false) {
         self.lyricsPollRequested = true
-        self.webView?.evaluateJavaScript("window.__kasetLyricsPollRequested = true; if (window.startLyricsPoll) { window.startLyricsPoll(); }")
+        let forceValue = forceRestart ? "true" : "false"
+        self.webView?.evaluateJavaScript("window.__kasetLyricsPollRequested = true; if (window.startLyricsPoll) { window.startLyricsPoll(\(forceValue)); }")
     }
 
     /// Stops high frequency polling for synced lyrics
@@ -750,7 +751,7 @@ final class SingletonPlayerWebView {
             if type == "LYRICS_TIME" {
                 if let time = body["time"] as? Double {
                     Task { @MainActor in
-                        self.playerService.currentTimeMs = Int(time * 1000)
+                        self.playerService.updateLyricsTime(time)
                     }
                 }
                 return

@@ -58,8 +58,16 @@ extension SingletonPlayerWebView {
                     if (video.__kasetListenersAttached) return;
                     video.__kasetListenersAttached = true;
 
-                    video.addEventListener('play', startPolling);
-                    video.addEventListener('playing', startPolling);
+                    video.addEventListener('play', () => {
+                        startPolling();
+                        if (window.startLyricsPoll) window.startLyricsPoll(true);
+                        sendLyricsTime();
+                    });
+                    video.addEventListener('playing', () => {
+                        startPolling();
+                        if (window.startLyricsPoll) window.startLyricsPoll(true);
+                        sendLyricsTime();
+                    });
                     // Enforce volume on playing event to catch all track changes
                     // (auto-advance, SPA navigation, button clicks)
                     video.addEventListener('playing', () => enforceVolumeNow());
@@ -69,7 +77,10 @@ extension SingletonPlayerWebView {
                         stopPolling();
                     });
                     video.addEventListener('waiting', () => sendUpdate()); // Buffer state
-                    video.addEventListener('seeked', () => sendUpdate()); // Seek completed
+                    video.addEventListener('seeked', () => {
+                        sendUpdate();
+                        sendLyricsTime();
+                    }); // Seek completed
 
                     // AirPlay state tracking
                     video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => {
@@ -212,17 +223,24 @@ extension SingletonPlayerWebView {
             }
 
             let lyricsPollId = null;
-            window.startLyricsPoll = function() {
-                if (lyricsPollId) return;
-                lyricsPollId = setInterval(() => {
-                    const v = document.querySelector('video');
-                    if (v) {
-                        bridge.postMessage({
-                            type: 'LYRICS_TIME',
-                            time: v.currentTime
-                        });
-                    }
-                }, 100);
+            function sendLyricsTime() {
+                const v = document.querySelector('video');
+                if (v) {
+                    bridge.postMessage({
+                        type: 'LYRICS_TIME',
+                        time: v.currentTime
+                    });
+                }
+            }
+
+            window.startLyricsPoll = function(forceRestart) {
+                if (lyricsPollId) {
+                    if (!forceRestart) return;
+                    clearInterval(lyricsPollId);
+                    lyricsPollId = null;
+                }
+                sendLyricsTime();
+                lyricsPollId = setInterval(sendLyricsTime, 100);
             };
 
             window.stopLyricsPoll = function() {

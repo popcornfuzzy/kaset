@@ -513,6 +513,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        self.resetLyricsTime()
 
         // Create a minimal Song object for now
         self.currentTrack = Song(
@@ -554,6 +555,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        self.resetLyricsTime()
         self.currentTrack = song
 
         // Mark that we initiated this playback (to detect and correct YouTube's autoplay override)
@@ -620,6 +622,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         guard self.isAdPlaying != isAdPlaying else { return }
         self.isAdPlaying = isAdPlaying
         self.logger.info("Ad playback state changed: \(isAdPlaying)")
+    }
+
+    func updateLyricsTime(_ timeSeconds: Double) {
+        let newTimeMs = Int(timeSeconds * 1000)
+        self.currentTimeMs = max(0, newTimeMs)
+    }
+
+    func resetLyricsTime() {
+        self.currentTimeMs = 0
     }
 
     /// Flag to track when a song is nearing its end.

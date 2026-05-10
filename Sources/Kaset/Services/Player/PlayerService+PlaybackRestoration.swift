@@ -132,6 +132,7 @@ private extension PlayerService {
         if duration > 0, progress >= duration - 4 {
             self.songNearingEnd = true
         }
+
     }
 
     func reconcileRestoredPlaybackState(
