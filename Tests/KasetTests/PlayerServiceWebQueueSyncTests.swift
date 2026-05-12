@@ -2,6 +2,18 @@ import Foundation
 import Testing
 @testable import Kaset
 
+@MainActor
+final class MockLastFMRecommendationsProvider: LastFMRecommendationsProviding {
+    var authState: ScrobbleAuthState = .connected(username: "tester")
+    var similarTracks: [LastFMSimilarTrack] = []
+    private(set) var fetchRequests: [(artist: String, track: String, limit: Int)] = []
+
+    func fetchSimilarTracks(artist: String, track: String, limit: Int) async throws -> [LastFMSimilarTrack] {
+        self.fetchRequests.append((artist: artist, track: track, limit: limit))
+        return self.similarTracks
+    }
+}
+
 /// Web queue sync, next/previous stack, repeat-one, metadata drift, and radio-related PlayerService tests.
 @Suite(.serialized, .tags(.service))
 @MainActor
@@ -253,6 +265,92 @@ struct PlayerServiceWebQueueSyncTests {
 
         #expect(self.playerService.pendingPlayVideoId == "solo-video")
         #expect(self.playerService.state != .ended)
+    }
+
+    @Test("Queue end uses Last.fm recommendations when enabled")
+    func queueEndUsesLastFMRecommendationsWhenEnabled() async {
+        let settings = SettingsManager.shared
+        let previousSetting = settings.enableLastFMRecommendations
+        settings.enableLastFMRecommendations = true
+        defer { settings.enableLastFMRecommendations = previousSetting }
+
+        let seedSong = Song(
+            id: "seed-1",
+            title: "Seed Track",
+            artists: [Artist(id: "seed-artist", name: "Seed Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "seed-video"
+        )
+
+        let mockClient = MockYTMusicClient()
+        mockClient.searchResponse = SearchResponse(
+            songs: [
+                Song(
+                    id: "rec-1",
+                    title: "Rec Track",
+                    artists: [Artist(id: "rec-artist", name: "Rec Artist")],
+                    album: nil,
+                    duration: 200,
+                    thumbnailURL: nil,
+                    videoId: "rec-video"
+                ),
+            ],
+            albums: [],
+            artists: [],
+            playlists: [],
+            continuationToken: nil
+        )
+
+        let mockLastFM = MockLastFMRecommendationsProvider()
+        mockLastFM.similarTracks = [
+            LastFMSimilarTrack(title: "Rec Track", artist: "Rec Artist", matchScore: 0.9, mbid: nil),
+        ]
+
+        self.playerService.setYTMusicClient(mockClient)
+        self.playerService.setLastFMRecommendationsProvider(mockLastFM)
+        await self.playerService.playQueue([seedSong], startingAt: 0)
+
+        await self.playerService.handleTrackEnded(observedVideoId: "seed-video")
+
+        #expect(self.playerService.queue.count == 1)
+        #expect(self.playerService.queue.first?.videoId == "rec-video")
+        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.pendingPlayVideoId == "rec-video")
+        #expect(self.playerService.isAwaitingYouTubeAutoplayAfterQueueEnd == false)
+        #expect(self.playerService.state != .ended)
+    }
+
+    @Test("Queue end with Last.fm enabled keeps ended state when no results")
+    func queueEndWithLastFMEnabledAndNoResultsKeepsEndedState() async {
+        let settings = SettingsManager.shared
+        let previousSetting = settings.enableLastFMRecommendations
+        settings.enableLastFMRecommendations = true
+        defer { settings.enableLastFMRecommendations = previousSetting }
+
+        let seedSong = Song(
+            id: "seed-1",
+            title: "Seed Track",
+            artists: [Artist(id: "seed-artist", name: "Seed Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "seed-video"
+        )
+
+        let mockClient = MockYTMusicClient()
+        let mockLastFM = MockLastFMRecommendationsProvider()
+        mockLastFM.similarTracks = []
+
+        self.playerService.setYTMusicClient(mockClient)
+        self.playerService.setLastFMRecommendationsProvider(mockLastFM)
+        await self.playerService.playQueue([seedSong], startingAt: 0)
+
+        await self.playerService.handleTrackEnded(observedVideoId: "seed-video")
+
+        #expect(self.playerService.state == .ended)
+        #expect(self.playerService.isAwaitingYouTubeAutoplayAfterQueueEnd == false)
     }
 
     @Test("Next with shuffle picks random song from queue")

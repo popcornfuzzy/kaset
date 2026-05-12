@@ -193,6 +193,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     let logger = DiagnosticsLogger.player
     var ytMusicClient: (any YTMusicClientProtocol)?
+    var lastFMRecommendationsProvider: (any LastFMRecommendationsProviding)?
 
     /// Continuation token for loading more songs in infinite mix/radio.
     var mixContinuationToken: String?
@@ -502,6 +503,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.ytMusicClient = client
     }
 
+    /// Sets the Last.fm recommendations provider (dependency injection).
+    func setLastFMRecommendationsProvider(_ provider: (any LastFMRecommendationsProviding)?) {
+        self.lastFMRecommendationsProvider = provider
+    }
+
     // MARK: - Public Methods
 
     /// Plays a track by video ID.
@@ -651,6 +657,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Guards asynchronous queue synchronization while YouTube autoplay is active.
     var isFetchingYouTubeAutoplayQueue: Bool = false
+
+    /// Guards asynchronous Last.fm recommendations after a queue ends.
+    var isFetchingLastFMRecommendations: Bool = false
 
     /// True while Kaset is waiting for YouTube autoplay metadata right after native queue completion.
     var isAwaitingYouTubeAutoplayAfterQueueEnd: Bool = false

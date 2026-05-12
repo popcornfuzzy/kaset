@@ -43,6 +43,71 @@ let clientVersion = "1.20231204.01.00"
 let baseURL = "https://music.youtube.com/youtubei/v1"
 let origin = "https://music.youtube.com"
 
+// MARK: - Last.fm Worker Config (API Explorer)
+
+private func lastFMWorkerBaseURL() -> URL? {
+    if let envURL = ProcessInfo.processInfo.environment["KASET_LASTFM_WORKER_URL"],
+       let url = URL(string: envURL)
+    {
+        return url
+    }
+    return URL(string: "https://kaset-lastfm.sozercan.workers.dev")
+}
+
+private func buildLastFMSimilarURL(artist: String, track: String, limit: Int?) -> URL? {
+    guard let baseURL = lastFMWorkerBaseURL() else { return nil }
+    var components = URLComponents(url: baseURL.appendingPathComponent("track/similar"), resolvingAgainstBaseURL: false)
+    var items = [
+        URLQueryItem(name: "artist", value: artist),
+        URLQueryItem(name: "track", value: track),
+    ]
+    if let limit {
+        items.append(URLQueryItem(name: "limit", value: String(limit)))
+    }
+    components?.queryItems = items
+    return components?.url
+}
+
+func exploreLastFMSimilar(artist: String, track: String, limit: Int?, verbose: Bool = false) async {
+    guard let url = buildLastFMSimilarURL(artist: artist, track: track, limit: limit) else {
+        print("❌ Failed to build Last.fm similar URL")
+        return
+    }
+
+    print("🎧 Exploring Last.fm similar tracks")
+    print("   Artist: \(artist)")
+    print("   Track:  \(track)")
+    if let limit {
+        print("   Limit:  \(limit)")
+    }
+    print()
+
+    do {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            print("❌ Invalid JSON response (HTTP \(statusCode))")
+            return
+        }
+
+        print("✅ HTTP \(statusCode)")
+        print()
+        print("📋 Top-level keys: \(Array(json.keys).sorted().joined(separator: ", "))")
+
+        if verbose {
+            print("\n📄 Raw response (pretty-printed):")
+            if let prettyData = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
+               let prettyString = String(data: prettyData, encoding: .utf8)
+            {
+                print(prettyString)
+            }
+        }
+    } catch {
+        print("❌ Error: \(error.localizedDescription)")
+    }
+}
+
 /// Global auth user index (0 = primary account, 1+ = brand accounts)
 nonisolated(unsafe) var globalAuthUserIndex = 0
 
@@ -1203,6 +1268,7 @@ func listEndpoints() {
     Explore with verbose:  ./api-explorer.swift browse FEmusic_charts -v
     Dynamic browse ID:     ./api-explorer.swift browse VLPLrAXtmErZgOeiKm4sgNOknGvNjby9efdf
     Action with body:      ./api-explorer.swift action player '{"videoId":"dQw4w9WgXcQ"}'
+    Last.fm similar tracks: KASET_LASTFM_WORKER_URL=https://... ./api-explorer.swift lastfm-similar "Radiohead" "Creep" 10
 
     * Param-based library endpoints above return HTTP 400 without both auth AND params
 
@@ -1228,6 +1294,7 @@ func showHelp() {
       auth                           Check authentication status
       accounts                       Discover available accounts (via authuser)
       brandaccounts                  List all brand accounts with their IDs
+            lastfm-similar <artist> <track> [limit]  Explore Last.fm similar tracks via the worker
       help                           Show this help message
 
     Options:
@@ -1259,6 +1326,9 @@ func showHelp() {
       # Continuation (for pagination / infinite mix)
       ./api-explorer.swift continuation <token>           # browse endpoint (default)
       ./api-explorer.swift continuation <token> next      # next endpoint (for mix queues)
+
+    # Last.fm (requires KASET_LASTFM_WORKER_URL)
+    ./api-explorer.swift lastfm-similar "Radiohead" "Creep" 10
 
       # Check auth status
       ./api-explorer.swift auth
@@ -1370,6 +1440,16 @@ func runMain() async {
 
     case "brandaccounts":
         await discoverBrandAccounts(verbose: verbose)
+
+    case "lastfm-similar":
+        guard filteredArgs.count >= 3 else {
+            print("❌ Usage: lastfm-similar <artist> <track> [limit]")
+            return
+        }
+        let artist = filteredArgs[1]
+        let track = filteredArgs[2]
+        let limit = filteredArgs.count >= 4 ? Int(filteredArgs[3]) : nil
+        await exploreLastFMSimilar(artist: artist, track: track, limit: limit, verbose: verbose)
 
     case "help", "-h", "--help":
         showHelp()

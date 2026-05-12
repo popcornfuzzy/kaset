@@ -1,12 +1,25 @@
 import AppKit
 import Foundation
 
+struct LastFMSimilarTrack: Equatable, Sendable {
+    let title: String
+    let artist: String
+    let matchScore: Double?
+    let mbid: String?
+}
+
+@MainActor
+protocol LastFMRecommendationsProviding: AnyObject {
+    var authState: ScrobbleAuthState { get }
+    func fetchSimilarTracks(artist: String, track: String, limit: Int) async throws -> [LastFMSimilarTrack]
+}
+
 /// Last.fm scrobbling service implementation.
 /// Communicates with the Cloudflare Worker proxy for API signing.
 /// All Last.fm API calls go through the Worker — no client-side signing.
 @MainActor
 @Observable
-final class LastFMService: ScrobbleServiceProtocol {
+final class LastFMService: ScrobbleServiceProtocol, LastFMRecommendationsProviding {
     let serviceName = "Last.fm"
 
     /// Current authentication state.
@@ -114,6 +127,30 @@ final class LastFMService: ScrobbleServiceProtocol {
         self.credentialStore.removeLastFMCredentials()
         self.authState = .disconnected
         self.logger.info("Disconnected from Last.fm")
+    }
+
+    // MARK: - Recommendations
+
+    /// Fetches similar tracks for a given artist/title pair.
+    func fetchSimilarTracks(artist: String, track: String, limit: Int = 25) async throws -> [LastFMSimilarTrack] {
+        var components = URLComponents(url: self.workerBaseURL.appendingPathComponent("track/similar"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "artist", value: artist),
+            URLQueryItem(name: "track", value: track),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+
+        guard let url = components?.url else {
+            throw ScrobbleError.invalidResponse("Invalid similar-tracks URL")
+        }
+
+        let (data, _) = try await self.session.data(from: url)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ScrobbleError.invalidResponse("Invalid JSON response")
+        }
+
+        try self.checkForErrors(json)
+        return Self.parseSimilarTracksResponse(json)
     }
 
     /// Sends a "now playing" update for the currently playing track.
@@ -352,6 +389,63 @@ final class LastFMService: ScrobbleServiceProtocol {
     }
 
     // MARK: - Response Parsing
+
+    // swiftformat:disable modifierOrder
+    nonisolated static func parseSimilarTracksResponse(_ response: [String: Any]) -> [LastFMSimilarTrack] {
+        guard let similar = response["similartracks"] as? [String: Any] else {
+            return []
+        }
+
+        let trackEntries: [[String: Any]]
+        if let array = similar["track"] as? [[String: Any]] {
+            trackEntries = array
+        } else if let single = similar["track"] as? [String: Any] {
+            trackEntries = [single]
+        } else {
+            return []
+        }
+
+        var results: [LastFMSimilarTrack] = []
+        results.reserveCapacity(trackEntries.count)
+
+        for entry in trackEntries {
+            guard let title = entry["name"] as? String, !title.isEmpty else {
+                continue
+            }
+
+            let artistName: String? = {
+                if let artistDict = entry["artist"] as? [String: Any] {
+                    return (artistDict["name"] as? String) ?? (artistDict["#text"] as? String)
+                }
+                return entry["artist"] as? String
+            }()
+
+            guard let artist = artistName, !artist.isEmpty else {
+                continue
+            }
+
+            let matchScore: Double? = {
+                if let match = entry["match"] as? Double {
+                    return match
+                }
+                if let matchString = entry["match"] as? String {
+                    return Double(matchString)
+                }
+                return nil
+            }()
+
+            let mbid = entry["mbid"] as? String
+
+            results.append(LastFMSimilarTrack(
+                title: title,
+                artist: artist,
+                matchScore: matchScore,
+                mbid: mbid
+            ))
+        }
+
+        return results
+    }
 
     // swiftformat:disable modifierOrder
     nonisolated static func parseScrobbleResponse(

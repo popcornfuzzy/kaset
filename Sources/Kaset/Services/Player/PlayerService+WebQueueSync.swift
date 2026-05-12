@@ -139,6 +139,80 @@ extension PlayerService {
         !self.queue.isEmpty && !self.canAdvanceNativeQueueAfterTrackEnd
     }
 
+    private var shouldUseLastFMRecommendationsAfterQueueEnd: Bool {
+        SettingsManager.shared.enableLastFMRecommendations
+            && self.lastFMRecommendationsProvider?.authState.isConnected == true
+    }
+
+    private func lastFMSeedSongForQueueEnd() -> Song? {
+        self.queue[safe: self.currentIndex] ?? self.currentTrack
+    }
+
+    private func resolveLastFMRecommendations(
+        _ tracks: [LastFMSimilarTrack],
+        client: any YTMusicClientProtocol
+    ) async -> [Song] {
+        var resolved: [Song] = []
+        var seenVideoIds = Set<String>()
+
+        for track in tracks {
+            let query = "\(track.artist) - \(track.title)"
+            do {
+                let results = try await client.searchSongs(query: query)
+                if let song = results.first(where: { seenVideoIds.insert($0.videoId).inserted }) {
+                    resolved.append(song)
+                }
+            } catch {
+                self.logger.warning("Last.fm recommendation search failed for \(query): \(error.localizedDescription)")
+            }
+        }
+
+        return resolved
+    }
+
+    private func handleLastFMRecommendationsAfterQueueEnd() async -> Bool {
+        guard self.shouldUseLastFMRecommendationsAfterQueueEnd else { return false }
+        guard !self.isFetchingLastFMRecommendations else { return true }
+        guard let provider = self.lastFMRecommendationsProvider else { return false }
+        guard let client = self.ytMusicClient else { return false }
+        guard let seedSong = self.lastFMSeedSongForQueueEnd() else { return false }
+
+        let artistName = seedSong.artists.first?.name ?? seedSong.artistsDisplay
+        guard !artistName.isEmpty, !seedSong.title.isEmpty else { return false }
+
+        self.isFetchingLastFMRecommendations = true
+        defer { self.isFetchingLastFMRecommendations = false }
+
+        do {
+            let similarTracks = try await provider.fetchSimilarTracks(
+                artist: artistName,
+                track: seedSong.title,
+                limit: 25
+            )
+
+            guard !similarTracks.isEmpty else {
+                self.logger.info("Last.fm returned no similar tracks for '\(seedSong.title)'")
+                self.markPlaybackEnded()
+                return true
+            }
+
+            let resolvedSongs = await self.resolveLastFMRecommendations(similarTracks, client: client)
+            guard !resolvedSongs.isEmpty else {
+                self.logger.info("Last.fm recommendations did not resolve to playable songs")
+                self.markPlaybackEnded()
+                return true
+            }
+
+            self.logger.info("Loaded \(resolvedSongs.count) Last.fm recommendations after queue end")
+            await self.playQueue(resolvedSongs, startingAt: 0)
+            return true
+        } catch {
+            self.logger.warning("Failed to load Last.fm recommendations: \(error.localizedDescription)")
+            self.markPlaybackEnded()
+            return true
+        }
+    }
+
     private var isInsideNearEndTransitionWindow: Bool {
         guard self.duration > 0 else { return false }
         // Keep this window slightly wider than the playback-state marker so queue reconciliation
@@ -638,6 +712,10 @@ extension PlayerService {
 
         guard self.canAdvanceNativeQueueAfterTrackEnd else {
             self.shouldSuppressAutoplayAfterQueueEnd = false
+            self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
+            if await self.handleLastFMRecommendationsAfterQueueEnd() {
+                return
+            }
             self.isAwaitingYouTubeAutoplayAfterQueueEnd = true
             self.markPlaybackEnded()
             self.logger.info("Reached end of native queue; allowing YouTube autoplay handoff")

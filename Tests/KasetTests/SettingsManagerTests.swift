@@ -72,6 +72,12 @@ struct SettingsManagerTests {
         #expect(manager.rememberPlaybackSettings == false)
     }
 
+    @Test("Default enableLastFMRecommendations is false")
+    func defaultEnableLastFMRecommendations() {
+        let manager = SettingsManager.shared
+        #expect(manager.enableLastFMRecommendations == false)
+    }
+
     @Test("Disabling rememberPlaybackSettings clears persisted values")
     func disablingRememberPlaybackSettingsClearsValues() {
         let manager = SettingsManager.shared

@@ -239,6 +239,31 @@ export default {
 			});
 		}
 
+		// --- GET /track/similar?artist=X&track=Y&limit=N ---
+		if (path === "/track/similar" && request.method === "GET") {
+			const artist = url.searchParams.get("artist");
+			const track = url.searchParams.get("track");
+			const limit = url.searchParams.get("limit");
+
+			if (!artist || !track) {
+				return errorResponse("Missing required query params: artist, track");
+			}
+
+			const params = {
+				method: "track.getSimilar",
+				artist,
+				track,
+			};
+			if (limit) params["limit"] = limit;
+
+			const response = await lastfmRequest(params, env, "GET");
+			const data = await response.text();
+			return new Response(data, {
+				status: response.status,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		// --- 404 ---
 		return errorResponse("Not found", 404);
 	},

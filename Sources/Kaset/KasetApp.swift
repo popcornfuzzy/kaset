@@ -87,6 +87,7 @@ struct KasetApp: App {
 
         // Create scrobbling coordinator
         let lastFMService = LastFMService(credentialStore: KeychainCredentialStore())
+        player.setLastFMRecommendationsProvider(lastFMService)
         let scrobblingCoordinator = ScrobblingCoordinator(
             playerService: player,
             services: [lastFMService]

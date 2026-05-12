@@ -21,6 +21,7 @@ final class SettingsManager {
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
+        static let enableLastFMRecommendations = "settings.enableLastFMRecommendations"
     }
 
     // MARK: - Launch Page Options
@@ -189,6 +190,13 @@ final class SettingsManager {
         }
     }
 
+    /// Whether to use Last.fm for recommendations when the queue ends.
+    var enableLastFMRecommendations: Bool {
+        didSet {
+            UserDefaults.standard.set(self.enableLastFMRecommendations, forKey: Keys.enableLastFMRecommendations)
+        }
+    }
+
     // MARK: - Initialization
 
     private init() {
@@ -210,6 +218,7 @@ final class SettingsManager {
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
+        self.enableLastFMRecommendations = UserDefaults.standard.object(forKey: Keys.enableLastFMRecommendations) as? Bool ?? false
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),
            let style = MediaControlStyle(rawValue: rawValue)

@@ -50,6 +50,18 @@ struct ScrobbleServiceRow: View {
                 self.connectionButton
             }
             .padding(.vertical, 4)
+
+            if self.isLastFMService {
+                Toggle("Use Last.fm for Recommendations", isOn: self.$settings.enableLastFMRecommendations)
+                    .disabled(!self.isLastFMConnected)
+                    .help("When the queue ends, use Last.fm similar tracks instead of YouTube autoplay.")
+
+                if !self.isLastFMConnected {
+                    Text("Connect Last.fm to enable recommendations.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         } header: {
             Text(self.service.serviceName)
         }
@@ -77,6 +89,14 @@ struct ScrobbleServiceRow: View {
         case let .error(message):
             String(localized: "Error: \(message)")
         }
+    }
+
+    private var isLastFMService: Bool {
+        self.service.serviceName == "Last.fm"
+    }
+
+    private var isLastFMConnected: Bool {
+        self.service.authState.isConnected
     }
 
     @ViewBuilder
