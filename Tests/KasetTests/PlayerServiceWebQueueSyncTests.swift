@@ -7,9 +7,15 @@ final class MockLastFMRecommendationsProvider: LastFMRecommendationsProviding {
     var authState: ScrobbleAuthState = .connected(username: "tester")
     var similarTracks: [LastFMSimilarTrack] = []
     private(set) var fetchRequests: [(artist: String, track: String, limit: Int)] = []
+    private(set) var contextFetchRequests: [(contextTracks: [(artist: String, track: String)], limit: Int)] = []
 
     func fetchSimilarTracks(artist: String, track: String, limit: Int) async throws -> [LastFMSimilarTrack] {
         self.fetchRequests.append((artist: artist, track: track, limit: limit))
+        return self.similarTracks
+    }
+
+    func fetchSimilarTracksForContext(_ contextTracks: [(artist: String, track: String)], limit: Int) async throws -> [LastFMSimilarTrack] {
+        self.contextFetchRequests.append((contextTracks: contextTracks, limit: limit))
         return self.similarTracks
     }
 }
@@ -1059,5 +1065,88 @@ struct PlayerServiceWebQueueSyncTests {
 
         #expect(self.playerService.queue.count == 1)
         #expect(self.playerService.queue.first?.videoId == "lonely-video")
+    }
+
+    @Test("Last.fm context-based recommendations uses last 10 tracks as context")
+    func lastFMContextBasedRecommendationsUsesLastTenTracks() async {
+        // Create 10 queue songs + 1 current
+        var queueSongs: [Song] = []
+        for i in 1...10 {
+            queueSongs.append(Song(
+                id: "song-\(i)",
+                title: "Song \(i)",
+                artists: [Artist(id: "artist-\(i)", name: "Artist \(i)")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "video-\(i)"
+            ))
+        }
+
+        let currentSong = Song(
+            id: "current",
+            title: "Current Song",
+            artists: [Artist(id: "current-artist", name: "Current Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "current-video"
+        )
+        queueSongs.append(currentSong)
+
+        await self.playerService.playQueue(queueSongs, startingAt: 10)
+        #expect(self.playerService.currentIndex == 10)
+
+        // Setup Last.fm provider
+        SettingsManager.shared.enableLastFMRecommendations = true
+        let mockProvider = MockLastFMRecommendationsProvider()
+        mockProvider.similarTracks = [
+            LastFMSimilarTrack(title: "Recommendation 1", artist: "Artist A", matchScore: 0.95, mbid: nil),
+            LastFMSimilarTrack(title: "Recommendation 2", artist: "Artist B", matchScore: 0.85, mbid: nil),
+        ]
+        self.playerService.setLastFMRecommendationsProvider(mockProvider)
+
+        // Setup YouTube Music client
+        let mockClient = MockYTMusicClient()
+        mockClient.searchResponse = SearchResponse(
+            songs: [
+                Song(id: "rec-1", title: "Recommendation 1", artists: [Artist(id: "artist-a", name: "Artist A")], album: nil, duration: 180, thumbnailURL: nil, videoId: "rec-video-1"),
+                Song(id: "rec-2", title: "Recommendation 2", artists: [Artist(id: "artist-b", name: "Artist B")], album: nil, duration: 180, thumbnailURL: nil, videoId: "rec-video-2"),
+            ],
+            albums: [],
+            artists: [],
+            playlists: [],
+            continuationToken: nil
+        )
+        self.playerService.setYTMusicClient(mockClient)
+
+        // Collect context from queue
+        let contextTracks = self.playerService.lastFMContextTracksForQueueEnd(count: 10)
+
+        // Should have collected last 11 tracks (indices 0-10) as context
+        #expect(contextTracks.count == 11, "Should collect current song + all previous (when queue has 11 total)")
+        
+        // Verify first and last context tracks
+        #expect(contextTracks.first?.track == "Song 1", "First context track should be Song 1")
+        #expect(contextTracks.last?.track == "Current Song", "Last context track should be current song")
+    }
+
+    @Test("Last.fm context-based recommendations handles short queue")
+    func lastFMContextBasedRecommendationsHandlesShortQueue() async {
+        let queueSongs = [
+            Song(id: "song-1", title: "Song 1", artists: [Artist(id: "artist-1", name: "Artist 1")], videoId: "video-1"),
+            Song(id: "song-2", title: "Song 2", artists: [Artist(id: "artist-2", name: "Artist 2")], videoId: "video-2"),
+        ]
+
+        await self.playerService.playQueue(queueSongs, startingAt: 1)
+        #expect(self.playerService.currentIndex == 1)
+
+        // Collect context from a queue with only 2 songs
+        let contextTracks = self.playerService.lastFMContextTracksForQueueEnd(count: 10)
+
+        // Should have only 2 tracks in context (that's all we have)
+        #expect(contextTracks.count == 2, "Context should include all available songs")
+        #expect(contextTracks[0].track == "Song 1")
+        #expect(contextTracks[1].track == "Song 2")
     }
 }

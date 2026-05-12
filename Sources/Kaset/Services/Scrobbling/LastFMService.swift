@@ -12,6 +12,7 @@ struct LastFMSimilarTrack: Equatable, Sendable {
 protocol LastFMRecommendationsProviding: AnyObject {
     var authState: ScrobbleAuthState { get }
     func fetchSimilarTracks(artist: String, track: String, limit: Int) async throws -> [LastFMSimilarTrack]
+    func fetchSimilarTracksForContext(_ contextTracks: [(artist: String, track: String)], limit: Int) async throws -> [LastFMSimilarTrack]
 }
 
 /// Last.fm scrobbling service implementation.
@@ -151,6 +152,64 @@ final class LastFMService: ScrobbleServiceProtocol, LastFMRecommendationsProvidi
 
         try self.checkForErrors(json)
         return Self.parseSimilarTracksResponse(json)
+    }
+
+    /// Fetches similar tracks based on a context of multiple tracks (Nuclear-style Discovery).
+    /// Passes each context track to Last.fm independently, aggregates results, deduplicates,
+    /// and returns the top `limit` recommendations by match score.
+    /// - Parameters:
+    ///   - contextTracks: Array of (artist, track) tuples representing recent listening context.
+    ///   - limit: Maximum number of recommendations to return (default 25).
+    /// - Returns: Aggregated and deduplicated similar tracks sorted by match score.
+    func fetchSimilarTracksForContext(
+        _ contextTracks: [(artist: String, track: String)],
+        limit: Int = 25
+    ) async throws -> [LastFMSimilarTrack] {
+        guard !contextTracks.isEmpty else {
+            return []
+        }
+
+        // Fetch recommendations for each context track (5 per track to avoid overwhelming results)
+        var allSimilar: [LastFMSimilarTrack] = []
+        for (artist, track) in contextTracks {
+            do {
+                let similar = try await self.fetchSimilarTracks(artist: artist, track: track, limit: 5)
+                allSimilar.append(contentsOf: similar)
+            } catch {
+                self.logger.debug("Failed to fetch similar tracks for context \(artist) - \(track): \(error.localizedDescription)")
+                // Continue with other context tracks on error
+                continue
+            }
+        }
+
+        // Deduplicate by (artist, title) and aggregate match scores
+        var deduped: [String: LastFMSimilarTrack] = [:]
+        for track in allSimilar {
+            let key = "\(track.artist)|\(track.title)"
+            if let existing = deduped[key], let existingScore = existing.matchScore, let newScore = track.matchScore {
+                // Average match scores for duplicate tracks
+                let avgScore = (existingScore + newScore) / 2
+                deduped[key] = LastFMSimilarTrack(
+                    title: track.title,
+                    artist: track.artist,
+                    matchScore: avgScore,
+                    mbid: track.mbid ?? existing.mbid
+                )
+            } else {
+                deduped[key] = track
+            }
+        }
+
+        // Sort by match score (descending) and return top `limit`
+        let sorted = deduped.values
+            .sorted { (a, b) in
+                let scoreA = a.matchScore ?? 0
+                let scoreB = b.matchScore ?? 0
+                return scoreA > scoreB
+            }
+            .prefix(limit)
+
+        return Array(sorted)
     }
 
     /// Sends a "now playing" update for the currently playing track.

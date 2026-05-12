@@ -148,6 +148,20 @@ extension PlayerService {
         self.queue[safe: self.currentIndex] ?? self.currentTrack
     }
 
+    /// Collects the last N tracks from the queue as context for recommendations.
+    /// Returns up to `count` most recent tracks, including the current track.
+    func lastFMContextTracksForQueueEnd(count: Int = 10) -> [(artist: String, track: String)] {
+        let startIndex = max(0, self.currentIndex - count + 1)
+        let endIndex = self.currentIndex + 1
+
+        let contextSongs = self.queue[startIndex..<endIndex]
+        return contextSongs.compactMap { song in
+            let artistName = song.artists.first?.name ?? song.artistsDisplay
+            guard !artistName.isEmpty, !song.title.isEmpty else { return nil }
+            return (artist: artistName, track: song.title)
+        }
+    }
+
     private func resolveLastFMRecommendations(
         _ tracks: [LastFMSimilarTrack],
         client: any YTMusicClientProtocol
@@ -175,23 +189,20 @@ extension PlayerService {
         guard !self.isFetchingLastFMRecommendations else { return true }
         guard let provider = self.lastFMRecommendationsProvider else { return false }
         guard let client = self.ytMusicClient else { return false }
-        guard let seedSong = self.lastFMSeedSongForQueueEnd() else { return false }
 
-        let artistName = seedSong.artists.first?.name ?? seedSong.artistsDisplay
-        guard !artistName.isEmpty, !seedSong.title.isEmpty else { return false }
+        // Collect context: last 10 tracks (or fewer if queue is shorter)
+        let contextTracks = self.lastFMContextTracksForQueueEnd(count: 10)
+        guard !contextTracks.isEmpty else { return false }
 
         self.isFetchingLastFMRecommendations = true
         defer { self.isFetchingLastFMRecommendations = false }
 
         do {
-            let similarTracks = try await provider.fetchSimilarTracks(
-                artist: artistName,
-                track: seedSong.title,
-                limit: 25
-            )
+            let similarTracks = try await provider.fetchSimilarTracksForContext(contextTracks, limit: 25)
 
             guard !similarTracks.isEmpty else {
-                self.logger.info("Last.fm returned no similar tracks for '\(seedSong.title)'")
+                let contextDesc = contextTracks.map { "\($0.track) by \($0.artist)" }.joined(separator: ", ")
+                self.logger.info("Last.fm returned no similar tracks for context: \(contextDesc)")
                 self.markPlaybackEnded()
                 return true
             }
@@ -203,11 +214,11 @@ extension PlayerService {
                 return true
             }
 
-            self.logger.info("Loaded \(resolvedSongs.count) Last.fm recommendations after queue end")
+            self.logger.info("Loaded \(resolvedSongs.count) Last.fm recommendations based on \(contextTracks.count) context tracks (Nuclear-style)")
             await self.playQueue(resolvedSongs, startingAt: 0)
             return true
         } catch {
-            self.logger.warning("Failed to load Last.fm recommendations: \(error.localizedDescription)")
+            self.logger.warning("Failed to load Last.fm context-based recommendations: \(error.localizedDescription)")
             self.markPlaybackEnded()
             return true
         }
