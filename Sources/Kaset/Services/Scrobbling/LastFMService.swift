@@ -68,7 +68,7 @@ final class LastFMService: ScrobbleServiceProtocol, LastFMRecommendationsProvidi
             self.workerBaseURL = url
         } else {
             // Placeholder — must be configured before use
-            self.workerBaseURL = URL(string: "https://kaset-lastfm.sozercan.workers.dev")!
+            self.workerBaseURL = URL(string: "https://kaset-lastfm.passenbrunnersimon.workers.dev")!
         }
     }
 

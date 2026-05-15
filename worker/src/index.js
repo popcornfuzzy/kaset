@@ -18,11 +18,13 @@
 
 const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
 
+import { createHash } from 'node:crypto';
+
 /**
  * Computes Last.fm API signature (MD5 of sorted params + shared secret).
  * See: https://www.last.fm/api/authspec#_8-signing-calls
  */
-async function computeApiSig(params, secret) {
+function computeApiSig(params, secret) {
 	const sortedKeys = Object.keys(params).sort();
 	let sigString = "";
 	for (const key of sortedKeys) {
@@ -30,11 +32,7 @@ async function computeApiSig(params, secret) {
 	}
 	sigString += secret;
 
-	const encoder = new TextEncoder();
-	const data = encoder.encode(sigString);
-	const hashBuffer = await crypto.subtle.digest("MD5", data);
-	const hashArray = Array.from(new Uint8Array(hashBuffer));
-	return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+	return createHash('md5').update(sigString).digest('hex');
 }
 
 /**
@@ -48,7 +46,7 @@ async function lastfmRequest(params, env, method = "POST") {
 	// Compute signature (format is excluded from sig per Last.fm spec)
 	const sigParams = { ...params };
 	delete sigParams["format"];
-	const apiSig = await computeApiSig(sigParams, env.LASTFM_SHARED_SECRET);
+	const apiSig = computeApiSig(sigParams, env.LASTFM_SHARED_SECRET);
 	params["api_sig"] = apiSig;
 
 	if (method === "GET") {
@@ -95,6 +93,8 @@ export default {
 				{ status: 200, headers: { "Content-Type": "application/json" } },
 			);
 		}
+
+		
 
 		// --- GET /auth/token — Request an auth token from Last.fm ---
 		if (path === "/auth/token" && request.method === "GET") {
@@ -240,6 +240,7 @@ export default {
 		}
 
 		// --- GET /track/similar?artist=X&track=Y&limit=N ---
+		// track.getSimilar does NOT require authentication per Last.fm docs
 		if (path === "/track/similar" && request.method === "GET") {
 			const artist = url.searchParams.get("artist");
 			const track = url.searchParams.get("track");
@@ -249,14 +250,18 @@ export default {
 				return errorResponse("Missing required query params: artist, track");
 			}
 
-			const params = {
+			const params = new URLSearchParams({
 				method: "track.getSimilar",
+				api_key: env.LASTFM_API_KEY,
 				artist,
 				track,
-			};
-			if (limit) params["limit"] = limit;
+				autocorrect: "1",
+				format: "json",
+			});
+			if (limit) params.append("limit", limit);
 
-			const response = await lastfmRequest(params, env, "GET");
+			const urlWithParams = LASTFM_API_URL + "?" + params.toString();
+			const response = await fetch(urlWithParams);
 			const data = await response.text();
 			return new Response(data, {
 				status: response.status,

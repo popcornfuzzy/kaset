@@ -1,6 +1,7 @@
 name = "kaset-lastfm"
 main = "src/index.js"
 compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
 
 # Environment variables (set via `wrangler secret put`):
 # - LASTFM_API_KEY: REDACTED

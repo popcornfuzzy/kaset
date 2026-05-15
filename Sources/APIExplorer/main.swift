@@ -51,7 +51,7 @@ private func lastFMWorkerBaseURL() -> URL? {
     {
         return url
     }
-    return URL(string: "https://kaset-lastfm.sozercan.workers.dev")
+    return URL(string: "https://kaset-lastfm.passenbrunnersimon.workers.dev")
 }
 
 private func buildLastFMSimilarURL(artist: String, track: String, limit: Int?) -> URL? {
