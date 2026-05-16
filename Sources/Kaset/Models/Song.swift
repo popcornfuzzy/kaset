@@ -1,6 +1,14 @@
 import CoreTransferable
 import Foundation
 
+// MARK: - SongSource
+
+enum SongSource: String, Codable, Sendable {
+    case manual
+    case ytmAutoplay
+    case lastFM
+}
+
 // MARK: - Song
 
 /// Represents a song/track from YouTube Music.
@@ -12,6 +20,9 @@ struct Song: Identifiable, Codable, Hashable {
     let duration: TimeInterval?
     let thumbnailURL: URL?
     let videoId: String
+
+    /// Source of this song (manual play, YTM autoplay, Last.fm recommendations).
+    var source: SongSource?
 
     /// Whether this track has a music video available.
     var hasVideo: Bool?
@@ -38,6 +49,7 @@ struct Song: Identifiable, Codable, Hashable {
         duration: TimeInterval? = nil,
         thumbnailURL: URL? = nil,
         videoId: String,
+        source: SongSource? = nil,
         hasVideo: Bool? = nil,
         musicVideoType: MusicVideoType? = nil,
         likeStatus: LikeStatus? = nil,
@@ -51,6 +63,7 @@ struct Song: Identifiable, Codable, Hashable {
         self.duration = duration
         self.thumbnailURL = thumbnailURL
         self.videoId = videoId
+        self.source = source
         self.hasVideo = hasVideo
         self.musicVideoType = musicVideoType
         self.likeStatus = likeStatus

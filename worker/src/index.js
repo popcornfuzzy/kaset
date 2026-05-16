@@ -43,7 +43,7 @@ async function lastfmRequest(params, env, method = "POST") {
 	params["api_key"] = env.LASTFM_API_KEY;
 	params["format"] = "json";
 
-	// Compute signature (format is excluded from sig per Last.fm spec)
+	// Compute signature with api_key
 	const sigParams = { ...params };
 	delete sigParams["format"];
 	const apiSig = computeApiSig(sigParams, env.LASTFM_SHARED_SECRET);
@@ -54,14 +54,19 @@ async function lastfmRequest(params, env, method = "POST") {
 		for (const [key, value] of Object.entries(params)) {
 			url.searchParams.set(key, value);
 		}
-		return fetch(url.toString());
+		return fetch(url.toString(), { 
+			headers: { 'User-Agent': 'Kaset/1.0' }
+		});
 	}
 
 	// POST request
 	const body = new URLSearchParams(params);
 	return fetch(LASTFM_API_URL, {
 		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		headers: { 
+			"Content-Type": "application/x-www-form-urlencoded",
+			'User-Agent': 'Kaset/1.0'
+		},
 		body: body.toString(),
 	});
 }
@@ -114,8 +119,9 @@ export default {
 				return errorResponse("Missing 'token' parameter");
 			}
 
+			// Try POST instead
 			const params = { method: "auth.getSession", token };
-			const response = await lastfmRequest(params, env, "GET");
+			const response = await lastfmRequest(params, env, "POST");
 			const data = await response.text();
 			return new Response(data, {
 				status: response.status,

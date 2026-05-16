@@ -30,9 +30,20 @@ final class LastFMService: ScrobbleServiceProtocol, LastFMRecommendationsProvidi
     private let session: URLSession
     private let logger = DiagnosticsLogger.scrobbling
 
-    /// Base URL for the Cloudflare Worker proxy.
-    /// Configure via `KASET_LASTFM_WORKER_URL` environment variable or Info.plist.
+    /// Base URL for the Cloudflare Worker proxy (for authenticated operations like scrobbling).
     private let workerBaseURL: URL
+
+    /// Last.fm API base URL (for public operations like track.getSimilar).
+    private let lastFMAPIBaseURL = URL(string: "https://ws.audioscrobbler.com/2.0/")!
+
+    /// Last.fm API key for public API access (track.getSimilar).
+    /// Configure via `KASET_LASTFM_API_KEY` environment variable.
+    private var apiKey: String {
+        if let envKey = ProcessInfo.processInfo.environment["KASET_LASTFM_API_KEY"] {
+            return envKey
+        }
+        return "REDACTED"
+    }
 
     /// Session key for authenticated Last.fm API calls.
     private var sessionKey: String?
@@ -132,25 +143,35 @@ final class LastFMService: ScrobbleServiceProtocol, LastFMRecommendationsProvidi
 
     // MARK: - Recommendations
 
-    /// Fetches similar tracks for a given artist/title pair.
+    /// Fetches similar tracks for a given artist/title pair using the public Last.fm API.
     func fetchSimilarTracks(artist: String, track: String, limit: Int = 25) async throws -> [LastFMSimilarTrack] {
-        var components = URLComponents(url: self.workerBaseURL.appendingPathComponent("track/similar"), resolvingAgainstBaseURL: false)
+        var components = URLComponents(url: self.lastFMAPIBaseURL, resolvingAgainstBaseURL: false)
         components?.queryItems = [
+            URLQueryItem(name: "method", value: "track.getSimilar"),
             URLQueryItem(name: "artist", value: artist),
             URLQueryItem(name: "track", value: track),
             URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "api_key", value: self.apiKey),
+            URLQueryItem(name: "format", value: "json"),
         ]
 
         guard let url = components?.url else {
             throw ScrobbleError.invalidResponse("Invalid similar-tracks URL")
         }
 
-        let (data, _) = try await self.session.data(from: url)
+        let (data, response) = try await self.session.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ScrobbleError.invalidResponse("Invalid response")
+        }
+
+        if httpResponse.statusCode != 200 {
+            throw ScrobbleError.invalidResponse("Last.fm API returned status \(httpResponse.statusCode)")
+        }
+
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ScrobbleError.invalidResponse("Invalid JSON response")
         }
 
-        try self.checkForErrors(json)
         return Self.parseSimilarTracksResponse(json)
     }
 

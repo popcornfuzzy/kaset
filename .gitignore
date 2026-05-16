@@ -67,3 +67,4 @@ worker/package-lock.json
 worker/wrangler.toml
 worker/.wrangler/cache/wrangler-account.json
 
+.wrangler/cache/wrangler-account.json

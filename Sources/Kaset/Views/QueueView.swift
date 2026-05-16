@@ -235,15 +235,24 @@ private struct QueueRowView: View {
                         .foregroundStyle(self.isCurrentTrack ? .red : .primary)
 
                     HStack(spacing: 5) {
-                        if self.playerService.isYouTubeAutoplayIndicatorVisible {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 8, weight: .semibold))
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
+                        if self.song.source == .ytmAutoplay {
+                            Text("YTM")
+                                .font(.system(size: 7, weight: .semibold))
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1)
                                 .background(Color.red.opacity(0.14))
                                 .foregroundStyle(.red)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                                .accessibilityLabel(String(localized: "Autoplay"))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                .accessibilityLabel(String(localized: "YouTube Music"))
+                        } else if self.song.source == .lastFM {
+                            Text("LFM")
+                                .font(.system(size: 7, weight: .semibold))
+                                .padding(.horizontal, 3)
+                                .padding(.vertical, 1)
+                                .background(Color.orange.opacity(0.14))
+                                .foregroundStyle(.orange)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                .accessibilityLabel(String(localized: "Last.fm"))
                         }
 
                         Text(self.song.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : self.song.artistsDisplay)

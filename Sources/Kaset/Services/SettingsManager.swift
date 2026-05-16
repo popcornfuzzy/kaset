@@ -22,6 +22,7 @@ final class SettingsManager {
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let enableLastFMRecommendations = "settings.enableLastFMRecommendations"
+        static let recommendationSource = "settings.recommendationSource"
     }
 
     // MARK: - Launch Page Options
@@ -190,11 +191,25 @@ final class SettingsManager {
         }
     }
 
-    /// Whether to use Last.fm for recommendations when the queue ends.
-    var enableLastFMRecommendations: Bool {
+    /// Source for queue-end recommendations.
+    enum RecommendationSource: String, CaseIterable, Identifiable {
+        case youtubeMusic = "YouTube Music"
+        case lastFM = "Last.fm"
+
+        var id: String { rawValue }
+    }
+
+    /// Where to get recommendations when the queue ends. Defaults to YouTube Music.
+    var recommendationSource: RecommendationSource {
         didSet {
-            UserDefaults.standard.set(self.enableLastFMRecommendations, forKey: Keys.enableLastFMRecommendations)
+            UserDefaults.standard.set(self.recommendationSource.rawValue, forKey: Keys.recommendationSource)
         }
+    }
+
+    /// Legacy property - maps to recommendationSource for backwards compatibility.
+    var enableLastFMRecommendations: Bool {
+        get { self.recommendationSource == .lastFM }
+        set { self.recommendationSource = newValue ? .lastFM : .youtubeMusic }
     }
 
     // MARK: - Initialization
@@ -218,7 +233,17 @@ final class SettingsManager {
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
-        self.enableLastFMRecommendations = UserDefaults.standard.object(forKey: Keys.enableLastFMRecommendations) as? Bool ?? false
+        // Load recommendation source, migrating from legacy enableLastFMRecommendations if needed
+        if let rawValue = UserDefaults.standard.string(forKey: Keys.recommendationSource),
+           let source = RecommendationSource(rawValue: rawValue)
+        {
+            self.recommendationSource = source
+        } else if UserDefaults.standard.bool(forKey: Keys.enableLastFMRecommendations) {
+            // Migrate from legacy boolean setting
+            self.recommendationSource = .lastFM
+        } else {
+            self.recommendationSource = .youtubeMusic
+        }
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),
            let style = MediaControlStyle(rawValue: rawValue)

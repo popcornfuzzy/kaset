@@ -140,8 +140,10 @@ extension PlayerService {
     }
 
     private var shouldUseLastFMRecommendationsAfterQueueEnd: Bool {
-        SettingsManager.shared.enableLastFMRecommendations
-            && self.lastFMRecommendationsProvider?.authState.isConnected == true
+        let source = SettingsManager.shared.recommendationSource
+        let isLastFM = source == .lastFM
+        self.logger.debug("Last.fm recommendations check: isLastFMSource=\(isLastFM)")
+        return isLastFM
     }
 
     private func lastFMSeedSongForQueueEnd() -> Song? {
@@ -173,7 +175,8 @@ extension PlayerService {
             let query = "\(track.artist) - \(track.title)"
             do {
                 let results = try await client.searchSongs(query: query)
-                if let song = results.first(where: { seenVideoIds.insert($0.videoId).inserted }) {
+                if var song = results.first(where: { seenVideoIds.insert($0.videoId).inserted }) {
+                    song.source = .lastFM
                     resolved.append(song)
                 }
             } catch {
@@ -306,12 +309,13 @@ extension PlayerService {
                 return
             }
 
-            let autoplaySong = self.makeObservedTrack(
+            var autoplaySong = self.makeObservedTrack(
                 title: title,
                 artist: artist,
                 thumbnailUrl: thumbnailUrl,
                 videoId: observedVideoId
             )
+            autoplaySong.source = .ytmAutoplay
 
             var syncedQueue = seededQueue
             if syncedQueue.isEmpty {
@@ -322,8 +326,18 @@ extension PlayerService {
 
             let syncedIndex = syncedQueue.firstIndex(where: { $0.videoId == observedVideoId }) ?? 0
 
+            // Mark new songs from YTM autoplay radio as .ytmAutoplay
+            var updatedQueue: [Song] = []
+            for (index, song) in syncedQueue.enumerated() {
+                var updatedSong = song
+                if index >= syncedIndex || song.source == nil {
+                    updatedSong.source = .ytmAutoplay
+                }
+                updatedQueue.append(updatedSong)
+            }
+
             self.clearForwardSkipNavigationStack()
-            self.queue = syncedQueue
+            self.queue = updatedQueue
             self.currentIndex = syncedIndex
             self.currentTrack = self.queue[safe: syncedIndex] ?? autoplaySong
             self.pendingPlayVideoId = self.currentTrack?.videoId ?? observedVideoId
@@ -615,12 +629,13 @@ extension PlayerService {
            !self.shuffleEnabled,
            !self.queue.isEmpty
         {
-            let autoplaySong = self.makeObservedTrack(
+            var autoplaySong = self.makeObservedTrack(
                 title: title,
                 artist: artist,
                 thumbnailUrl: thumbnailUrl,
                 videoId: observedVideoId
             )
+            autoplaySong.source = .ytmAutoplay
             if trackChanged {
                 self.resetTrackStatus()
             }
@@ -724,9 +739,25 @@ extension PlayerService {
         guard self.canAdvanceNativeQueueAfterTrackEnd else {
             self.shouldSuppressAutoplayAfterQueueEnd = false
             self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
-            if await self.handleLastFMRecommendationsAfterQueueEnd() {
+
+            // Check recommendation source setting
+            let source = SettingsManager.shared.recommendationSource
+            self.logger.info("Queue end: recommendation source=\(source.rawValue)")
+
+            // If Last.fm is the selected source, use only Last.fm (public API, no auth required) - no fallback to YTM
+            if source == .lastFM {
+                self.logger.info("Using Last.fm recommendations (track.getSimilar - public API)")
+                if await self.handleLastFMRecommendationsAfterQueueEnd() {
+                    return
+                }
+                // Last.fm failed or returned no results - don't fall back to YouTube autoplay
+                self.markPlaybackEnded()
+                self.logger.warning("Last.fm recommendations failed or returned no results; ending playback")
                 return
             }
+
+            // Use YouTube Music autoplay
+            self.logger.info("Using YouTube Music autoplay")
             self.isAwaitingYouTubeAutoplayAfterQueueEnd = true
             self.markPlaybackEnded()
             self.logger.info("Reached end of native queue; allowing YouTube autoplay handoff")

@@ -52,12 +52,14 @@ struct ScrobbleServiceRow: View {
             .padding(.vertical, 4)
 
             if self.isLastFMService {
-                Toggle("Use Last.fm for Recommendations", isOn: self.$settings.enableLastFMRecommendations)
-                    .disabled(!self.isLastFMConnected)
-                    .help("When the queue ends, use Last.fm similar tracks instead of YouTube autoplay.")
+                Picker("Recommendation Source", selection: self.$settings.recommendationSource) {
+                    Text("YouTube Music").tag(SettingsManager.RecommendationSource.youtubeMusic)
+                    Text("Last.fm").tag(SettingsManager.RecommendationSource.lastFM)
+                }
+                .help("Choose where to get recommendations when the queue ends. Last.fm uses the public track.getSimilar API (no auth required).")
 
-                if !self.isLastFMConnected {
-                    Text("Connect Last.fm to enable recommendations.")
+                if self.settings.recommendationSource == .lastFM {
+                    Text("Last.fm recommendations will not fall back to YouTube Music if they fail.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

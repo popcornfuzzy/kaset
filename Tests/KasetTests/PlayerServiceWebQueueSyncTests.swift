@@ -1123,11 +1123,11 @@ struct PlayerServiceWebQueueSyncTests {
         // Collect context from queue
         let contextTracks = self.playerService.lastFMContextTracksForQueueEnd(count: 10)
 
-        // Should have collected last 11 tracks (indices 0-10) as context
-        #expect(contextTracks.count == 11, "Should collect current song + all previous (when queue has 11 total)")
+        // Should have collected last 10 tracks (indices 1-10) as context
+        #expect(contextTracks.count == 10, "Should collect current song + up to 9 previous (when queue has 11 total)")
         
         // Verify first and last context tracks
-        #expect(contextTracks.first?.track == "Song 1", "First context track should be Song 1")
+        #expect(contextTracks.first?.track == "Song 2", "First context track should be Song 2")
         #expect(contextTracks.last?.track == "Current Song", "Last context track should be current song")
     }
 
