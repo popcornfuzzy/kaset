@@ -214,6 +214,10 @@ struct AddToPlaylistPopoverContent: View {
             }
             await self.loadEntries()
         }
+        .onChange(of: self.libraryPlaylistOrder) { _, _ in
+            self.entries = self.sortedEntries(self.entries)
+            self.persistEntriesCache()
+        }
         .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
             guard let event, event.videoId == self.song.videoId else { return }
             self.updateLikedSongsMembership(containsVideo: event.status == .like)
@@ -427,7 +431,7 @@ struct AddToPlaylistPopoverContent: View {
             accountID: self.activeAccountID,
             maxAge: self.entriesCacheMaxAge
         ) {
-            self.entries = cachedEntries
+            self.entries = self.sortedEntries(cachedEntries)
             self.seedMembershipCacheFromEntries()
             self.seedLikedSongsMembershipFromSongStatus()
             self.loadingState = .loaded
@@ -447,7 +451,8 @@ struct AddToPlaylistPopoverContent: View {
         }
 
         do {
-            self.entries = try await self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
+            let fetchedEntries = try await self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
+            self.entries = self.sortedEntries(fetchedEntries)
             AddToPlaylistEntriesCache.shared.setEntries(
                 self.entries,
                 videoId: self.song.videoId,
@@ -537,6 +542,7 @@ struct AddToPlaylistPopoverContent: View {
                 ),
                 at: 0
             )
+            self.entries = self.sortedEntries(self.entries)
             PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: playlist.id)
             self.resolvedMembershipByPlaylistId[playlist.id] = true
             self.showCreateComposer = false
@@ -696,11 +702,51 @@ struct AddToPlaylistPopoverContent: View {
         PlaylistMembershipManager.shared.activeAccountID
     }
 
+    private var libraryPlaylistOrder: [String] {
+        self.libraryViewModel?.playlists.map(\.id) ?? []
+    }
+
     private func persistEntriesCache() {
         AddToPlaylistEntriesCache.shared.setEntries(
             self.entries,
             videoId: self.song.videoId,
             accountID: self.activeAccountID
         )
+    }
+
+    private func sortedEntries(_ entries: [AddToPlaylistEntry]) -> [AddToPlaylistEntry] {
+        guard let libraryViewModel, !libraryViewModel.playlists.isEmpty else {
+            return entries
+        }
+
+        var orderById: [String: Int] = [:]
+        for (index, playlist) in libraryViewModel.playlists.enumerated() {
+            let normalizedId = Self.normalizedPlaylistId(playlist.id)
+            if orderById[normalizedId] == nil {
+                orderById[normalizedId] = index
+            }
+            if orderById[playlist.id] == nil {
+                orderById[playlist.id] = index
+            }
+        }
+
+        return entries
+            .enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = orderById[Self.normalizedPlaylistId(lhs.element.id)] ?? Int.max
+                let rhsRank = orderById[Self.normalizedPlaylistId(rhs.element.id)] ?? Int.max
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map { $0.element }
+    }
+
+    private static func normalizedPlaylistId(_ playlistId: String) -> String {
+        if playlistId.hasPrefix("VL") {
+            return String(playlistId.dropFirst(2))
+        }
+        return playlistId
     }
 }
