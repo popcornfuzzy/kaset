@@ -4,6 +4,11 @@ import Foundation
 enum SearchResponseParser {
     private static let logger = DiagnosticsLogger.api
 
+    /// Validates that the response contains a usable search structure.
+    static func isValidSearchResponse(_ data: [String: Any]) -> Bool {
+        getSectionListRenderer(from: data) != nil
+    }
+
     /// Parses a search response.
     static func parse(_ data: [String: Any]) -> SearchResponse {
         var songs: [Song] = []
@@ -39,6 +44,21 @@ enum SearchResponseParser {
             {
                 for itemData in shelfContents {
                     if let item = parseSearchResultItem(itemData) {
+                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                    }
+                }
+            }
+
+            // Parse itemSectionRenderer (newer search results layout)
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
+                    if let cardShelfRenderer = itemData["musicCardShelfRenderer"] as? [String: Any],
+                       let item = parseCardShelfRenderer(cardShelfRenderer)
+                    {
+                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                    } else if let item = parseSearchResultItem(itemData) {
                         Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
                     }
                 }
@@ -98,6 +118,18 @@ enum SearchResponseParser {
                     }
                 }
             }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
+                    if let item = parseSearchResultItem(itemData),
+                       case let .song(song) = item
+                    {
+                        songs.append(song)
+                    }
+                }
+            }
         }
 
         return songs
@@ -112,10 +144,7 @@ enum SearchResponseParser {
         guard let titleData = data["title"] as? [String: Any],
               let runs = titleData["runs"] as? [[String: Any]],
               let firstRun = runs.first,
-              let title = firstRun["text"] as? String,
-              let navigationEndpoint = firstRun["navigationEndpoint"] as? [String: Any],
-              let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
-              let browseId = browseEndpoint["browseId"] as? String
+              let title = firstRun["text"] as? String
         else {
             return nil
         }
@@ -132,14 +161,57 @@ enum SearchResponseParser {
             subtitle = subtitleRuns.compactMap { $0["text"] as? String }.joined()
         }
 
-        let pageType = ParsingHelpers.extractPageType(from: browseEndpoint)
-        return self.createItemFromBrowseEndpoint(
-            browseId: browseId,
-            pageType: pageType,
-            title: title,
-            thumbnailURL: thumbnailURL,
-            subtitle: subtitle
-        )
+        if let navigationEndpoint = firstRun["navigationEndpoint"] as? [String: Any] {
+            if let browseEndpoint = navigationEndpoint["browseEndpoint"] as? [String: Any],
+               let browseId = browseEndpoint["browseId"] as? String
+            {
+                let pageType = ParsingHelpers.extractPageType(from: browseEndpoint)
+                return self.createItemFromBrowseEndpoint(
+                    browseId: browseId,
+                    pageType: pageType,
+                    title: title,
+                    thumbnailURL: thumbnailURL,
+                    subtitle: subtitle
+                )
+            }
+
+            if let watchEndpoint = navigationEndpoint["watchEndpoint"] as? [String: Any],
+               let videoId = watchEndpoint["videoId"] as? String
+            {
+                let song = Song(
+                    id: videoId,
+                    title: title,
+                    artists: [],
+                    album: nil,
+                    duration: nil,
+                    thumbnailURL: thumbnailURL,
+                    videoId: videoId
+                )
+                return .song(song)
+            }
+        }
+
+        if let thumbnailOverlay = data["thumbnailOverlay"] as? [String: Any],
+           let overlayRenderer = thumbnailOverlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
+           let content = overlayRenderer["content"] as? [String: Any],
+           let playButton = content["musicPlayButtonRenderer"] as? [String: Any],
+           let endpoint = playButton["playNavigationEndpoint"] as? [String: Any],
+           let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+           let videoId = watchEndpoint["videoId"] as? String
+        {
+            let song = Song(
+                id: videoId,
+                title: title,
+                artists: [],
+                album: nil,
+                duration: nil,
+                thumbnailURL: thumbnailURL,
+                videoId: videoId
+            )
+            return .song(song)
+        }
+
+        return nil
     }
 
     private static func parseSearchResultItem(_ data: [String: Any]) -> SearchResultItem? {
@@ -148,9 +220,7 @@ enum SearchResponseParser {
         }
 
         // Try to get videoId for songs
-        if let playlistItemData = responsiveRenderer["playlistItemData"] as? [String: Any],
-           let videoId = playlistItemData["videoId"] as? String
-        {
+        if let videoId = ParsingHelpers.extractVideoId(from: responsiveRenderer) {
             return self.parseSongFromResponsiveRenderer(responsiveRenderer, videoId: videoId)
         }
 
@@ -301,6 +371,18 @@ enum SearchResponseParser {
                     }
                 }
             }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
+                    if let item = parseSearchResultItem(itemData),
+                       case let .album(album) = item
+                    {
+                        albums.append(album)
+                    }
+                }
+            }
         }
 
         let token = Self.extractContinuationToken(from: sectionListRenderer)
@@ -322,6 +404,18 @@ enum SearchResponseParser {
                let shelfContents = shelfRenderer["contents"] as? [[String: Any]]
             {
                 for itemData in shelfContents {
+                    if let item = parseSearchResultItem(itemData),
+                       case let .artist(artist) = item
+                    {
+                        artists.append(artist)
+                    }
+                }
+            }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
                     if let item = parseSearchResultItem(itemData),
                        case let .artist(artist) = item
                     {
@@ -357,6 +451,18 @@ enum SearchResponseParser {
                     }
                 }
             }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
+                    if let item = parseSearchResultItem(itemData),
+                       case let .playlist(playlist) = item
+                    {
+                        playlists.append(playlist)
+                    }
+                }
+            }
         }
 
         let token = Self.extractContinuationToken(from: sectionListRenderer)
@@ -378,6 +484,16 @@ enum SearchResponseParser {
                let shelfContents = shelfRenderer["contents"] as? [[String: Any]]
             {
                 for itemData in shelfContents {
+                    if let show = Self.parsePodcastShowFromSearchResult(itemData) {
+                        podcasts.append(show)
+                    }
+                }
+            }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
                     if let show = Self.parsePodcastShowFromSearchResult(itemData) {
                         podcasts.append(show)
                     }
@@ -434,6 +550,18 @@ enum SearchResponseParser {
                let shelfContents = shelfRenderer["contents"] as? [[String: Any]]
             {
                 for itemData in shelfContents {
+                    if let item = parseSearchResultItem(itemData),
+                       case let .song(song) = item
+                    {
+                        songs.append(song)
+                    }
+                }
+            }
+
+            if let itemSectionRenderer = sectionData["itemSectionRenderer"] as? [String: Any],
+               let itemContents = itemSectionRenderer["contents"] as? [[String: Any]]
+            {
+                for itemData in itemContents {
                     if let item = parseSearchResultItem(itemData),
                        case let .song(song) = item
                     {

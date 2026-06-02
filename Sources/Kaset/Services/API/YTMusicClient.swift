@@ -330,7 +330,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "query": query,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let response = SearchResponseParser.parse(data)
         self.logger.info("Search found \(response.songs.count) songs, \(response.albums.count) albums, \(response.artists.count) artists, \(response.playlists.count) playlists")
         return response
@@ -349,7 +350,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": songsFilterParams,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let songs = SearchResponseParser.parseSongsOnly(data)
         self.logger.info("Songs search found \(songs.count) songs")
         return songs
@@ -389,7 +391,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.albums,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (albums, token) = SearchResponseParser.parseAlbumsOnly(data)
         self.searchContinuationToken = token
 
@@ -406,7 +409,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.artists,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (artists, token) = SearchResponseParser.parseArtistsOnly(data)
         self.searchContinuationToken = token
 
@@ -423,7 +427,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.playlists,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
         self.searchContinuationToken = token
 
@@ -440,7 +445,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.featuredPlaylists,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
         self.searchContinuationToken = token
 
@@ -457,7 +463,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.communityPlaylists,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (playlists, token) = SearchResponseParser.parsePlaylistsOnly(data)
         self.searchContinuationToken = token
 
@@ -474,7 +481,8 @@ final class YTMusicClient: YTMusicClientProtocol {
             "params": SearchFilterParams.podcasts,
         ]
 
-        let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        let data = try await request("search", body: body, ttl: nil)
+        try self.validateSearchResponse(data, query: query)
         let (podcastShows, token) = SearchResponseParser.parsePodcastsOnly(data)
         self.searchContinuationToken = token
 
@@ -499,6 +507,7 @@ final class YTMusicClient: YTMusicClientProtocol {
         ]
 
         let data = try await request("search", body: body, ttl: APICache.TTL.search)
+        try self.validateSearchResponse(data, query: query)
         let (songs, token) = SearchResponseParser.parseSongsWithContinuation(data)
         self.searchContinuationToken = token
 
@@ -517,7 +526,7 @@ final class YTMusicClient: YTMusicClientProtocol {
         self.logger.info("Fetching search continuation")
 
         do {
-            let continuationData = try await requestContinuation(token, ttl: APICache.TTL.search)
+            let continuationData = try await requestContinuation(token, ttl: nil)
             let response = SearchResponseParser.parseContinuation(continuationData)
             self.searchContinuationToken = response.continuationToken
 
@@ -1575,6 +1584,14 @@ final class YTMusicClient: YTMusicClientProtocol {
             ],
             "user": userDict,
         ]
+    }
+
+    /// Validates search responses to avoid treating malformed data as empty results.
+    private func validateSearchResponse(_ data: [String: Any], query: String) throws {
+        guard SearchResponseParser.isValidSearchResponse(data) else {
+            self.logger.warning("Search response missing expected structure for query: \(query)")
+            throw YTMusicError.networkError(underlying: URLError(.cannotParseResponse))
+        }
     }
 
     /// Makes an authenticated request to the API with optional caching and retry.

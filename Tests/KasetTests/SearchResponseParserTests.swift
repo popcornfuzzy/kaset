@@ -129,6 +129,108 @@ struct SearchResponseParserTests {
         #expect(response.playlists.isEmpty)
     }
 
+    @Test("Parse itemSectionRenderer song with watch endpoint")
+    func parseItemSectionRendererSongWithWatchEndpoint() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "itemSectionRenderer": [
+                                            "contents": [[
+                                                "musicResponsiveListItemRenderer": [
+                                                    "flexColumns": [
+                                                        [
+                                                            "musicResponsiveListItemFlexColumnRenderer": [
+                                                                "text": [
+                                                                    "runs": [[
+                                                                        "text": "Sad Girls",
+                                                                        "navigationEndpoint": [
+                                                                            "watchEndpoint": [
+                                                                                "videoId": "VM0gR6GPs3k",
+                                                                            ],
+                                                                        ],
+                                                                    ]],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                        [
+                                                            "musicResponsiveListItemFlexColumnRenderer": [
+                                                                "text": [
+                                                                    "runs": [[
+                                                                        "text": "Song",
+                                                                    ], [
+                                                                        "text": " • ",
+                                                                    ], [
+                                                                        "text": "Bebe Rexha",
+                                                                        "navigationEndpoint": [
+                                                                            "browseEndpoint": [
+                                                                                "browseId": "UC123",
+                                                                            ],
+                                                                        ],
+                                                                    ]],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = SearchResponseParser.parse(data)
+
+        #expect(response.songs.count == 1)
+        #expect(response.songs.first?.videoId == "VM0gR6GPs3k")
+    }
+
+    @Test("Parse card shelf watch endpoint result")
+    func parseCardShelfWatchEndpointResult() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCardShelfRenderer": [
+                                            "title": [
+                                                "runs": [[
+                                                    "text": "Sad Girls",
+                                                    "navigationEndpoint": [
+                                                        "watchEndpoint": [
+                                                            "videoId": "P8UqZ5IF-QE",
+                                                        ],
+                                                    ],
+                                                ]],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = SearchResponseParser.parse(data)
+
+        #expect(response.songs.count == 1)
+        #expect(response.songs.first?.videoId == "P8UqZ5IF-QE")
+    }
+
     // MARK: - Helpers
 
     private func makeSearchResponseData(songs: Int, albums: Int, artists: Int, playlists: Int) -> [String: Any] {

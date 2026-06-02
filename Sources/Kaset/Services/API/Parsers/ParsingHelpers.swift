@@ -203,6 +203,25 @@ enum ParsingHelpers {
             return videoId
         }
 
+        // Try flexColumns runs (search results often embed watchEndpoint here)
+        if let flexColumns = data["flexColumns"] as? [[String: Any]] {
+            for column in flexColumns {
+                if let renderer = column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
+                   let text = renderer["text"] as? [String: Any],
+                   let runs = text["runs"] as? [[String: Any]]
+                {
+                    for run in runs {
+                        if let endpoint = run["navigationEndpoint"] as? [String: Any],
+                           let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+                           let videoId = watchEndpoint["videoId"] as? String
+                        {
+                            return videoId
+                        }
+                    }
+                }
+            }
+        }
+
         return nil
     }
 
