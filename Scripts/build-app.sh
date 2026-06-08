@@ -220,14 +220,14 @@ if [[ -f "$SDEF_PATH" ]]; then
 fi
 
 # Copy app icon (.icon bundle for macOS 26+ Liquid Glass, .icns as fallback)
-ICON_SOURCE="$ROOT/Sources/Kaset/Resources/kaset.icon"
+ICON_SOURCE="$ROOT/Sources/Kaset/Resources/kaset.png"
 if [[ -d "$ICON_SOURCE" ]]; then
   echo "🎨 Copying app icon..."
-  cp -R "$ICON_SOURCE" "$APP_BUNDLE/Contents/Resources/kaset.icon"
+  cp -R "$ICON_SOURCE" "$APP_BUNDLE/Contents/Resources/kaset.png"
 fi
-ICNS_PATH="$ROOT/Sources/Kaset/Resources/kaset.icns"
+ICNS_PATH="$ROOT/Sources/Kaset/Resources/kaset.png"
 if [[ -f "$ICNS_PATH" ]]; then
-  cp "$ICNS_PATH" "$APP_BUNDLE/Contents/Resources/kaset.icns"
+  cp "$ICNS_PATH" "$APP_BUNDLE/Contents/Resources/kaset.png"
 fi
 
 # Compile asset catalog if actool is available
