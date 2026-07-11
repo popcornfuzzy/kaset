@@ -60,16 +60,16 @@ enum ParsingHelpers {
         if let thumbnail = data["thumbnail"] as? [String: Any] {
             // Try musicThumbnailRenderer (most common)
             if let musicThumbnailRenderer = thumbnail["musicThumbnailRenderer"] as? [String: Any],
-               let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
-               let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
+                let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
+                let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
             {
                 return thumbnails.compactMap { $0["url"] as? String }.map(self.normalizeURL)
             }
 
             // Try croppedSquareThumbnailRenderer (used in library playlists)
             if let croppedRenderer = thumbnail["croppedSquareThumbnailRenderer"] as? [String: Any],
-               let thumbnails = croppedRenderer["thumbnail"] as? [String: Any],
-               let thumbList = thumbnails["thumbnails"] as? [[String: Any]]
+                let thumbnails = croppedRenderer["thumbnail"] as? [String: Any],
+                let thumbList = thumbnails["thumbnails"] as? [[String: Any]]
             {
                 return thumbList.compactMap { $0["url"] as? String }.map(self.normalizeURL)
             }
@@ -82,16 +82,18 @@ enum ParsingHelpers {
 
         // Try thumbnailRenderer at top level (some playlist formats)
         if let thumbnailRenderer = data["thumbnailRenderer"] as? [String: Any] {
-            if let musicThumbnailRenderer = thumbnailRenderer["musicThumbnailRenderer"] as? [String: Any],
-               let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
-               let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
+            if let musicThumbnailRenderer = thumbnailRenderer["musicThumbnailRenderer"]
+                as? [String: Any],
+                let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
+                let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
             {
                 return thumbnails.compactMap { $0["url"] as? String }.map(self.normalizeURL)
             }
 
-            if let croppedRenderer = thumbnailRenderer["croppedSquareThumbnailRenderer"] as? [String: Any],
-               let thumbnails = croppedRenderer["thumbnail"] as? [String: Any],
-               let thumbList = thumbnails["thumbnails"] as? [[String: Any]]
+            if let croppedRenderer = thumbnailRenderer["croppedSquareThumbnailRenderer"]
+                as? [String: Any],
+                let thumbnails = croppedRenderer["thumbnail"] as? [String: Any],
+                let thumbList = thumbnails["thumbnails"] as? [[String: Any]]
             {
                 return thumbList.compactMap { $0["url"] as? String }.map(self.normalizeURL)
             }
@@ -99,9 +101,10 @@ enum ParsingHelpers {
 
         // Try foregroundThumbnail (used by some album/artist headers)
         if let foregroundThumbnail = data["foregroundThumbnail"] as? [String: Any] {
-            if let musicThumbnailRenderer = foregroundThumbnail["musicThumbnailRenderer"] as? [String: Any],
-               let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
-               let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
+            if let musicThumbnailRenderer = foregroundThumbnail["musicThumbnailRenderer"]
+                as? [String: Any],
+                let thumbData = musicThumbnailRenderer["thumbnail"] as? [String: Any],
+                let thumbnails = thumbData["thumbnails"] as? [[String: Any]]
             {
                 return thumbnails.compactMap { $0["url"] as? String }.map(self.normalizeURL)
             }
@@ -120,15 +123,15 @@ enum ParsingHelpers {
         var artists: [Artist] = []
 
         if let subtitleData = data["subtitle"] as? [String: Any],
-           let runs = subtitleData["runs"] as? [[String: Any]]
+            let runs = subtitleData["runs"] as? [[String: Any]]
         {
             for run in runs {
                 if let text = run["text"] as? String,
-                   text != " • ", text != " & ", text != ", "
+                    text != " • ", text != " & ", text != ", "
                 {
                     if let endpoint = run["navigationEndpoint"] as? [String: Any],
-                       let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
-                       let artistId = browseEndpoint["browseId"] as? String
+                        let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
+                        let artistId = browseEndpoint["browseId"] as? String
                     {
                         artists.append(Artist(id: artistId, name: text))
                     } else if !text.isEmpty {
@@ -147,7 +150,7 @@ enum ParsingHelpers {
     /// Returns the full subtitle text including song counts (e.g., "Playlist • YouTube Music • 145 songs").
     static func extractSubtitle(from data: [String: Any]) -> String? {
         if let subtitleData = data["subtitle"] as? [String: Any],
-           let runs = subtitleData["runs"] as? [[String: Any]]
+            let runs = subtitleData["runs"] as? [[String: Any]]
         {
             let texts = runs.compactMap { $0["text"] as? String }
             let subtitle = texts.joined()
@@ -165,9 +168,9 @@ enum ParsingHelpers {
     /// Extracts title from runs data.
     static func extractTitle(from data: [String: Any], key: String = "title") -> String? {
         if let titleData = data[key] as? [String: Any],
-           let runs = titleData["runs"] as? [[String: Any]],
-           let firstRun = runs.first,
-           let text = firstRun["text"] as? String
+            let runs = titleData["runs"] as? [[String: Any]],
+            let firstRun = runs.first,
+            let text = firstRun["text"] as? String
         {
             return text
         }
@@ -178,27 +181,27 @@ enum ParsingHelpers {
     static func extractVideoId(from data: [String: Any]) -> String? {
         // Try playlistItemData
         if let playlistItemData = data["playlistItemData"] as? [String: Any],
-           let videoId = playlistItemData["videoId"] as? String
+            let videoId = playlistItemData["videoId"] as? String
         {
             return videoId
         }
 
         // Try navigationEndpoint
         if let endpoint = data["navigationEndpoint"] as? [String: Any],
-           let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
-           let videoId = watchEndpoint["videoId"] as? String
+            let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+            let videoId = watchEndpoint["videoId"] as? String
         {
             return videoId
         }
 
         // Try overlay
         if let overlay = data["overlay"] as? [String: Any],
-           let playButton = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
-           let content = playButton["content"] as? [String: Any],
-           let musicPlayButtonRenderer = content["musicPlayButtonRenderer"] as? [String: Any],
-           let endpoint = musicPlayButtonRenderer["playNavigationEndpoint"] as? [String: Any],
-           let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
-           let videoId = watchEndpoint["videoId"] as? String
+            let playButton = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
+            let content = playButton["content"] as? [String: Any],
+            let musicPlayButtonRenderer = content["musicPlayButtonRenderer"] as? [String: Any],
+            let endpoint = musicPlayButtonRenderer["playNavigationEndpoint"] as? [String: Any],
+            let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+            let videoId = watchEndpoint["videoId"] as? String
         {
             return videoId
         }
@@ -206,14 +209,15 @@ enum ParsingHelpers {
         // Try flexColumns runs (search results often embed watchEndpoint here)
         if let flexColumns = data["flexColumns"] as? [[String: Any]] {
             for column in flexColumns {
-                if let renderer = column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-                   let text = renderer["text"] as? [String: Any],
-                   let runs = text["runs"] as? [[String: Any]]
+                if let renderer = column["musicResponsiveListItemFlexColumnRenderer"]
+                    as? [String: Any],
+                    let text = renderer["text"] as? [String: Any],
+                    let runs = text["runs"] as? [[String: Any]]
                 {
                     for run in runs {
                         if let endpoint = run["navigationEndpoint"] as? [String: Any],
-                           let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
-                           let videoId = watchEndpoint["videoId"] as? String
+                            let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+                            let videoId = watchEndpoint["videoId"] as? String
                         {
                             return videoId
                         }
@@ -228,8 +232,8 @@ enum ParsingHelpers {
     /// Extracts browse ID from navigation endpoint.
     static func extractBrowseId(from data: [String: Any]) -> String? {
         if let endpoint = data["navigationEndpoint"] as? [String: Any],
-           let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
-           let browseId = browseEndpoint["browseId"] as? String
+            let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
+            let browseId = browseEndpoint["browseId"] as? String
         {
             return browseId
         }
@@ -238,9 +242,10 @@ enum ParsingHelpers {
 
     /// Extracts page type from a browse endpoint.
     static func extractPageType(from browseEndpoint: [String: Any]) -> String? {
-        if let contextConfigs = browseEndpoint["browseEndpointContextSupportedConfigs"] as? [String: Any],
-           let musicConfig = contextConfigs["browseEndpointContextMusicConfig"] as? [String: Any],
-           let type = musicConfig["pageType"] as? String
+        if let contextConfigs = browseEndpoint["browseEndpointContextSupportedConfigs"]
+            as? [String: Any],
+            let musicConfig = contextConfigs["browseEndpointContextMusicConfig"] as? [String: Any],
+            let type = musicConfig["pageType"] as? String
         {
             return type
         }
@@ -258,11 +263,12 @@ enum ParsingHelpers {
         // Try fixedColumns first (most common for playlist/album tracks)
         if let fixedColumns = data["fixedColumns"] as? [[String: Any]] {
             for column in fixedColumns {
-                if let renderer = column["musicResponsiveListItemFixedColumnRenderer"] as? [String: Any],
-                   let text = renderer["text"] as? [String: Any],
-                   let runs = text["runs"] as? [[String: Any]],
-                   let firstRun = runs.first,
-                   let durationText = firstRun["text"] as? String
+                if let renderer = column["musicResponsiveListItemFixedColumnRenderer"]
+                    as? [String: Any],
+                    let text = renderer["text"] as? [String: Any],
+                    let runs = text["runs"] as? [[String: Any]],
+                    let firstRun = runs.first,
+                    let durationText = firstRun["text"] as? String
                 {
                     return self.parseDuration(durationText)
                 }
@@ -272,16 +278,17 @@ enum ParsingHelpers {
         // Try flexColumns (artist page top songs often have duration in a combined column)
         if let flexColumns = data["flexColumns"] as? [[String: Any]] {
             for column in flexColumns.reversed() {
-                if let renderer = column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-                   let text = renderer["text"] as? [String: Any],
-                   let runs = text["runs"] as? [[String: Any]]
+                if let renderer = column["musicResponsiveListItemFlexColumnRenderer"]
+                    as? [String: Any],
+                    let text = renderer["text"] as? [String: Any],
+                    let runs = text["runs"] as? [[String: Any]]
                 {
                     // Check all runs (duration is often the last run in "Artist • Album • 3:45")
                     // Skip runs with navigationEndpoint to avoid matching album titles like "4:44"
                     for run in runs.reversed() {
                         if let durationText = run["text"] as? String,
-                           run["navigationEndpoint"] == nil,
-                           let duration = self.parseDuration(durationText)
+                            run["navigationEndpoint"] == nil,
+                            let duration = self.parseDuration(durationText)
                         {
                             return duration
                         }
@@ -292,12 +299,13 @@ enum ParsingHelpers {
 
         // Try overlay play button for duration (used on some artist pages)
         if let overlay = data["overlay"] as? [String: Any],
-           let musicItemThumbnailOverlay = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
-           let content = musicItemThumbnailOverlay["content"] as? [String: Any],
-           let musicPlayButton = content["musicPlayButtonRenderer"] as? [String: Any],
-           let accessibilityData = musicPlayButton["accessibilityPlayData"] as? [String: Any],
-           let accessibilityLabel = accessibilityData["accessibilityData"] as? [String: Any],
-           let label = accessibilityLabel["label"] as? String
+            let musicItemThumbnailOverlay = overlay["musicItemThumbnailOverlayRenderer"]
+                as? [String: Any],
+            let content = musicItemThumbnailOverlay["content"] as? [String: Any],
+            let musicPlayButton = content["musicPlayButtonRenderer"] as? [String: Any],
+            let accessibilityData = musicPlayButton["accessibilityPlayData"] as? [String: Any],
+            let accessibilityLabel = accessibilityData["accessibilityData"] as? [String: Any],
+            let label = accessibilityLabel["label"] as? String
         {
             // Extract duration from accessibility label like "Play Billie Jean by Michael Jackson, 4 minutes, 55 seconds"
             if let duration = extractDurationFromAccessibilityLabel(label) {
@@ -318,16 +326,20 @@ enum ParsingHelpers {
         var minutes = 0
         var seconds = 0
 
-        if let minuteRegex = try? NSRegularExpression(pattern: minutePattern, options: .caseInsensitive),
-           let minuteMatch = minuteRegex.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)),
-           let minuteRange = Range(minuteMatch.range(at: 1), in: label)
+        if let minuteRegex = try? NSRegularExpression(
+            pattern: minutePattern, options: .caseInsensitive),
+            let minuteMatch = minuteRegex.firstMatch(
+                in: label, range: NSRange(label.startIndex..., in: label)),
+            let minuteRange = Range(minuteMatch.range(at: 1), in: label)
         {
             minutes = Int(label[minuteRange]) ?? 0
         }
 
-        if let secondRegex = try? NSRegularExpression(pattern: secondPattern, options: .caseInsensitive),
-           let secondMatch = secondRegex.firstMatch(in: label, range: NSRange(label.startIndex..., in: label)),
-           let secondRange = Range(secondMatch.range(at: 1), in: label)
+        if let secondRegex = try? NSRegularExpression(
+            pattern: secondPattern, options: .caseInsensitive),
+            let secondMatch = secondRegex.firstMatch(
+                in: label, range: NSRange(label.startIndex..., in: label)),
+            let secondRange = Range(secondMatch.range(at: 1), in: label)
         {
             seconds = Int(label[secondRange]) ?? 0
         }
@@ -354,11 +366,12 @@ enum ParsingHelpers {
     /// Returns the full subtitle text including song counts (e.g., "Playlist • YouTube Music • 145 songs").
     static func extractSubtitleFromFlexColumns(_ data: [String: Any]) -> String? {
         if let flexColumns = data["flexColumns"] as? [[String: Any]],
-           flexColumns.count > 1,
-           let secondColumn = flexColumns[safe: 1],
-           let renderer = secondColumn["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-           let text = renderer["text"] as? [String: Any],
-           let runs = text["runs"] as? [[String: Any]]
+            flexColumns.count > 1,
+            let secondColumn = flexColumns[safe: 1],
+            let renderer = secondColumn["musicResponsiveListItemFlexColumnRenderer"]
+                as? [String: Any],
+            let text = renderer["text"] as? [String: Any],
+            let runs = text["runs"] as? [[String: Any]]
         {
             let subtitle = runs.compactMap { $0["text"] as? String }.joined()
             return subtitle.isEmpty ? nil : subtitle
@@ -392,10 +405,11 @@ enum ParsingHelpers {
     /// Extracts song count from subtitle text (e.g., "Playlist • YouTube Music • 145 songs" → 145).
     static func extractSongCount(from text: String) -> Int? {
         // Match patterns like "145 songs", "1 song", or "2,429 tracks"
-        guard let regex = try? NSRegularExpression(
-            pattern: #"([\d,]+)\s+(?:songs?|tracks?)"#,
-            options: .caseInsensitive
-        ),
+        guard
+            let regex = try? NSRegularExpression(
+                pattern: #"([\d,]+)\s+(?:songs?|tracks?)"#,
+                options: .caseInsensitive
+            ),
             let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
             let countRange = Range(match.range(at: 1), in: text)
         else {
@@ -407,12 +421,13 @@ enum ParsingHelpers {
     /// Extracts title from flex columns.
     static func extractTitleFromFlexColumns(_ data: [String: Any]) -> String? {
         if let flexColumns = data["flexColumns"] as? [[String: Any]],
-           let firstColumn = flexColumns.first,
-           let renderer = firstColumn["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-           let text = renderer["text"] as? [String: Any],
-           let runs = text["runs"] as? [[String: Any]],
-           let firstRun = runs.first,
-           let title = firstRun["text"] as? String
+            let firstColumn = flexColumns.first,
+            let renderer = firstColumn["musicResponsiveListItemFlexColumnRenderer"]
+                as? [String: Any],
+            let text = renderer["text"] as? [String: Any],
+            let runs = text["runs"] as? [[String: Any]],
+            let firstRun = runs.first,
+            let title = firstRun["text"] as? String
         {
             return title
         }
@@ -424,39 +439,109 @@ enum ParsingHelpers {
         "Song", "Video", "Album", "Playlist", "Artist", "Episode", "Podcast",
     ]
 
+    /// Returns true for the separator runs that split byline text (e.g. " • ", " & ").
+    private static func isArtistSeparator(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == "•" || trimmed == "&" || trimmed == "," || trimmed == "·"
+    }
+
+    /// Returns true for byline runs that carry metadata rather than an artist name
+    /// (content type labels, durations, view/play counts, song counts, years, etc.).
+    private static func isMetadataText(_ text: String) -> Bool {
+        if Self.contentTypeKeywords.contains(text)
+            || Self.parseDuration(text) != nil
+            || Self.extractSongCount(from: text) != nil
+            || Self.isStandaloneYear(text)
+        {
+            return true
+        }
+
+        let lowercased = text.lowercased()
+        return lowercased.contains(" views")
+            || lowercased.contains(" plays")
+            || lowercased.contains(" subscribers")
+            || lowercased.contains("episodes")
+    }
+
+    /// Returns true when a byline run is a standalone 4-digit year (e.g. "2026").
+    private static func isStandaloneYear(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 4,
+            trimmed.allSatisfy(\.isNumber),
+            let year = Int(trimmed)
+        else {
+            return false
+        }
+
+        return (1900...2100).contains(year)
+    }
+
     /// Extracts artists from flex columns.
+    ///
+    /// Linked artists (those with a browse endpoint) are preferred. When no linked
+    /// artist is found, plain-text runs are used as a fallback so uploaded songs —
+    /// whose artist has no browse endpoint — still show an artist name in lists.
     static func extractArtistsFromFlexColumns(_ data: [String: Any]) -> [Artist] {
         var artists: [Artist] = []
 
-        if let flexColumns = data["flexColumns"] as? [[String: Any]],
-           flexColumns.count > 1,
-           let secondColumn = flexColumns[safe: 1],
-           let renderer = secondColumn["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-           let text = renderer["text"] as? [String: Any],
-           let runs = text["runs"] as? [[String: Any]]
-        {
-            for run in runs {
-                if let artistName = run["text"] as? String,
-                   artistName != " • ", artistName != " & ", artistName != ", ",
-                   !artistName.isEmpty,
-                   // Skip content type keywords (Song, Video, etc.)
-                   !Self.contentTypeKeywords.contains(artistName)
+        guard let flexColumns = data["flexColumns"] as? [[String: Any]],
+            flexColumns.count > 1,
+            let secondColumn = flexColumns[safe: 1],
+            let renderer = secondColumn["musicResponsiveListItemFlexColumnRenderer"]
+                as? [String: Any],
+            let text = renderer["text"] as? [String: Any],
+            let runs = text["runs"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        // First pass: collect artists that carry a navigable browse endpoint.
+        for run in runs {
+            if let artistName = run["text"] as? String,
+                artistName != " • ", artistName != " & ", artistName != ", ",
+                !artistName.isEmpty,
+                // Skip content type keywords (Song, Video, etc.)
+                !Self.contentTypeKeywords.contains(artistName)
+            {
+                // Only include items that have an artist browse endpoint.
+                // This filters out metadata like view counts and years while
+                // allowing both channel artists ("UC...") and library artists ("MPLAUC...").
+                if let endpoint = run["navigationEndpoint"] as? [String: Any],
+                    let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
+                    let browseId = browseEndpoint["browseId"] as? String,
+                    Artist.isNavigableId(browseId)
                 {
-                    // Only include items that have an artist browse endpoint.
-                    // This filters out metadata like view counts and years while
-                    // allowing both channel artists ("UC...") and library artists ("MPLAUC...").
-                    if let endpoint = run["navigationEndpoint"] as? [String: Any],
-                       let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
-                       let browseId = browseEndpoint["browseId"] as? String,
-                       Artist.isNavigableId(browseId)
-                    {
-                        artists.append(Artist(id: browseId, name: artistName))
-                    }
+                    artists.append(Artist(id: browseId, name: artistName))
                 }
             }
         }
 
-        return artists
+        if !artists.isEmpty {
+            return artists
+        }
+
+        // Second pass: uploaded songs often expose the artist as plain text with no
+        // browse endpoint. Preserve the first plausible name so playlist rows do not
+        // render with an empty artist line (the artist only appeared once playback
+        // started and full metadata was fetched).
+        for run in runs {
+            guard run["navigationEndpoint"] == nil,
+                let artistName = (run["text"] as? String)?.trimmingCharacters(
+                    in: .whitespacesAndNewlines),
+                !artistName.isEmpty,
+                !Self.isArtistSeparator(artistName),
+                !Self.isMetadataText(artistName)
+            else { continue }
+
+            return [
+                Artist(
+                    id: Self.stableId(title: "upload-artist", components: artistName),
+                    name: artistName
+                )
+            ]
+        }
+
+        return []
     }
 
     /// Extracts album from flex columns.
@@ -468,11 +553,12 @@ enum ParsingHelpers {
 
         // Album is typically in the second or third column
         // Look through columns 1, 2, and 3 (indices 1, 2, 3) for album data
-        for columnIndex in 1 ..< min(4, flexColumns.count) {
+        for columnIndex in 1..<min(4, flexColumns.count) {
             guard let column = flexColumns[safe: columnIndex],
-                  let renderer = column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
-                  let text = renderer["text"] as? [String: Any],
-                  let runs = text["runs"] as? [[String: Any]]
+                let renderer = column["musicResponsiveListItemFlexColumnRenderer"]
+                    as? [String: Any],
+                let text = renderer["text"] as? [String: Any],
+                let runs = text["runs"] as? [[String: Any]]
             else {
                 continue
             }
@@ -480,12 +566,12 @@ enum ParsingHelpers {
             // Look for a run with a navigation endpoint pointing to an album
             for run in runs {
                 guard let albumName = run["text"] as? String,
-                      !albumName.isEmpty,
-                      albumName != " • ", albumName != " & ", albumName != ", ",
-                      let endpoint = run["navigationEndpoint"] as? [String: Any],
-                      let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
-                      let browseId = browseEndpoint["browseId"] as? String,
-                      browseId.hasPrefix("MPRE") || browseId.hasPrefix("OLAK")
+                    !albumName.isEmpty,
+                    albumName != " • ", albumName != " & ", albumName != ", ",
+                    let endpoint = run["navigationEndpoint"] as? [String: Any],
+                    let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
+                    let browseId = browseEndpoint["browseId"] as? String,
+                    browseId.hasPrefix("MPRE") || browseId.hasPrefix("OLAK")
                 else {
                     continue
                 }
