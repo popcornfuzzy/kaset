@@ -11,6 +11,8 @@ extension PlayerService {
         self.logger.info("Liking current track: \(track.videoId)")
         let activeAccountID = SongLikeStatusManager.shared.activeAccountID
         let client = self.ytMusicClient
+        // Fix the coalescing window at click time so the whole burst uses one value.
+        let debounce = SongLikeStatusManager.shared.ratingDebounce
 
         // Toggle: if already liked, remove the like
         let newStatus: LikeStatus = self.currentTrackLikeStatus == .like ? .indifferent : .like
@@ -23,13 +25,15 @@ extension PlayerService {
                 await SongLikeStatusManager.shared.like(
                     track,
                     accountID: activeAccountID,
-                    client: client
+                    client: client,
+                    debounce: debounce
                 )
             } else {
                 await SongLikeStatusManager.shared.unlike(
                     track,
                     accountID: activeAccountID,
-                    client: client
+                    client: client,
+                    debounce: debounce
                 )
             }
 
@@ -39,6 +43,10 @@ extension PlayerService {
                 return
             }
 
+            // rate() settles to the cache-current status (latest intent wins), so this
+            // write is idempotent; skip it when the value is unchanged to avoid pointless
+            // observation notifications during rapid clicks.
+            guard self.currentTrackLikeStatus != finalStatus else { return }
             self.currentTrackLikeStatus = finalStatus
         }
     }
@@ -50,6 +58,8 @@ extension PlayerService {
         self.logger.info("Disliking current track: \(track.videoId)")
         let activeAccountID = SongLikeStatusManager.shared.activeAccountID
         let client = self.ytMusicClient
+        // Fix the coalescing window at click time so the whole burst uses one value.
+        let debounce = SongLikeStatusManager.shared.ratingDebounce
 
         // Toggle: if already disliked, remove the dislike
         let newStatus: LikeStatus = self.currentTrackLikeStatus == .dislike ? .indifferent : .dislike
@@ -62,13 +72,15 @@ extension PlayerService {
                 await SongLikeStatusManager.shared.dislike(
                     track,
                     accountID: activeAccountID,
-                    client: client
+                    client: client,
+                    debounce: debounce
                 )
             } else {
                 await SongLikeStatusManager.shared.undislike(
                     track,
                     accountID: activeAccountID,
-                    client: client
+                    client: client,
+                    debounce: debounce
                 )
             }
 
@@ -78,6 +90,8 @@ extension PlayerService {
                 return
             }
 
+            // Idempotent write; see likeCurrentTrack().
+            guard self.currentTrackLikeStatus != finalStatus else { return }
             self.currentTrackLikeStatus = finalStatus
         }
     }

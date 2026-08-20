@@ -35,6 +35,40 @@ final class SongLikeStatusManager {
     /// The most recent like status change event, for reactive observation by views.
     private(set) var lastLikeEvent: LikeStatusEvent?
 
+    // MARK: - Coalescing / Retry Knobs
+
+    /// How long to wait before sending a rating request so that rapid clicks collapse
+    /// into a single network call. UI stays instant via the optimistic cache write.
+    @ObservationIgnored
+    var ratingDebounce: Duration = .milliseconds(150)
+
+    /// Backoff delays between retry attempts (one entry per retry).
+    /// Empty means no retries. Injectable for tests.
+    @ObservationIgnored
+    var ratingRetryDelays: [Duration] = [.milliseconds(500), .milliseconds(1500)]
+
+    /// One coalesced rating "burst" for a single (account, video) pair.
+    private struct RatingFlight {
+        /// Sequence of the most recent intent in this burst.
+        var latestSequence: Int
+        /// Desired status of the most recent intent in this burst.
+        var latestStatus: LikeStatus
+        /// Cache status captured before the burst began; the rollback target on final failure.
+        let baseline: LikeStatus?
+        /// Handle to the current network request so a newer intent can cancel it.
+        var requestTask: Task<Void, Never>?
+    }
+
+    /// Key identifying the rating scope for one song.
+    private struct RatingKey: Hashable {
+        let accountID: String
+        let videoId: String
+    }
+
+    /// In-flight/coalesced rating bursts, keyed by (account, video).
+    @ObservationIgnored
+    private var ratingFlights: [RatingKey: RatingFlight] = [:]
+
     /// Reference to the YTMusic client for API calls.
     private var client: (any YTMusicClientProtocol)?
 
@@ -100,14 +134,17 @@ final class SongLikeStatusManager {
     ///   - song: The song to like.
     ///   - accountID: Optional account scope override.
     ///   - client: Optional client override.
+    ///   - debounce: Debounce before sending, overriding the instance default. Lets
+    ///     callers decide the coalescing window at click time.
     /// - Returns: The final status after the request settles.
     @discardableResult
     func like(
         _ song: Song,
         accountID: String? = nil,
-        client: (any YTMusicClientProtocol)? = nil
+        client: (any YTMusicClientProtocol)? = nil,
+        debounce: Duration? = nil
     ) async -> LikeStatus {
-        await self.rate(song, status: .like, accountID: accountID, client: client)
+        await self.rate(song, status: .like, accountID: accountID, client: client, debounce: debounce)
     }
 
     /// Unlikes a song (removes rating).
@@ -115,14 +152,16 @@ final class SongLikeStatusManager {
     ///   - song: The song to unlike.
     ///   - accountID: Optional account scope override.
     ///   - client: Optional client override.
+    ///   - debounce: Debounce before sending, overriding the instance default.
     /// - Returns: The final status after the request settles.
     @discardableResult
     func unlike(
         _ song: Song,
         accountID: String? = nil,
-        client: (any YTMusicClientProtocol)? = nil
+        client: (any YTMusicClientProtocol)? = nil,
+        debounce: Duration? = nil
     ) async -> LikeStatus {
-        await self.rate(song, status: .indifferent, accountID: accountID, client: client)
+        await self.rate(song, status: .indifferent, accountID: accountID, client: client, debounce: debounce)
     }
 
     /// Dislikes a song.
@@ -130,14 +169,16 @@ final class SongLikeStatusManager {
     ///   - song: The song to dislike.
     ///   - accountID: Optional account scope override.
     ///   - client: Optional client override.
+    ///   - debounce: Debounce before sending, overriding the instance default.
     /// - Returns: The final status after the request settles.
     @discardableResult
     func dislike(
         _ song: Song,
         accountID: String? = nil,
-        client: (any YTMusicClientProtocol)? = nil
+        client: (any YTMusicClientProtocol)? = nil,
+        debounce: Duration? = nil
     ) async -> LikeStatus {
-        await self.rate(song, status: .dislike, accountID: accountID, client: client)
+        await self.rate(song, status: .dislike, accountID: accountID, client: client, debounce: debounce)
     }
 
     /// Undislikes a song (removes rating).
@@ -145,69 +186,180 @@ final class SongLikeStatusManager {
     ///   - song: The song to undislike.
     ///   - accountID: Optional account scope override.
     ///   - client: Optional client override.
+    ///   - debounce: Debounce before sending, overriding the instance default.
     /// - Returns: The final status after the request settles.
     @discardableResult
     func undislike(
         _ song: Song,
         accountID: String? = nil,
-        client: (any YTMusicClientProtocol)? = nil
+        client: (any YTMusicClientProtocol)? = nil,
+        debounce: Duration? = nil
     ) async -> LikeStatus {
-        await self.rate(song, status: .indifferent, accountID: accountID, client: client)
+        await self.rate(song, status: .indifferent, accountID: accountID, client: client, debounce: debounce)
     }
 
     /// Rates a song with the given status.
+    ///
+    /// Rapid successive calls for the same (account, video) are **coalesced**: each new
+    /// intent supersedes the previous one (cancelling its in-flight request) and only the
+    /// latest intent may settle state. A short debounce collapses rapid toggles into a
+    /// single network request, and transient failures are retried with backoff.
+    ///
     /// - Parameters:
     ///   - song: The song to rate.
     ///   - status: The rating to apply.
     ///   - accountID: Optional account scope override.
     ///   - client: Optional client override.
-    /// - Returns: The final status after the request settles.
+    /// - Returns: The cache-current status when the caller's intent settles. For intents
+    ///   that were superseded, this is the newer intent's status, which makes the value
+    ///   safe to write back by any observer.
     private func rate(
         _ song: Song,
         status: LikeStatus,
         accountID: String?,
-        client overrideClient: (any YTMusicClientProtocol)?
+        client overrideClient: (any YTMusicClientProtocol)?,
+        debounce: Duration?
     ) async -> LikeStatus {
         let resolvedAccountID = accountID.map(Self.resolvedAccountID) ?? self.activeAccountID
+        let key = RatingKey(accountID: resolvedAccountID, videoId: song.videoId)
 
         guard let client = overrideClient ?? self.client else {
             DiagnosticsLogger.api.warning("SongLikeStatusManager: No client set, cannot rate song")
             return self.status(for: song.videoId, accountID: resolvedAccountID) ?? song.likeStatus ?? .indifferent
         }
 
+        // Coalesce: fold this intent into an existing burst (superseding and cancelling the
+        // previous request), or start a new burst whose rollback baseline is the current
+        // cache value.
+        let sequence: Int
+        if var flight = self.ratingFlights[key] {
+            flight.requestTask?.cancel()
+            sequence = flight.latestSequence + 1
+            flight.latestSequence = sequence
+            flight.latestStatus = status
+            self.ratingFlights[key] = flight
+        } else {
+            sequence = 1
+            self.ratingFlights[key] = RatingFlight(
+                latestSequence: sequence,
+                latestStatus: status,
+                baseline: self.status(for: song.videoId, accountID: resolvedAccountID)
+            )
+        }
+
         // Optimistically update cache and notify observers
-        let previousStatus = self.status(for: song.videoId, accountID: resolvedAccountID)
         self.setStatus(status, for: song.videoId, accountID: resolvedAccountID)
         self.publishEvent(
             LikeStatusEvent(videoId: song.videoId, status: status, song: song),
             for: resolvedAccountID
         )
 
-        do {
-            try await client.rateSong(videoId: song.videoId, rating: status)
-            DiagnosticsLogger.api.info("Rated song \(song.videoId) as \(status.rawValue)")
-            return status
-        } catch is CancellationError {
-            // Task was cancelled - rollback optimistic update and notify
-            let rollbackStatus = previousStatus ?? .indifferent
-            self.restoreStatus(previousStatus, for: song.videoId, accountID: resolvedAccountID)
-            self.publishEvent(
-                LikeStatusEvent(videoId: song.videoId, status: rollbackStatus, song: song),
-                for: resolvedAccountID
-            )
-            DiagnosticsLogger.api.debug("Rating cancelled for song \(song.videoId), rolled back")
-            return rollbackStatus
-        } catch {
-            // Revert on failure and notify
-            let rollbackStatus = previousStatus ?? .indifferent
-            self.restoreStatus(previousStatus, for: song.videoId, accountID: resolvedAccountID)
-            self.publishEvent(
-                LikeStatusEvent(videoId: song.videoId, status: rollbackStatus, song: song),
-                for: resolvedAccountID
-            )
-            DiagnosticsLogger.api.error("Failed to rate song: \(error.localizedDescription)")
-            return rollbackStatus
+        // Short debounce so rapid toggles collapse into a single network request.
+        // The value is fixed at call time so a burst uses a consistent window.
+        let effectiveDebounce = debounce ?? self.ratingDebounce
+        try? await Task.sleep(for: effectiveDebounce)
+
+        // If the caller's task was cancelled before anything was sent, undo the optimistic
+        // write and drop the burst (matches the project's rollback-on-cancel rule).
+        if Task.isCancelled {
+            if self.ratingFlights[key]?.latestSequence == sequence {
+                let baseline = self.ratingFlights[key]?.baseline
+                self.restoreStatus(baseline, for: song.videoId, accountID: resolvedAccountID)
+                self.publishEvent(
+                    LikeStatusEvent(videoId: song.videoId, status: baseline ?? .indifferent, song: song),
+                    for: resolvedAccountID
+                )
+                self.ratingFlights.removeValue(forKey: key)
+            }
+            return self.status(for: song.videoId, accountID: resolvedAccountID) ?? song.likeStatus ?? .indifferent
         }
+
+        // If a newer intent superseded this one during the debounce, do nothing — the
+        // newer intent owns the state and will send its own request.
+        guard self.ratingFlights[key]?.latestSequence == sequence else {
+            return self.status(for: song.videoId, accountID: resolvedAccountID) ?? song.likeStatus ?? .indifferent
+        }
+
+        let requestTask = Task { [weak self] in
+            guard let self else { return }
+            await self.executeRatingRequest(
+                client: client,
+                videoId: song.videoId,
+                status: status,
+                sequence: sequence,
+                key: key,
+                song: song
+            )
+        }
+        self.ratingFlights[key]?.requestTask = requestTask
+        await requestTask.value
+
+        // Return the cache-current status so superseded/settled callers report the latest state.
+        return self.status(for: song.videoId, accountID: resolvedAccountID) ?? song.likeStatus ?? .indifferent
+    }
+
+    /// Sends the rating request for one intent, with bounded retries.
+    ///
+    /// Only the latest intent for a key may settle state: if this intent was superseded
+    /// (cancelled) it returns without touching the cache, and the final-failure rollback
+    /// is guarded by a sequence check so an older request can never clobber a newer one.
+    private func executeRatingRequest(
+        client: any YTMusicClientProtocol,
+        videoId: String,
+        status: LikeStatus,
+        sequence: Int,
+        key: RatingKey,
+        song: Song
+    ) async {
+        let retryDelays = self.ratingRetryDelays
+        var lastError: (any Error)?
+
+        for attempt in 0...retryDelays.count {
+            if Task.isCancelled {
+                // Superseded by a newer intent (or externally cancelled): the newer
+                // intent owns the state, so do not settle anything.
+                return
+            }
+
+            do {
+                try await client.rateSong(videoId: videoId, rating: status)
+                guard !Task.isCancelled else { return }
+                DiagnosticsLogger.api.info("Rated song \(videoId) as \(status.rawValue)")
+                // Burst settled successfully: re-assert the cache so a concurrent cache
+                // clear (e.g. account switch) cannot leave a stale empty entry.
+                self.setStatus(status, for: videoId, accountID: key.accountID)
+                self.ratingFlights.removeValue(forKey: key)
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                lastError = error
+                if let ytError = error as? YTMusicError, !ytError.isRetryable {
+                    break
+                }
+            }
+
+            guard attempt < retryDelays.count else { break }
+            do {
+                try await Task.sleep(for: retryDelays[attempt])
+            } catch {
+                return  // Cancelled during backoff
+            }
+        }
+
+        // Final failure: roll back to the pre-burst baseline, but only if this intent is
+        // still the latest (a newer intent owns the state otherwise).
+        guard self.ratingFlights[key]?.latestSequence == sequence else { return }
+        let baseline = self.ratingFlights[key]?.baseline
+        self.restoreStatus(baseline, for: videoId, accountID: key.accountID)
+        self.publishEvent(
+            LikeStatusEvent(videoId: videoId, status: baseline ?? .indifferent, song: song),
+            for: key.accountID
+        )
+        self.ratingFlights.removeValue(forKey: key)
+        DiagnosticsLogger.api.error(
+            "Failed to rate song \(videoId) as \(status.rawValue): \(lastError?.localizedDescription ?? "unknown error")"
+        )
     }
 
     // MARK: - Cache Management
