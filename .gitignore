@@ -61,3 +61,4 @@ TEMP_*
 build/
 .releases/
 releases/
+/.freebuff

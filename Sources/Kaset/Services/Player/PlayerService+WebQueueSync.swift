@@ -20,6 +20,55 @@ extension PlayerService {
         self.normalizedObservedVideoId(videoId) ?? self.currentTrack?.videoId ?? self.pendingPlayVideoId ?? "unknown"
     }
 
+    // MARK: - Artist Identity Matching
+
+    /// Canonicalizes an artist display string for identity comparisons so that
+    /// YouTube's localized multi-artist separators compare equal to ours:
+    /// "Artist A, Artist B", "Artist A and Artist B", "Artist A und Artist B",
+    /// "Artist A et Artist B", and "Artist A & Artist B" all describe the same song.
+    static func canonicalArtistString(_ artist: String) -> String {
+        var normalized = artist.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+
+        // Localized conjunctions used to join multiple artists become separators
+        // ("and", German "und", French "et", Spanish "y", ampersand).
+        normalized = normalized.replacingOccurrences(
+            of: #"\b(?:and|und|et|y)\b"#,
+            with: ",",
+            options: .regularExpression
+        )
+        normalized = normalized.replacingOccurrences(of: "&", with: ",")
+
+        // Unify remaining punctuation separators (bullet, middot, semicolon, slash, pipe).
+        normalized = normalized.replacingOccurrences(
+            of: #"[•·;,/|]+"#,
+            with: ",",
+            options: .regularExpression
+        )
+
+        // Collapse whitespace and normalize comma spacing.
+        normalized = normalized.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        normalized = normalized.replacingOccurrences(
+            of: #"\s*,\s*"#,
+            with: ",",
+            options: .regularExpression
+        )
+
+        return normalized.trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+    }
+
+    /// Returns whether two artist display strings refer to the same set of artists,
+    /// ignoring case, diacritics, and separator/conjunction formatting.
+    static func artistsEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        Self.canonicalArtistString(lhs) == Self.canonicalArtistString(rhs)
+    }
+
     private func observedTrackMatchesSong(
         observedVideoId: String?,
         title: String,
@@ -29,11 +78,11 @@ extension PlayerService {
         if let observedVideoId = self.normalizedObservedVideoId(observedVideoId) {
             return song.videoId == observedVideoId
         }
-        return song.title == title && song.artistsDisplay == artist
+        return song.title == title && Self.artistsEquivalent(song.artistsDisplay, artist)
     }
 
     private func metadataMatchesSong(title: String, artist: String, song: Song) -> Bool {
-        song.title == title && song.artistsDisplay == artist
+        song.title == title && Self.artistsEquivalent(song.artistsDisplay, artist)
     }
 
     private func shouldKeepQueueMetadata(title: String, artist: String, song: Song) -> Bool {
@@ -663,7 +712,7 @@ extension PlayerService {
             ?? self.queue.first(where: { $0.videoId == resolvedVideoId })?.thumbnailURL
             ?? self.currentTrack?.thumbnailURL
         let trackChanged = self.currentTrack?.title != title
-            || self.currentTrack?.artistsDisplay != artist
+            || !Self.artistsEquivalent(self.currentTrack?.artistsDisplay ?? "", artist)
             || self.currentTrack?.videoId != resolvedVideoId
 
         if self.suppressUnexpectedAutoplayAfterQueueEndIfNeeded(
@@ -728,15 +777,27 @@ extension PlayerService {
             return
         }
 
-        self.currentTrack = Song(
-            id: resolvedVideoId,
-            title: title,
-            artists: [artistObj],
-            album: nil,
-            duration: self.duration > 0 ? self.duration : nil,
-            thumbnailURL: thumbnailURL,
-            videoId: resolvedVideoId
-        )
+        // YouTube localizes the multi-artist separator in the player-bar byline
+        // ("Artist A und Artist B"), which would otherwise replace our structured
+        // artists and drop like-status/library fields on the current track. When the
+        // observed metadata is equivalent to the current track, keep the richer one.
+        let observedMatchesCurrent = self.currentTrack.map {
+            self.metadataMatchesSong(title: title, artist: artist, song: $0)
+        } ?? false
+
+        if observedMatchesCurrent, let current = self.currentTrack {
+            self.keepQueueSongVisible(current, thumbnailUrl: thumbnailUrl)
+        } else {
+            self.currentTrack = Song(
+                id: resolvedVideoId,
+                title: title,
+                artists: [artistObj],
+                album: nil,
+                duration: self.duration > 0 ? self.duration : nil,
+                thumbnailURL: thumbnailURL,
+                videoId: resolvedVideoId
+            )
+        }
 
         if trackChanged {
             self.resetTrackStatus()

@@ -44,6 +44,9 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     var subscribeToArtistDelay: Duration?
     var unsubscribeFromArtistDelay: Duration?
     var rateSongDelay: Duration?
+    /// When > 0, the next N `rateSong` calls throw `shouldThrowError` (or a default
+    /// network error) and then succeed afterwards. Lets tests simulate transient failures.
+    var rateSongFailuresBeforeSuccess: Int = 0
     var getSongDelay: Duration?
     var shouldAutoUpdatePlaylistLibraryOnMutation = true
     var shouldAutoUpdatePodcastLibraryOnMutation = true
@@ -629,6 +632,11 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         if let rateSongDelay = self.rateSongDelay {
             try? await Task.sleep(for: rateSongDelay)
         }
+        if self.rateSongFailuresBeforeSuccess > 0 {
+            self.rateSongFailuresBeforeSuccess -= 1
+            throw self.shouldThrowError
+                ?? YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
+        }
         if let error = shouldThrowError { throw error }
     }
 
@@ -937,6 +945,7 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         self.unsubscribeFromArtistIds = []
         self.unsubscribeFromArtistDelay = nil
         self.rateSongDelay = nil
+        self.rateSongFailuresBeforeSuccess = 0
         self.getSongDelay = nil
         self.getLyricsCalled = false
         self.getLyricsVideoIds = []

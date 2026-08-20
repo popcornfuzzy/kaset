@@ -15,6 +15,9 @@ struct PlayerServiceLibraryTests {
         self.playerService.setYTMusicClient(self.mockClient)
         SongLikeStatusManager.shared.clearCache()
         SongLikeStatusManager.shared.setActiveAccountID(nil)
+        // Keep the suite deterministic: no debounce or retries unless a test opts in.
+        SongLikeStatusManager.shared.ratingDebounce = .zero
+        SongLikeStatusManager.shared.ratingRetryDelays = []
     }
 
     // MARK: - Like Current Track Tests
@@ -33,7 +36,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("likeCurrentTrack sets status to like when indifferent")
     func likeCurrentTrackSetsLike() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .indifferent
 
         self.playerService.likeCurrentTrack()
@@ -44,13 +47,13 @@ struct PlayerServiceLibraryTests {
         try? await Task.sleep(for: .milliseconds(200))
 
         #expect(self.mockClient.rateSongCalled == true)
-        #expect(self.mockClient.rateSongVideoIds.first == "test-video")
+        #expect(self.mockClient.rateSongVideoIds.first == "player-rating-video")
         #expect(self.mockClient.rateSongRatings.first == .like)
     }
 
     @Test("likeCurrentTrack toggles to indifferent when already liked")
     func likeCurrentTrackTogglesOff() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .like
 
         self.playerService.likeCurrentTrack()
@@ -64,7 +67,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("likeCurrentTrack changes dislike to like")
     func likeCurrentTrackFromDislike() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .dislike
 
         self.playerService.likeCurrentTrack()
@@ -78,7 +81,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("likeCurrentTrack reverts on API failure")
     func likeCurrentTrackRevertsOnFailure() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .indifferent
         self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
 
@@ -112,13 +115,36 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
     }
 
+    @Test("rapid like then unlike via PlayerService coalesces into a single request")
+    func rapidLikeThenUnlikeCoalesces() async {
+        SongLikeStatusManager.shared.ratingDebounce = .milliseconds(80)
+        defer { SongLikeStatusManager.shared.ratingDebounce = .zero }
+
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
+        self.playerService.currentTrackLikeStatus = .indifferent
+
+        self.playerService.likeCurrentTrack()
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+
+        try? await Task.sleep(for: .milliseconds(10))
+        self.playerService.likeCurrentTrack()
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+
+        // Let the coalesced burst settle.
+        try? await Task.sleep(for: .milliseconds(250))
+
+        #expect(self.mockClient.rateSongVideoIds.count == 1)
+        #expect(self.mockClient.rateSongRatings == [.indifferent])
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+    }
+
     @Test("likeCurrentTrack uses captured client even if singleton client changes before task runs")
     func likeCurrentTrackUsesCapturedClient() async {
         let replacementClient = MockYTMusicClient()
         let originalClient = SongLikeStatusManager.shared.currentClient
         defer { SongLikeStatusManager.shared.setClient(originalClient) }
 
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .like
 
         self.playerService.likeCurrentTrack()
@@ -145,7 +171,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("dislikeCurrentTrack sets status to dislike when indifferent")
     func dislikeCurrentTrackSetsDislike() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .indifferent
 
         self.playerService.dislikeCurrentTrack()
@@ -160,7 +186,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("dislikeCurrentTrack toggles to indifferent when already disliked")
     func dislikeCurrentTrackTogglesOff() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .dislike
 
         self.playerService.dislikeCurrentTrack()
@@ -174,7 +200,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("dislikeCurrentTrack changes like to dislike")
     func dislikeCurrentTrackFromLike() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .like
 
         self.playerService.dislikeCurrentTrack()
@@ -188,7 +214,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("dislikeCurrentTrack reverts on API failure")
     func dislikeCurrentTrackRevertsOnFailure() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackLikeStatus = .indifferent
         self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
 
@@ -236,7 +262,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus does nothing when no feedback token")
     func toggleLibraryStatusNoToken() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackFeedbackTokens = nil
 
         self.playerService.toggleLibraryStatus()
@@ -248,7 +274,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus adds to library when not in library")
     func toggleLibraryStatusAddsToLibrary() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackInLibrary = false
         self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add-token", remove: "remove-token")
 
@@ -264,7 +290,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus removes from library when in library")
     func toggleLibraryStatusRemovesFromLibrary() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackInLibrary = true
         self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add-token", remove: "remove-token")
 
@@ -280,7 +306,7 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus reverts on API failure")
     func toggleLibraryStatusRevertsOnFailure() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackInLibrary = false
         self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add-token", remove: "remove-token")
         self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
@@ -296,14 +322,14 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus preserves optimistic add when metadata refresh is stale")
     func toggleLibraryStatusPreservesOptimisticAddWhenMetadataIsStale() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackInLibrary = false
         self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add-token", remove: "remove-token")
-        self.mockClient.songResponses["test-video"] = Song(
-            id: "test-video",
+        self.mockClient.songResponses["player-rating-video"] = Song(
+            id: "player-rating-video",
             title: "Stale Song",
             artists: [Artist(id: "artist", name: "Artist")],
-            videoId: "test-video",
+            videoId: "player-rating-video",
             isInLibrary: false,
             feedbackTokens: FeedbackTokens(add: "add-token", remove: "remove-token")
         )
@@ -321,14 +347,14 @@ struct PlayerServiceLibraryTests {
 
     @Test("toggleLibraryStatus preserves optimistic removal when metadata refresh is stale")
     func toggleLibraryStatusPreservesOptimisticRemovalWhenMetadataIsStale() async {
-        self.playerService.currentTrack = TestFixtures.makeSong(id: "test-video")
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrackInLibrary = true
         self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add-token", remove: "remove-token")
-        self.mockClient.songResponses["test-video"] = Song(
-            id: "test-video",
+        self.mockClient.songResponses["player-rating-video"] = Song(
+            id: "player-rating-video",
             title: "Stale Song",
             artists: [Artist(id: "artist", name: "Artist")],
-            videoId: "test-video",
+            videoId: "player-rating-video",
             isInLibrary: true,
             feedbackTokens: FeedbackTokens(add: "add-token", remove: "remove-token")
         )
@@ -346,9 +372,11 @@ struct PlayerServiceLibraryTests {
 
     // MARK: - Update Like Status Tests
 
-    @Test("updateLikeStatus updates status")
+    @Test("updateLikeStatus applies known statuses and ignores uncertain indifferent")
     func updateLikeStatus() {
-        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        // No current track and no cache: like/dislike apply directly...
+        self.playerService.currentTrack = nil
+        self.playerService.currentTrackLikeStatus = .indifferent
 
         self.playerService.updateLikeStatus(.like)
         #expect(self.playerService.currentTrackLikeStatus == .like)
@@ -356,13 +384,15 @@ struct PlayerServiceLibraryTests {
         self.playerService.updateLikeStatus(.dislike)
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
+        // ...but an uncertain .indifferent from the WebView is ignored when there is
+        // no trusted source, per updateLikeStatus's contract.
         self.playerService.updateLikeStatus(.indifferent)
-        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(self.playerService.currentTrackLikeStatus == .dislike)
     }
 
     @Test("fetchSongMetadata preserves cached like status when API like status is unknown")
     func fetchSongMetadataPreservesCachedLikeStatusWhenAPILikeStatusIsUnknown() async {
-        let song = TestFixtures.makeSong(id: "test-video")
+        let song = TestFixtures.makeSong(id: "player-rating-video")
         self.playerService.currentTrack = song
         self.playerService.currentTrackLikeStatus = .like
         SongLikeStatusManager.shared.setStatus(.like, for: song.videoId)

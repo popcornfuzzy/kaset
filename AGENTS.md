@@ -32,9 +32,6 @@ swift build
 
 # Unit Tests (never combine with UI tests)
 swift test --skip KasetUITests
-
-# Lint
-swiftlint --strict
 ```
 
 ## API Discovery
