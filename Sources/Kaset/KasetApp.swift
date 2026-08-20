@@ -36,7 +36,7 @@ struct KasetApp: App {
     @State private var likeStatusManager = SongLikeStatusManager.shared
     @State private var accountService: AccountService?
     @State private var scrobblingCoordinator: ScrobblingCoordinator
-    @State private var syncedLyricsService = SyncedLyricsService()
+    @State private var syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
 
     /// Triggers search field focus when set to true.
     @State private var searchFocusTrigger = false
@@ -132,6 +132,12 @@ struct KasetApp: App {
                         _ = self.notificationService
                     }
                     .task {
+                        // Split any legacy single-file lyrics cache into per-song files.
+                        // Kicked off without awaiting so it never delays first paint or auth.
+                        Task {
+                            await self.syncedLyricsService.migrateLegacyCacheIfNeeded()
+                        }
+
                         // Check if user is already logged in from previous session
                         await self.authService.checkLoginStatus()
 

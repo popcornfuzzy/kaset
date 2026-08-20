@@ -24,7 +24,7 @@ Introduce `SyncedLyricsService` as an `@MainActor @Observable` environment servi
 
 - The current `LyricResult` (`.synced`, `.plain`, or `.unavailable`)
 - The currently active provider/source label
-- In-memory caching by `videoId`
+- In-memory caching by `videoId`, backed by an optional per-song on-disk cache
 - Stale-request protection via a monotonic `fetchGeneration`
 
 This keeps multi-source lyric resolution out of `LyricsView` and avoids expanding `YTMusicClient` beyond authenticated YouTube Music API responsibilities.
@@ -60,6 +60,14 @@ Keep playback inside the existing hidden `WKWebView`, but add a dedicated high-f
 
 Add `SettingsManager.syncedLyricsEnabled` and expose it in General Settings so users can disable synced lyrics lookups and the associated extra playback polling.
 
+### Persistent Per-Song Cache
+
+`SyncedLyricsService` accepts an optional `LyricsCacheStore` that persists each resolved `LyricResult` to its own JSON file, keyed by `videoId`, under `~/Library/Application Support/Kaset/LyricsCache/<videoId>.json`. The store is injected by `KasetApp` but omitted in unit tests, keeping test instances memory-only.
+
+The store resolves the *real* home directory via `getpwuid` rather than `.applicationSupportDirectory`, because a sandboxed app is otherwise redirected to its container. `Kaset.entitlements` grants the sandboxed app read-write access to the real `~/Library/Application Support/Kaset/` folder through a home-relative temporary exception.
+
+On launch, the app runs a background migration that detects a legacy single-file lyrics cache (`~/Library/Application Support/Kaset/lyrics-cache.json`, a versioned `{ version, entries }` envelope whose entries carry a `type` discriminator plus an optional `synced`/`plain` payload) and splits it into one file per song. The legacy file is deleted only after every entry is written successfully; a parse failure or unknown entry type leaves it intact for a retry on the next launch.
+
 ## Consequences
 
 ### Positive
@@ -74,7 +82,7 @@ Add `SettingsManager.syncedLyricsEnabled` and expose it in General Settings so u
 
 - **External dependency** — Synced lyric quality and availability now depend on LRCLib response quality and uptime.
 - **More moving parts** — Lyrics now span a service, provider protocol, parser, settings toggle, and a WebView polling path.
-- **Cache scope** — The current lyric cache is in-memory only, so synced provider results are recomputed after app relaunch.
+- **Cache scope** — Synced provider results persist per song on disk and survive app relaunch; clearing the lyrics cache in Settings removes those files (while keeping the current song).
 
 ### Neutral
 

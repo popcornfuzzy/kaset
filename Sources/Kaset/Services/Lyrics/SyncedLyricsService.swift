@@ -26,15 +26,24 @@ final class SyncedLyricsService {
     /// In-memory cache keyed by videoId.
     private var cache: [String: LyricResult] = [:]
 
+    /// Optional persistent cache that stores one file per song.
+    /// When `nil`, the service only caches in memory (used by unit tests).
+    private let cacheStore: LyricsCacheStore?
+
     /// Monotonic identifier used to ignore stale in-flight searches.
     private var fetchGeneration = 0
 
-    init(providers: [LyricsProvider] = [LRCLibProvider()]) {
+    init(
+        providers: [LyricsProvider] = [LRCLibProvider()],
+        cacheStore: LyricsCacheStore? = nil
+    ) {
         self.providers = providers
+        self.cacheStore = cacheStore
     }
 
     func clearCache(keepCurrent: Bool = true) {
         self.cache.removeAll()
+        self.cacheStore?.removeAll(except: keepCurrent ? self.currentLyricsVideoId : nil)
         if !keepCurrent {
             self.currentLyrics = .unavailable
             self.activeProvider = nil
@@ -46,13 +55,25 @@ final class SyncedLyricsService {
         if case .unavailable? = self.cache[videoId] {
             return true
         }
+
+        if case .unavailable? = self.cacheStore?.load(for: videoId) {
+            self.cache[videoId] = .unavailable
+            return true
+        }
         return false
     }
 
     func fetchLyrics(for info: LyricsSearchInfo, forceRefresh: Bool = false) async {
         self.fetchGeneration += 1
         let requestID = self.fetchGeneration
-        let cached = forceRefresh ? nil : self.cache[info.videoId]
+        var cached: LyricResult?
+
+        if !forceRefresh {
+            cached = self.cache[info.videoId] ?? self.cacheStore?.load(for: info.videoId)
+            if let cached {
+                self.cache[info.videoId] = cached
+            }
+        }
 
         if let cached {
             self.applyResolvedLyrics(
@@ -110,12 +131,12 @@ final class SyncedLyricsService {
             self.currentLyrics = .plain(lyrics)
             self.activeProvider = lyrics.source
             self.currentLyricsVideoId = videoId
-            self.cache[videoId] = .plain(lyrics)
+            self.storeInCache(.plain(lyrics), for: videoId)
         } else {
             self.currentLyrics = .unavailable
             self.activeProvider = nil
             self.currentLyricsVideoId = videoId
-            self.cache[videoId] = .unavailable
+            self.storeInCache(.unavailable, for: videoId)
         }
     }
 
@@ -141,14 +162,14 @@ final class SyncedLyricsService {
         if let best {
             switch best.result {
             case .synced:
-                self.cache[videoId] = best.result
+                self.storeInCache(best.result, for: videoId)
                 return .init(result: best.result, activeProvider: best.provider)
             case .plain:
                 if case let .plain(cachedPlain)? = cached {
                     return .init(result: .plain(cachedPlain), activeProvider: cachedPlain.source)
                 }
 
-                self.cache[videoId] = best.result
+                self.storeInCache(best.result, for: videoId)
                 return .init(result: best.result, activeProvider: best.provider)
             case .unavailable:
                 break
@@ -159,8 +180,24 @@ final class SyncedLyricsService {
             return .init(result: .plain(cachedPlain), activeProvider: cachedPlain.source)
         }
 
-        self.cache[videoId] = .unavailable
+        self.storeInCache(.unavailable, for: videoId)
         return .init(result: .unavailable, activeProvider: nil)
+    }
+
+    /// Stores a result in memory and, when enabled, in the per-song file cache.
+    private func storeInCache(_ result: LyricResult, for videoId: String) {
+        self.cache[videoId] = result
+        self.cacheStore?.save(result, for: videoId)
+    }
+
+    /// Splits a legacy single-file lyrics cache into per-song files.
+    /// Runs the disk work off the main actor so it stays in the background.
+    func migrateLegacyCacheIfNeeded() async {
+        guard let cacheStore else { return }
+
+        _ = await Task.detached(priority: .utility) {
+            cacheStore.migrateLegacyCacheIfNeeded()
+        }.value
     }
 
     private func applyResolvedLyrics(_ resolved: ResolvedLyrics, requestID: Int, videoId: String) {
