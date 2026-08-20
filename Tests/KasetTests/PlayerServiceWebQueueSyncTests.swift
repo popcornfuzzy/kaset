@@ -340,6 +340,57 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.isKasetInitiatedPlayback == false)
     }
 
+    @Test("Artist identity ignores localized conjunctions and separator formatting")
+    func artistIdentityIgnoresLocalizedConjunctionsAndSeparators() {
+        #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A and Artist B"))
+        #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A und Artist B"))
+        #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A et Artist B"))
+        #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A & Artist B"))
+        #expect(PlayerService.artistsEquivalent("Artist A • Artist B", "Artist A, Artist B"))
+        #expect(PlayerService.artistsEquivalent("artist a, artist b", "Artist A, Artist B"))
+        #expect(!PlayerService.artistsEquivalent("Artist A, Artist B", "Artist C, Artist B"))
+    }
+
+    @Test("Localized 'and' byline keeps structured artists and like status")
+    func localizedAndBylineKeepsStructuredArtistsAndLikeStatus() async {
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [
+                    Artist(id: "artist-a", name: "Artist A"),
+                    Artist(id: "artist-b", name: "Artist B"),
+                ],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.isKasetInitiatedPlayback = false
+        self.playerService.currentTrackLikeStatus = .like
+
+        // YouTube localizes the multi-artist separator in the player-bar byline
+        // (German "und", French "et", English "and", ampersand, ...).
+        for bylineArtist in ["Artist A und Artist B", "Artist A and Artist B", "Artist A & Artist B"] {
+            self.playerService.updateTrackMetadata(
+                title: "Song 1",
+                artist: bylineArtist,
+                thumbnailUrl: "",
+                videoId: "v1"
+            )
+
+            // Same song: structured artists (and the comma display) are preserved.
+            #expect(self.playerService.currentTrack?.artistsDisplay == "Artist A, Artist B")
+            #expect(self.playerService.currentTrack?.artists.count == 2)
+            #expect(self.playerService.currentTrack?.videoId == "v1")
+            // The like status is not reset as if a different song had started.
+            #expect(self.playerService.currentTrackLikeStatus == .like)
+        }
+    }
+
     @Test("Near-end videoId-only transition keeps expected queue song visible")
     func nearEndVideoIdOnlyTransitionKeepsExpectedQueueSongVisible() async {
         let songs = [
