@@ -3,7 +3,7 @@ import Foundation
 // MARK: - TimedWord
 
 /// A single timed word for karaoke mode.
-struct TimedWord: Equatable {
+struct TimedWord: Equatable, Codable, Sendable {
     let timeInMs: Int
     let word: String
 }
@@ -11,8 +11,8 @@ struct TimedWord: Equatable {
 // MARK: - SyncedLyricLine
 
 /// A single timed lyric line.
-struct SyncedLyricLine: Identifiable, Equatable {
-    let id = UUID()
+struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
+    let id: UUID
     /// Timestamp in milliseconds when this line starts.
     let timeInMs: Int
     /// Duration in milliseconds (time until next line).
@@ -21,12 +21,42 @@ struct SyncedLyricLine: Identifiable, Equatable {
     let text: String
     /// Optional word-level timing for karaoke mode.
     let words: [TimedWord]?
+
+    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?) {
+        self.id = UUID()
+        self.timeInMs = timeInMs
+        self.duration = duration
+        self.text = text
+        self.words = words
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, timeInMs, duration, text, words
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.timeInMs = try container.decode(Int.self, forKey: .timeInMs)
+        self.duration = try container.decode(Int.self, forKey: .duration)
+        self.text = try container.decode(String.self, forKey: .text)
+        self.words = try container.decodeIfPresent([TimedWord].self, forKey: .words)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.id, forKey: .id)
+        try container.encode(self.timeInMs, forKey: .timeInMs)
+        try container.encode(self.duration, forKey: .duration)
+        try container.encode(self.text, forKey: .text)
+        try container.encodeIfPresent(self.words, forKey: .words)
+    }
 }
 
 // MARK: - SyncedLyrics
 
 /// Represents synced lyrics with per-line timestamps.
-struct SyncedLyrics: Equatable {
+struct SyncedLyrics: Equatable, Codable, Sendable {
     let lines: [SyncedLyricLine]
     let source: String
 
@@ -141,7 +171,7 @@ struct SyncedLyrics: Equatable {
 // MARK: - LyricResult
 
 /// Unified lyrics result that can hold either synced or plain lyrics.
-enum LyricResult: Equatable {
+enum LyricResult: Equatable, Codable, Sendable {
     case synced(SyncedLyrics)
     case plain(Lyrics)
     case unavailable
@@ -151,6 +181,40 @@ enum LyricResult: Equatable {
         case let .synced(s): !s.isEmpty
         case let .plain(p): p.isAvailable
         case .unavailable: false
+        }
+    }
+
+    private enum Kind: String, Codable {
+        case synced, plain, unavailable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, synced, plain
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .synced:
+            self = .synced(try container.decode(SyncedLyrics.self, forKey: .synced))
+        case .plain:
+            self = .plain(try container.decode(Lyrics.self, forKey: .plain))
+        case .unavailable:
+            self = .unavailable
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .synced(value):
+            try container.encode(Kind.synced, forKey: .kind)
+            try container.encode(value, forKey: .synced)
+        case let .plain(value):
+            try container.encode(Kind.plain, forKey: .kind)
+            try container.encode(value, forKey: .plain)
+        case .unavailable:
+            try container.encode(Kind.unavailable, forKey: .kind)
         }
     }
 }

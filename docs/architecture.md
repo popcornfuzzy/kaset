@@ -308,6 +308,9 @@ Coordinates synced and plain lyrics resolution for the current track:
 - Searches all registered `LyricsProvider` implementations concurrently using `LyricsSearchInfo`
 - Ships with `LRCLibProvider` as the default synced lyrics source and parses LRC payloads with `LRCParser`
 - Caches results in memory by `videoId` and can upgrade cached plain lyrics when synced lyrics become available later
+- Persists each resolved result to one file per song via `LyricsCacheStore` (`~/Library/Application Support/Kaset/LyricsCache/<videoId>.json`) when a store is injected
+- Resolves the real home directory (via `getpwuid`) instead of the sandbox container; `Kaset.entitlements` grants the sandboxed app a home-relative temporary exception for `~/Library/Application Support/Kaset/`
+- Migrates a legacy single-file lyrics cache (`~/Library/Application Support/Kaset/lyrics-cache.json`) into per-song files in the background on launch
 - Uses `fetchGeneration` to ignore stale async completions when the user changes tracks quickly
 - Preserves plain lyrics fallback state until a higher-quality synced result is resolved
 
