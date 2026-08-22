@@ -4,7 +4,7 @@
 
 A native macOS YouTube Music client built with Swift and SwiftUI.
 
-This is a fork of [Kaset from sozercan](https://github.com/sozercan/kaset) that removes the option to watch YouTube videos completely, focusing solely on music playback and also add some additional features like the add to playlist button in the player bar and a fullscreen view for lyrics.
+This is a fork of [Kaset made by sozercan](https://github.com/sozercan/kaset) that removes the option to watch YouTube videos completely, focusing solely on music playback and also add some additional features like the add to playlist button in the player bar and a fullscreen view for lyrics.
 
 <img src="docs/screenshot.png" alt="Kaset Screenshot">
 
