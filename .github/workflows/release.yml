@@ -193,40 +193,6 @@ jobs:
           echo "length=$LENGTH" >> "$GITHUB_OUTPUT"
           echo "Sparkle signature generated successfully"
 
-      - name: Generate release notes
-        id: release_notes
-        run: |
-          TAG="${{ steps.artifact.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-          SHA256="${{ steps.sha256.outputs.sha256 }}"
-
-          # Get previous tag for changelog
-          # List all version tags sorted by version, find the one before current
-          CURRENT_TAG="${{ steps.artifact.outputs.tag }}"
-          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | grep -A1 "^${CURRENT_TAG}$" | tail -1)
-          # If grep found nothing or returned the same tag, try alternative method
-          if [ "$PREV_TAG" = "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
-            PREV_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
-          fi
-
-          # Generate changelog
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$CURRENT_TAG" ]; then
-            CHANGELOG=$(git log --pretty=format:"- %s" "$PREV_TAG".."$CURRENT_TAG" --no-merges | head -50)
-          else
-            CHANGELOG="- Initial release"
-          fi
-
-          # Create release notes
-          NOTES=$(cat <<EOF
-          ## What's New
-
-          ${CHANGELOG}
-          EOF
-          )
-
-          # Write to file (safer than GITHUB_OUTPUT for multiline)
-          echo "$NOTES" > release_notes.md
-
       - name: Check if pre-release
         id: prerelease
         run: |
@@ -237,7 +203,7 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub release and upload DMG
+      - name: Create draft GitHub release and upload DMG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -258,59 +224,9 @@ jobs:
           else
             gh release create "$TAG" "$FILE" \
               --title "$TITLE" \
-              --notes-file release_notes.md \
+              --draft \
               $PRERELEASE_FLAG
           fi
-
-      - name: Checkout Homebrew tap repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-        with:
-          repository: sozercan/homebrew-repo
-          token: ${{ secrets.HOMEBREW_REPO_TOKEN }}
-          path: homebrew-repo
-          fetch-depth: 0
-
-      - name: Update Homebrew Cask
-        run: |
-          TAG="${{ steps.artifact.outputs.tag }}"
-          VERSION="${TAG#v}"
-
-          cd homebrew-repo
-
-          # Update the cask file
-          mkdir -p Casks
-          cat > Casks/kaset.rb << EOF
-          cask "kaset" do
-            version "$VERSION"
-            sha256 "${{ steps.sha256.outputs.sha256 }}"
-
-            url "https://github.com/sozercan/kaset/releases/download/v#{version}/kaset-v#{version}.dmg"
-            name "Kaset"
-            desc "Native YouTube Music client"
-            homepage "https://github.com/sozercan/kaset"
-
-            auto_updates true
-            depends_on macos: ">= :tahoe"
-
-            app "Kaset.app"
-
-            postflight do
-              system_command "/usr/bin/xattr", args: ["-cr", "#{appdir}/Kaset.app"], sudo: false
-            end
-
-            zap trash: [
-              "~/Library/Application Support/Kaset",
-              "~/Library/Caches/com.sertacozercan.Kaset",
-              "~/Library/Preferences/com.sertacozercan.Kaset.plist",
-              "~/Library/Saved Application State/com.sertacozercan.Kaset.savedState",
-              "~/Library/WebKit/com.sertacozercan.Kaset",
-            ]
-          end
-          EOF
-
-          git add Casks/kaset.rb
-          git diff --cached --quiet || git commit -m "Update kaset to ${TAG}"
-          git push origin main
 
       - name: Update Appcast
         run: |

@@ -71,7 +71,29 @@ find_sparkle_bin() {
             fi
         fi
     done
-    
+
+    # SwiftPM places Sparkle artifacts under .build/ (used by CI and local
+    # `swift build` runs). Check there too.
+    local build_paths=(
+        "$ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+        "$ROOT/.build/checkouts"
+        "$ROOT/.build/index-build"
+    )
+    for path in "${build_paths[@]}"; do
+        if [[ -f "$path" && -x "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+        if [[ -d "$path" ]]; then
+            local found
+            found=$(find "$path" -path "*/artifacts/sparkle/Sparkle/bin/generate_appcast" -type f 2>/dev/null | head -1)
+            if [[ -n "$found" && -x "$found" ]]; then
+                echo "$found"
+                return 0
+            fi
+        fi
+    done
+
     # Check if installed via Homebrew
     if command -v generate_appcast &>/dev/null; then
         echo "generate_appcast"
