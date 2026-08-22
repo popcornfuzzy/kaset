@@ -91,7 +91,7 @@ struct ExtensionsTests {
         let url = try #require(URL(string: "https://i.ytimg.com/vi/abc/w60-h60-l90-rj"))
         let highQuality = url.highQualityThumbnailURL
         #expect(highQuality != nil)
-        #expect(try #require(highQuality?.absoluteString.contains("w226-h226")))
+        #expect(try #require(highQuality?.absoluteString.contains("w544-h544")))
     }
 
     @Test("Upgrades googleusercontent URL to high quality")
@@ -99,7 +99,7 @@ struct ExtensionsTests {
         let url = try #require(URL(string: "https://lh3.googleusercontent.com/abc=w120-h120-l90-rj"))
         let highQuality = url.highQualityThumbnailURL
         #expect(highQuality != nil)
-        #expect(try #require(highQuality?.absoluteString.contains("w226-h226")))
+        #expect(try #require(highQuality?.absoluteString.contains("w544-h544")))
     }
 
     @Test("Returns original URL for non-YouTube URLs")

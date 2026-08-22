@@ -64,16 +64,17 @@ enum LyricsArtistNormalizer {
             .folding(options: [.diacriticInsensitive], locale: .current)
             .lowercased()
 
-        normalized = normalized.replacingOccurrences(
-            of: #"\s*\((?:official\s+)?(?:lyric\s+)?video\)\s*"#,
-            with: " ",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        normalized = normalized.replacingOccurrences(
-            of: #"\s*\(official\s+visualizer\)\s*"#,
-            with: " ",
-            options: [.regularExpression, .caseInsensitive]
-        )
+        // Strip parenthesized and bracketed official video / visualizer labels.
+        for pattern in [
+            #"\s*[\(\[](?:official\s+)?(?:lyric\s+)?video[\)\]]\s*"#,
+            #"\s*[\(\[](?:official\s+)?(?:lyric\s+)?visualizer[\)\]]\s*"#,
+        ] {
+            normalized = normalized.replacingOccurrences(
+                of: pattern,
+                with: " ",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
 
         normalized = normalized.replacingOccurrences(
             of: #"\s+"#,
