@@ -180,32 +180,32 @@ struct WhatsNewProviderTests {
     @Test("Returns WhatsNew for unpresented exact version")
     func exactVersionMatch() {
         let store = WhatsNewVersionStore(defaults: self.defaults)
-        let result = WhatsNewProvider.staticWhatsNew(for: "1.0.0", store: store)
+        let result = WhatsNewProvider.staticWhatsNew(for: "0.1.0", store: store)
         #expect(result != nil)
-        #expect(result?.version == "1.0.0")
+        #expect(result?.version == "0.1.0")
     }
 
     @Test("Returns nil for already presented version")
     func alreadyPresentedVersion() {
         let store = WhatsNewVersionStore(defaults: self.defaults)
-        store.markPresented("1.0.0")
-        let result = WhatsNewProvider.staticWhatsNew(for: "1.0.0", store: store)
+        store.markPresented("0.1.0")
+        let result = WhatsNewProvider.staticWhatsNew(for: "0.1.0", store: store)
         #expect(result == nil)
     }
 
     @Test("Falls back to minor release version")
     func minorReleaseFallback() {
         let store = WhatsNewVersionStore(defaults: self.defaults)
-        let result = WhatsNewProvider.staticWhatsNew(for: "1.0.2", store: store)
+        let result = WhatsNewProvider.staticWhatsNew(for: "0.1.2", store: store)
         #expect(result != nil)
-        #expect(result?.version == "1.0.0")
+        #expect(result?.version == "0.1.0")
     }
 
     @Test("Returns nil when minor release already presented")
     func minorReleaseAlreadyPresented() {
         let store = WhatsNewVersionStore(defaults: self.defaults)
-        store.markPresented("1.0.0")
-        let result = WhatsNewProvider.staticWhatsNew(for: "1.0.2", store: store)
+        store.markPresented("0.1.0")
+        let result = WhatsNewProvider.staticWhatsNew(for: "0.1.2", store: store)
         #expect(result == nil)
     }
 
@@ -242,12 +242,12 @@ struct WhatsNewProviderTests {
             let body: [String: Any]
             let statusCode: Int
 
-            if url.path == "/repos/sozercan/kaset/releases/tags/v1.0.0" {
+            if url.path == "/repos/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tags/v1.0.0" {
                 body = [
                     "tag_name": "v1.0.0",
                     "name": "What's New in Kaset 1.0.0",
                     "body": "Release notes",
-                    "html_url": "https://github.com/sozercan/kaset/releases/tag/v1.0.0",
+                    "html_url": "https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tag/v1.0.0",
                 ]
                 statusCode = 200
             } else {
@@ -294,12 +294,12 @@ struct WhatsNewProviderTests {
             let body: [String: Any]
             let statusCode: Int
 
-            if url.path == "/repos/sozercan/kaset/releases/tags/v1.0.0-beta.1" {
+            if url.path == "/repos/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tags/v1.0.0-beta.1" {
                 body = [
                     "tag_name": "v1.0.0-beta.1",
                     "name": "1.0.0-beta.1",
                     "body": "Beta notes",
-                    "html_url": "https://github.com/sozercan/kaset/releases/tag/v1.0.0-beta.1",
+                    "html_url": "https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tag/v1.0.0-beta.1",
                 ]
                 statusCode = 200
             } else {
@@ -345,12 +345,12 @@ struct WhatsNewProviderTests {
             let body: [String: Any]
             let statusCode: Int
 
-            if url.path == "/repos/sozercan/kaset/releases/tags/v1.2.3" {
+            if url.path == "/repos/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tags/v1.2.3" {
                 body = [
                     "tag_name": "v1.2.3",
                     "name": "What's New in Kaset 1.2.3",
                     "body": "Star intro\r\n\r\n## What's New\r\n\r\n### Queue Enhancements\r\n\r\n- Faster queue updates\r\n\r\n## New Contributors\r\n\r\n- @new-contributor made their first contribution\r\n",
-                    "html_url": "https://github.com/sozercan/kaset/releases/tag/v1.2.3",
+                    "html_url": "https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tag/v1.2.3",
                 ]
                 statusCode = 200
             } else {
@@ -395,7 +395,7 @@ struct WhatsNewProviderTests {
             let body: [String: Any]
             let statusCode: Int
 
-            if url.path == "/repos/sozercan/kaset/releases/tags/v0.7.0" {
+            if url.path == "/repos/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tags/v0.7.0" {
                 body = [
                     "tag_name": "v0.7.0",
                     "name": "What's New in Kaset 0.7.0",
@@ -417,9 +417,9 @@ struct WhatsNewProviderTests {
 
                     ## Full Changelog
 
-                    - https://github.com/sozercan/kaset/compare/v0.6.0...v0.7.0
+                    - https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/compare/v0.6.0...v0.7.0
                     """,
-                    "html_url": "https://github.com/sozercan/kaset/releases/tag/v0.7.0",
+                    "html_url": "https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tag/v0.7.0",
                 ]
                 statusCode = 200
             } else {
@@ -471,7 +471,7 @@ struct WhatsNewProviderTests {
             let body: [String: Any]
             let statusCode: Int
 
-            if url.path == "/repos/sozercan/kaset/releases/tags/v0.8.0" {
+            if url.path == "/repos/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tags/v0.8.0" {
                 body = [
                     "tag_name": "v0.8.0",
                     "name": "What's New in Kaset 0.8.0",
@@ -486,7 +486,7 @@ struct WhatsNewProviderTests {
 
                     - SHA256: abc123
                     """,
-                    "html_url": "https://github.com/sozercan/kaset/releases/tag/v0.8.0",
+                    "html_url": "https://github.com/\(WhatsNewProvider.owner)/\(WhatsNewProvider.repo)/releases/tag/v0.8.0",
                 ]
                 statusCode = 200
             } else {
