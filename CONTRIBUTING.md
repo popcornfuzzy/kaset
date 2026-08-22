@@ -14,20 +14,18 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ```bash
 # Clone the repository
-git clone https://github.com/sozercan/kaset.git
+git clone https://github.com/popcornfuzzy/kaset.git
 cd kaset
 
 # Build from command line
 swift build
 
 # Run tests
-swift test
+swift test --skipKasetUITests
 
 # Package and run the app
 Scripts/compile_and_run.sh
 
-# Lint & Format
-swiftlint --strict && swiftformat .
 ```
 
 Or open `Package.swift` in Xcode to work in the IDE.
@@ -195,9 +193,8 @@ final class MyServiceTests: XCTestCase {
 1. **No Third-Party Frameworks** — Do not introduce third-party dependencies without discussion first
 2. **Build Must Pass** — Run `swift build`
 3. **Tests Must Pass** — Run `swift test`
-4. **Linting** — Run `swiftlint --strict && swiftformat .` before submitting
-5. **Small PRs** — Keep changes focused and reviewable
-6. **Share AI Prompts** — If you used AI assistance, include the prompt in your PR (see below)
+4. **Small PRs** — Keep changes focused and reviewable
+5. **Share AI Prompts** — If you used AI assistance, include the prompt in your PR (see below)
 
 ## AI-Assisted Contributions & Prompt Requests
 

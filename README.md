@@ -1,4 +1,6 @@
-# Kaset
+# Kaset+
+
+<img src="docs/logo-reveal-banner.webp" alt="Kaset Logo Reveal Banner" width="100%"> 
 
 A native macOS YouTube Music client built with Swift and SwiftUI.
 
@@ -6,23 +8,21 @@ A native macOS YouTube Music client built with Swift and SwiftUI.
 
 ## Features
 
+- ⏯️ **Add Songs to Playlist** – Easily add songs to your playlists from the player bar 
 - 🎵 **Native macOS Experience** — Apple Music-style UI with Liquid Glass player bar and clean sidebar navigation
-- 🎧 **YouTube Music Premium Support** — Full playback of DRM-protected content via your existing subscription
 - 🎛️ **System Integration** — Now Playing in Control Center, media key support, Dock menu controls
 - 📳 **Trackpad Support** — Tactile feedback on Force Touch trackpads for player controls and navigation
-- 🎶 **Track Notifications** — Get notified when a new track starts playing
 - 🔊 **Background Audio** — Music continues playing when the window is closed; stops on quit
 - ⌨️ **[Keyboard Shortcuts](docs/keyboard-shortcuts.md)** — Full keyboard control for playback, navigation, and more
 - 🧭 **Explore** — Discover new releases, charts, and moods & genres
 - 🎙️ **Podcasts** — Browse and listen to podcasts with episode progress tracking and support for video
 - 📚 **Library Access** — Browse your playlists, liked songs, and subscribed podcasts
 - 🔍 **Search** — Find songs, albums, artists, playlists, and podcasts
-- ✨ **Apple Intelligence** — On-device AI for natural language commands, lyrics explanations, and playlist refinement
-- 📜 **Lyrics** — View plain and synced lyrics with line-by-line highlighting when timing data is available, plus AI-powered explanations and mood analysis
+- 📜 **Lyrics** — View plain and synced lyrics with line-by-line highlighting when timing data is available
 - 📃 **Queue Management** — View, reorder, shuffle, and clear your playback queue
 - 📣 **Share** — Share songs, playlists, albums, and artists via the native macOS share sheet
-- 🔗 **[URL Scheme](docs/url-scheme.md)** — Open songs directly with `kaset://play?v=VIDEO_ID`
-- 🤖 **[AppleScript Support](docs/applescript.md)** — Automate playback with scripts, Raycast, Alfred, and Shortcuts
+- 🧑‍🎤 **Fullscreen View** – Open fullscreen view to focus on the lyrics with beautiful animations
+- ﹗ **Only Youtube Music – no Youtube bloat** – This fork removes the option to watch Youtube videos completely  
 
 ## Requirements
 
@@ -36,8 +36,8 @@ A native macOS YouTube Music client built with Swift and SwiftUI.
 Download the latest release from the [Releases](https://github.com/popcornfuzzy/kaset/releases) page.
 
 
-> **Note:** The app is not signed.
-> If you downloaded the app manually, you can clear extended attributes (including quarantine) with:
+**Note:** The app is not signed.
+If you downloaded the app manually, you can clear extended attributes (including quarantine) with:
 > ```bash
 > xattr -cr /Applications/Kaset.app
 > ```
