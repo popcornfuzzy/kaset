@@ -68,7 +68,12 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     }
 
     private func loadImage() async -> NSImage? {
-        guard let url else { return nil }
+        guard let url else {
+            if let fallbackURL {
+                return await ImageCache.shared.image(for: fallbackURL, targetSize: self.targetSize)
+            }
+            return nil
+        }
 
         var candidates: [URL] = [url]
 

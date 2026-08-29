@@ -12,16 +12,31 @@ private final class AddToPlaylistEntriesCache {
         let timestamp: Date
     }
 
-    private var cacheByAccount: [String: Entry] = [:]
+    private var cacheByAccountAndVideo: [String: [String: Entry]] = [:]
 
     private init() {}
 
+    func invalidate(videoId: String? = nil, accountID: String? = nil) {
+        if let accountID {
+            if let videoId {
+                self.cacheByAccountAndVideo[accountID]?.removeValue(forKey: videoId)
+            } else {
+                self.cacheByAccountAndVideo.removeValue(forKey: accountID)
+            }
+        } else if let videoId {
+            for account in self.cacheByAccountAndVideo.keys {
+                self.cacheByAccountAndVideo[account]?.removeValue(forKey: videoId)
+            }
+        } else {
+            self.cacheByAccountAndVideo.removeAll()
+        }
+    }
+
     func entries(videoId: String, accountID: String, maxAge: TimeInterval) -> [AddToPlaylistEntry]? {
-        guard let entry = self.cacheByAccount[accountID] else { return nil }
-        guard entry.videoId == videoId else { return nil }
+        guard let entry = self.cacheByAccountAndVideo[accountID]?[videoId] else { return nil }
 
         if Date().timeIntervalSince(entry.timestamp) > maxAge {
-            self.cacheByAccount.removeValue(forKey: accountID)
+            self.cacheByAccountAndVideo[accountID]?.removeValue(forKey: videoId)
             return nil
         }
 
@@ -29,7 +44,9 @@ private final class AddToPlaylistEntriesCache {
     }
 
     func setEntries(_ entries: [AddToPlaylistEntry], videoId: String, accountID: String) {
-        self.cacheByAccount[accountID] = Entry(videoId: videoId, entries: entries, timestamp: Date())
+        var entriesByVideo = self.cacheByAccountAndVideo[accountID] ?? [:]
+        entriesByVideo[videoId] = Entry(videoId: videoId, entries: entries, timestamp: Date())
+        self.cacheByAccountAndVideo[accountID] = entriesByVideo
     }
 }
 
@@ -208,7 +225,7 @@ struct AddToPlaylistPopoverContent: View {
             .frame(width: 340)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
         }
-        .task {
+        .task(id: self.song.videoId) {
             if self.createTitle.isEmpty {
                 self.createTitle = self.song.title
             }
@@ -426,23 +443,18 @@ struct AddToPlaylistPopoverContent: View {
     }
 
     private func loadEntries() async {
+        // Always fetch a fresh authoritative list when the popover opens. The cache is
+        // only a rendering fallback and must never determine membership or ordering.
+        self.loadingState = .loading
         if let cachedEntries = AddToPlaylistEntriesCache.shared.entries(
             videoId: self.song.videoId,
             accountID: self.activeAccountID,
             maxAge: self.entriesCacheMaxAge
         ) {
             self.entries = self.sortedEntries(cachedEntries)
-            self.seedMembershipCacheFromEntries()
-            self.seedLikedSongsMembershipFromSongStatus()
             self.loadingState = .loaded
-
-            Task {
-                await self.refreshEntriesFromNetwork(showLoadingIndicator: false)
-            }
-            return
         }
-
-        await self.refreshEntriesFromNetwork(showLoadingIndicator: true)
+        await self.refreshEntriesFromNetwork(showLoadingIndicator: self.entries.isEmpty)
     }
 
     private func refreshEntriesFromNetwork(showLoadingIndicator: Bool) async {
@@ -452,6 +464,8 @@ struct AddToPlaylistPopoverContent: View {
 
         do {
             let fetchedEntries = try await self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
+            // The library order is populated asynchronously; re-sort after each network
+            // response and again when the view model changes.
             self.entries = self.sortedEntries(fetchedEntries)
             AddToPlaylistEntriesCache.shared.setEntries(
                 self.entries,
