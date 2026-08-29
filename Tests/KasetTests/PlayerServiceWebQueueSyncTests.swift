@@ -349,6 +349,8 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(PlayerService.artistsEquivalent("Artist A • Artist B", "Artist A, Artist B"))
         #expect(PlayerService.artistsEquivalent("artist a, artist b", "Artist A, Artist B"))
         #expect(!PlayerService.artistsEquivalent("Artist A, Artist B", "Artist C, Artist B"))
+        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius, Lynnic und Dinia") == "itsarius, lynnic, dinia")
+        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius und Lynnic und Dinia") == "itsarius, lynnic, dinia")
     }
 
     @Test("Localized 'and' byline keeps structured artists and like status")

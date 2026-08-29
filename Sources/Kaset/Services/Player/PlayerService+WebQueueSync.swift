@@ -28,9 +28,10 @@ extension PlayerService {
     /// "Artist A et Artist B", and "Artist A & Artist B" all describe the same song.
     static func canonicalArtistString(_ artist: String) -> String {
         var normalized = artist.folding(
-            options: [.caseInsensitive, .diacriticInsensitive],
+            options: [.diacriticInsensitive],
             locale: .current
         )
+            .lowercased()
 
         // Localized conjunctions used to join multiple artists become separators
         // ("and", German "und", French "et", Spanish "y", ampersand).
@@ -67,6 +68,16 @@ extension PlayerService {
     /// ignoring case, diacritics, and separator/conjunction formatting.
     static func artistsEquivalent(_ lhs: String, _ rhs: String) -> Bool {
         Self.canonicalArtistString(lhs) == Self.canonicalArtistString(rhs)
+    }
+
+    /// Converts a localized YouTube byline into Kaset's stable comma-separated display format.
+    static func commaSeparatedArtistDisplay(_ artist: String) -> String {
+        let canonical = Self.canonicalArtistString(artist)
+        guard !canonical.isEmpty else { return "" }
+        return canonical
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: ", ")
     }
 
     private func observedTrackMatchesSong(
@@ -158,7 +169,7 @@ extension PlayerService {
         let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
             ?? self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL
             ?? self.currentTrack?.thumbnailURL
-        let artistObj = Artist(id: "unknown", name: artist)
+        let artistObj = Artist(id: "unknown", name: Self.commaSeparatedArtistDisplay(artist))
         return Song(
             id: videoId,
             title: title,
@@ -698,7 +709,8 @@ extension PlayerService {
             return
         }
 
-        let artistObj = Artist(id: "unknown", name: artist)
+        let displayArtist = Self.commaSeparatedArtistDisplay(artist)
+        let artistObj = Artist(id: "unknown", name: displayArtist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
         if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
             self.updateCurrentPlaybackKind(using: queuedSong)
