@@ -20,6 +20,7 @@ final class SettingsManager {
         static let scrobbleMinSeconds = "settings.scrobbleMinSeconds"
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
+        static let lyricsProvider = "settings.lyricsProvider"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
     }
 
@@ -83,6 +84,22 @@ final class SettingsManager {
             switch self {
             case .skipForwardBackward: "Skip Forward/Backward"
             case .nextPreviousTrack: "Next/Previous Track"
+            }
+        }
+    }
+
+    // MARK: - Lyrics Provider
+
+    enum LyricsProviderChoice: String, CaseIterable, Identifiable {
+        case musixmatchAndLRCLib
+        case lrclib
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .musixmatchAndLRCLib: "Musixmatch + LRCLIB"
+            case .lrclib: "LRCLIB"
             }
         }
     }
@@ -175,6 +192,13 @@ final class SettingsManager {
     /// The last page the user was on (for "Last Used" option).
     var lastUsedPage: LaunchPage = .home
 
+    /// The source used for synced lyrics.
+    var lyricsProvider: LyricsProviderChoice {
+        didSet {
+            UserDefaults.standard.set(self.lyricsProvider.rawValue, forKey: Keys.lyricsProvider)
+        }
+    }
+
     /// Whether synced lyrics are preferred.
     var syncedLyricsEnabled: Bool {
         didSet {
@@ -209,6 +233,17 @@ final class SettingsManager {
         self.scrobblePercentThreshold = UserDefaults.standard.object(forKey: Keys.scrobblePercentThreshold) as? Double ?? 0.5
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
+        if let rawValue = UserDefaults.standard.string(forKey: Keys.lyricsProvider),
+           let provider = LyricsProviderChoice(rawValue: rawValue)
+        {
+            self.lyricsProvider = provider
+        } else {
+            self.lyricsProvider = .musixmatchAndLRCLib
+            UserDefaults.standard.set(
+                LyricsProviderChoice.musixmatchAndLRCLib.rawValue,
+                forKey: Keys.lyricsProvider
+            )
+        }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),

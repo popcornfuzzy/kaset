@@ -33,6 +33,7 @@ struct SyncedLyricsDisplayView: View {
                             SyncedLineView(
                                 line: line,
                                 status: status,
+                                currentTimeMs: self.currentTimeMs,
                                 onTap: { self.onSeek(line.timeInMs) }
                             )
                             .id(line.id)
@@ -60,29 +61,46 @@ struct SyncedLyricsDisplayView: View {
                     }
             )
             .onChange(of: self.currentTimeMs) { _, newTimeMs in
-                if let currentIdx = lyrics.currentLineIndex(at: newTimeMs) {
-                    let newId = self.lyrics.lines[currentIdx].id
-                    if newId != self.currentLineId {
-                        self.currentLineId = newId
-                        self.currentLineIndex = currentIdx
-                        if !self.userIsScrolling {
-                            withAnimation(.spring(duration: 0.45, bounce: 0.0)) {
-                                proxy.scrollTo(newId, anchor: .center)
-                            }
-                        }
-                    }
+                self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling)
+            }
+            .onChange(of: self.currentLineIndex) { _, newIndex in
+                guard let newIndex, self.lyrics.lines.indices.contains(newIndex) else { return }
+                let id = self.lyrics.lines[newIndex].id
+                guard !self.userIsScrolling else { return }
+                withAnimation(.easeInOut(duration: 0.42)) {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
             .onAppear {
-                if let initialIdx = self.lyrics.currentLineIndex(at: self.currentTimeMs) {
-                    self.currentLineIndex = initialIdx
-                    self.currentLineId = self.lyrics.lines[initialIdx].id
+                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+                SingletonPlayerWebView.shared.startLyricsPoll()
+                SingletonPlayerWebView.shared.sendCurrentLyricsTime()
+            }
+            .task {
+                // Lazy stacks may not have materialized the first target yet.
+                // Retry the initial scroll after layout and WebView startup.
+                for _ in 0 ..< 8 {
+                    guard !Task.isCancelled else { return }
+                    await Task.yield()
+                    self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+                    try? await Task.sleep(for: .milliseconds(100))
                 }
             }
             .onDisappear {
                 self.scrollResumeTask?.cancel()
             }
         }
+    }
+
+    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) {
+        guard let index = self.lyrics.currentLineIndex(at: timeMs) else { return }
+        let id = self.lyrics.lines[index].id
+        self.currentLineIndex = index
+        let lineChanged = id != self.currentLineId
+        self.currentLineId = id
+        guard lineChanged else { return }
+        if animate { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(id, anchor: .center) } }
+        else { proxy.scrollTo(id, anchor: .center) }
     }
 
     private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus {
@@ -180,9 +198,46 @@ struct SyncedPauseDotsLineView: View {
 
 // MARK: - SyncedLineView
 
+struct FlowKaraokeLine: View {
+    let words: [TimedWord]
+    let currentTimeMs: Int
+    let color: Color
+
+    var body: some View {
+        Text(self.attributedText)
+            .foregroundStyle(self.color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .animation(.linear(duration: 0.08), value: self.currentTimeMs)
+    }
+
+    private var attributedText: AttributedString {
+        var result = AttributedString()
+        for (index, word) in self.words.enumerated() {
+            var value = AttributedString(word.word)
+            let progress = self.wordProgress(at: index)
+            value.foregroundColor = self.color.opacity(progress > 0 ? 1 : 0.30)
+            result.append(value)
+        }
+        return result
+    }
+
+    private func wordProgress(at index: Int) -> CGFloat {
+        let word = self.words[index]
+        let nextTime = self.words.indices.contains(index + 1) ? self.words[index + 1].timeInMs : word.timeInMs + 220
+        return CGFloat(min(max(Double(self.currentTimeMs - word.timeInMs) / Double(max(1, nextTime - word.timeInMs)), 0), 1))
+    }
+
+    private func wordOpacity(at index: Int) -> Double {
+        let progress = self.wordProgress(at: index)
+        return progress >= 1 ? 1 : 0.30
+    }
+}
+
 struct SyncedLineView: View {
     let line: SyncedLyricLine
     let status: SyncedLyrics.LineStatus
+    let currentTimeMs: Int
     let onTap: () -> Void
 
     private var displayText: String {
@@ -191,20 +246,30 @@ struct SyncedLineView: View {
     }
 
     var body: some View {
-        Text(self.displayText)
-            .font(.system(size: 16, weight: .bold))
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .foregroundStyle(.primary)
-            .opacity(self.opacity(for: self.status))
-            .scaleEffect(self.scale(for: self.status), anchor: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
-            .animation(.easeInOut(duration: 0.4), value: self.status)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                self.onTap()
+        Group {
+            if let words = self.line.words, !words.isEmpty {
+                self.wordLine(words)
+            } else {
+                Text(self.displayText)
             }
+        }
+        .font(.system(size: 16, weight: .bold))
+        .lineSpacing(2)
+        .fixedSize(horizontal: false, vertical: true)
+        .opacity(self.opacity(for: self.status))
+        .scaleEffect(self.scale(for: self.status), anchor: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+        .animation(.easeInOut(duration: 0.4), value: self.status)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            self.onTap()
+        }
+    }
+
+    @ViewBuilder
+    private func wordLine(_ words: [TimedWord]) -> some View {
+        FlowKaraokeLine(words: words, currentTimeMs: self.currentTimeMs, color: .primary)
     }
 
     private func scale(for status: SyncedLyrics.LineStatus) -> CGFloat {

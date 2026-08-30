@@ -609,6 +609,10 @@ final class SingletonPlayerWebView {
         self.webView?.evaluateJavaScript("if (window.startLyricsPoll) { window.startLyricsPoll(); }")
     }
 
+    func sendCurrentLyricsTime() {
+        self.webView?.evaluateJavaScript("if (window.sendLyricsTime) { window.sendLyricsTime(); }")
+    }
+
     /// Stops high frequency polling for synced lyrics
     func stopLyricsPoll() {
         self.webView?.evaluateJavaScript("if (window.stopLyricsPoll) { window.stopLyricsPoll(); }")

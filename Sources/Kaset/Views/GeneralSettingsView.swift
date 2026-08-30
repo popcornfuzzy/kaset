@@ -45,6 +45,16 @@ struct GeneralSettingsView: View {
                 Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
                     .help("Fetch and display real-time synced lyrics when available")
 
+                Picker("Synced Lyrics Source", selection: self.$settings.lyricsProvider) {
+                    ForEach(SettingsManager.LyricsProviderChoice.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .help("Try Musixmatch first, then use LRCLIB when Musixmatch has no lyrics.")
+                .onChange(of: self.settings.lyricsProvider) { _, _ in
+                    self.syncedLyricsService.reloadProviderFromSettings()
+                }
+
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lyrics Cache")
