@@ -17,7 +17,7 @@ final class MusixmatchProvider: LyricsProvider {
     func search(info: LyricsSearchInfo) async -> LyricResult {
         do {
             let token = try await self.fetchToken()
-            guard let track = try await self.findTrack(info: info, token: token) else {
+            guard            let track = try await self.findTrack(info: info, token: token) else {
                 return .unavailable
             }
 

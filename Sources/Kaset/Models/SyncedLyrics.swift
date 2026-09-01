@@ -66,6 +66,7 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         self.lines.isEmpty
     }
 
+
     enum LineStatus {
         case previous, current, upcoming
     }

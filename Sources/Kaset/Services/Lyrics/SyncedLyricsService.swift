@@ -5,6 +5,8 @@ import Foundation
 final class SyncedLyricsService {
     var currentLyrics: LyricResult = .unavailable
     var activeProvider: String?
+    /// Provider currently being attempted; useful for loading-state feedback.
+    var loadingProvider: String?
     var currentLyricsVideoId: String?
     var isLoading = false
     var errorMessage: String?
@@ -35,6 +37,7 @@ final class SyncedLyricsService {
         self.cacheStore?.removeAll(except: nil)
         self.currentLyrics = .unavailable
         self.activeProvider = nil
+        self.loadingProvider = nil
         self.currentLyricsVideoId = nil
         self.errorMessage = nil
     }
@@ -46,6 +49,7 @@ final class SyncedLyricsService {
         if !keepCurrent {
             self.currentLyrics = .unavailable
             self.activeProvider = nil
+            self.loadingProvider = nil
             self.currentLyricsVideoId = nil
         }
     }
@@ -62,6 +66,7 @@ final class SyncedLyricsService {
         }
 
         self.isLoading = true
+        self.loadingProvider = self.providers.first?.name
         self.errorMessage = nil
         if forceRefresh {
             self.cache.removeValue(forKey: info.videoId)
@@ -71,6 +76,7 @@ final class SyncedLyricsService {
         var result: LyricResult = .unavailable
         var providerName: String?
         for provider in self.providers {
+            self.loadingProvider = provider.name
             let candidate = await provider.search(info: info)
             if candidate.isAvailable {
                 result = candidate
@@ -114,6 +120,7 @@ final class SyncedLyricsService {
         guard requestID == self.fetchGeneration else { return }
         self.currentLyrics = result
         self.activeProvider = provider ?? Self.source(of: result)
+        self.loadingProvider = nil
         self.currentLyricsVideoId = videoId
         self.isLoading = false
         if case .synced = result {

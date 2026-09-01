@@ -13,6 +13,7 @@ struct FullscreenNowPlayingView: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var isLoadingFallback = false
     @State private var seekValue: Double = 0
+    @State private var lyricsTimeMs: Int = 0
     @State private var isSeeking = false
     @State private var escapeKeyMonitor: Any?
 
@@ -66,10 +67,14 @@ struct FullscreenNowPlayingView: View {
         .onAppear {
             self.seekValue = self.normalizedProgress
             self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+            self.lyricsTimeMs = self.playerService.currentTimeMs
             self.installEscapeKeyMonitorIfNeeded()
         }
         .onChange(of: self.playerService.progress) { _, _ in
             if !self.isSeeking { self.seekValue = self.normalizedProgress }
+        }
+        .onChange(of: self.playerService.currentTimeMs) { _, newTimeMs in
+            self.lyricsTimeMs = newTimeMs
         }
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
             self.loadTask?.cancel()
@@ -191,11 +196,19 @@ struct FullscreenNowPlayingView: View {
                 if self.playerService.currentTrack == nil {
                     self.emptyLyricsState(icon: "play.circle", title: String(localized: "No Song Playing"), message: String(localized: "Play a song to view synced lyrics."))
                 } else if !self.hasLyricsForCurrentTrack || self.syncedLyricsService.isLoading || self.isLoadingFallback {
-                    VStack(spacing: 12) { ProgressView().controlSize(.regular).tint(.white); Text(String(localized: "Loading lyrics...")).font(.subheadline).foregroundStyle(.white) }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 12) {
+                        ProgressView().controlSize(.regular).tint(.white)
+                        Text(String(localized: "Loading lyrics...")).font(.subheadline).foregroundStyle(.white)
+                        if let provider = self.syncedLyricsService.loadingProvider {
+                            Text(String(localized: "Searching \(provider)"))
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     switch self.syncedLyricsService.currentLyrics {
                     case let .synced(synced):
-                        FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.playerService.currentTimeMs, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
+                        FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.lyricsTimeMs, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
                     case let .plain(plain):
                         ScrollView { Text(plain.text).font(.system(size: 36, weight: .bold)).lineSpacing(18).foregroundStyle(.white).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12) }.scrollIndicators(.hidden).mask(self.lyricsFadeMask)
                     case .unavailable:
@@ -267,6 +280,7 @@ private struct FullscreenSyncedLyricsView: View {
     @State private var currentLineIndex: Int?
     @State private var userIsScrolling = false
     @State private var scrollResumeTask: Task<Void, Never>?
+    @State private var resumeScrollGeneration = 0
     @State private var hoveredLineId: UUID?
 
     var body: some View {
@@ -284,13 +298,38 @@ private struct FullscreenSyncedLyricsView: View {
                     }
                     Spacer().frame(height: 84)
                 }
-            }.scrollIndicators(.hidden).simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in self.userIsScrolling = true; self.scrollResumeTask?.cancel() }.onEnded { _ in self.scrollResumeTask = Task { try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled { self.userIsScrolling = false } } }).onChange(of: self.currentTimeMs) { _, newTimeMs in self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling) }.onChange(of: self.lyrics) { _, _ in self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false) }.onAppear { self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false); if let currentLineId = self.currentLineId { Task { await Task.yield(); if !Task.isCancelled { proxy.scrollTo(currentLineId, anchor: .center) } } } }.onDisappear { self.scrollResumeTask?.cancel(); self.hoveredLineId = nil }
+            }
+            .scrollIndicators(.hidden)
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .interacting:
+                    self.userIsScrolling = true
+                    self.resumeScrollGeneration += 1
+                    self.scrollResumeTask?.cancel()
+                case .decelerating:
+                    let generation = self.resumeScrollGeneration
+                    self.scrollResumeTask?.cancel()
+                    self.scrollResumeTask = Task {
+                        try? await Task.sleep(for: .seconds(4))
+                        guard !Task.isCancelled, generation == self.resumeScrollGeneration else { return }
+                        self.userIsScrolling = false
+                        if let currentLineId = self.currentLineId {
+                            withAnimation(.easeInOut(duration: 0.42)) {
+                                proxy.scrollTo(currentLineId, anchor: .center)
+                            }
+                        }
+                    }
+                default:
+                    break
+                }
+            }
+            .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in self.userIsScrolling = true; self.resumeScrollGeneration += 1; self.scrollResumeTask?.cancel() }.onEnded { _ in let generation = self.resumeScrollGeneration; self.scrollResumeTask = Task { try? await Task.sleep(for: .seconds(4)); guard !Task.isCancelled, generation == self.resumeScrollGeneration else { return }; self.userIsScrolling = false; if let currentLineId = self.currentLineId { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(currentLineId, anchor: .center) } } } }).onChange(of: self.currentTimeMs) { _, newTimeMs in self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling) }.onChange(of: self.lyrics) { _, _ in self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false) }.onAppear { self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false); if let currentLineId = self.currentLineId { Task { await Task.yield(); if !Task.isCancelled { proxy.scrollTo(currentLineId, anchor: .center) } } } }.onDisappear { self.scrollResumeTask?.cancel(); self.hoveredLineId = nil }
         }
     }
     private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus { guard let currentLineIndex else { return .upcoming }; if lineIndex < currentLineIndex { return .previous }; if lineIndex == currentLineIndex { return .current }; return .upcoming }
     private func scale(for status: SyncedLyrics.LineStatus, lineId: UUID) -> CGFloat { if self.hoveredLineId == lineId, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
     private func opacity(for status: SyncedLyrics.LineStatus, lineId: UUID) -> Double { if self.hoveredLineId == lineId, status != .current { return 0.78 }; return switch status { case .current: 1; case .previous: 0.35; case .upcoming: 0.55 } }
-    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) { guard let currentIdx = self.lyrics.currentLineIndex(at: timeMs) else { return }; let newId = self.lyrics.lines[currentIdx].id; self.currentLineIndex = currentIdx; guard newId != self.currentLineId else { return }; self.currentLineId = newId; if animate { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(newId, anchor: .center) } } else { proxy.scrollTo(newId, anchor: .center) } }
+    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) { guard let currentIdx = self.lyrics.currentLineIndex(at: timeMs) else { return }; let newId = self.lyrics.lines[currentIdx].id; self.currentLineIndex = currentIdx; guard newId != self.currentLineId else { return }; self.currentLineId = newId; guard !self.userIsScrolling else { return }; if animate { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(newId, anchor: .center) } } else { proxy.scrollTo(newId, anchor: .center) } }
 }
 
 @available(macOS 26.0, *)

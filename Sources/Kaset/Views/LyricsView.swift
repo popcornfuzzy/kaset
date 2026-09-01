@@ -203,6 +203,11 @@ struct LyricsView: View {
             Text("Loading lyrics...", comment: "Lyrics panel loading state")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            if let provider = self.syncedLyricsService.loadingProvider {
+                Text(String(localized: "Searching \(provider)"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -226,22 +231,19 @@ struct LyricsView: View {
                 Divider().opacity(0.3)
             }
 
-            ScrollView {
-                VStack(spacing: 0) {
-                    SyncedLyricsDisplayView(
+            VStack(spacing: 0) {
+                SyncedLyricsDisplayView(
                         lyrics: synced,
                         currentTimeMs: self.playerService.currentTimeMs,
                         onSeek: { timeMs in
                             Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                         }
                     )
-                    .frame(minHeight: 1)
-                    .background(Color.clear)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
 
-                    self.sourceFooter(synced.source)
-                }
+                self.sourceFooter(synced.source)
             }
-            .scrollIndicators(.hidden)
             .onAppear {
                 self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
             }
