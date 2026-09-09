@@ -374,6 +374,27 @@ struct SyncedLyricsServiceTests {
         #expect(store.load(for: "video-replacement") == .synced(paxsenixLyrics))
     }
 
+    @Test("word-synced Paxsenix beats both line-synced KuGo and LRCLIB results")
+    func wordSyncedBeatsTwoLineProviders() async {
+        let lrclibLyrics = Self.makeSyncedLyrics(source: "LRCLIB", lineText: "LRCLIB line")
+        let kugouLyrics = Self.makeSyncedLyrics(source: "KuGo", lineText: "KuGo line")
+        let paxsenixLyrics = Self.makeWordSyncedLyrics(source: "Paxsenix", lineText: "Word line")
+        let lrclib = MockLyricsProvider(name: "LRCLIB", result: .synced(lrclibLyrics))
+        let kugou = MockLyricsProvider(name: "KuGo", result: .synced(kugouLyrics))
+        let paxsenix = MockLyricsProvider(name: "Paxsenix", result: .synced(paxsenixLyrics))
+        let service = SyncedLyricsService(providers: [lrclib, kugou, paxsenix])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-three-provider"))
+
+        // All three are searched concurrently; the word-synced result wins.
+        #expect(await lrclib.callCount() == 1)
+        #expect(await kugou.callCount() == 1)
+        #expect(await paxsenix.callCount() == 1)
+        #expect(service.currentLyrics == .synced(paxsenixLyrics))
+        #expect(service.activeProvider == "Paxsenix")
+        #expect(service.searchingForBetterLyrics == false)
+    }
+
     @Test("a single provider never shows the still-searching shimmer")
     func singleProviderHasNoShimmer() async {
         let synced = Self.makeSyncedLyrics(source: "Only Source", lineText: "Only line")
@@ -507,21 +528,27 @@ struct SyncedLyricsServiceTests {
         let first = Self.makeSyncedLyrics(source: "First Source", lineText: "First line")
         let second = Self.makeSyncedLyrics(source: "Second Source", lineText: "Second line")
         let gate = SearchGate()
+        let gateSwitch = GateSwitch()
         let state = LyricResultBox(.synced(first))
         let provider = MockLyricsProvider(name: "StatefulProvider") { _ in
             await gate.markStarted()
-            await gate.waitUntilReleased()
+            if await gateSwitch.isEnabled() {
+                await gate.waitUntilReleased()
+            }
             return await state.get()
         }
         let service = SyncedLyricsService(providers: [provider])
         let info = Self.makeSearchInfo(videoId: "video-refresh-reset")
 
+        // The first fetch is not gated; only the refresh below is held so the
+        // mid-flight state can be asserted deterministically.
         await service.fetchLyrics(for: info)
         #expect(service.currentLyrics == .synced(first))
 
         // Refreshing behaves exactly like opening the panel on a new song:
         // the old result is cleared while the concurrent search is in flight,
         // so the first-arrival + shimmer + swap-in flow can play out again.
+        await gateSwitch.enable()
         await state.set(.synced(second))
         let task = Task { @MainActor in
             await service.fetchLyrics(for: info, forceRefresh: true)
@@ -697,6 +724,23 @@ private actor SearchGate {
         for waiter in waiters {
             waiter.resume()
         }
+    }
+}
+
+// MARK: - GateSwitch
+
+/// Lets a provider mock gate only some of its invocations. The gate's
+/// `markStarted` is always called so tests can wait for the search to begin;
+/// `waitUntilReleased` only blocks while the switch is enabled.
+private actor GateSwitch {
+    private var enabled = false
+
+    func enable() {
+        self.enabled = true
+    }
+
+    func isEnabled() -> Bool {
+        self.enabled
     }
 }
 

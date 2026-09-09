@@ -50,7 +50,7 @@ struct GeneralSettingsView: View {
                         Text(provider.displayName).tag(provider)
                     }
                 }
-                .help("Try Paxsenix first, then use LRCLIB when Paxsenix has no lyrics.")
+                .help("Search Paxsenix, KuGo, and LRCLIB concurrently; word-synced results upgrade line-synced ones.")
                 .onChange(of: self.settings.lyricsProvider) { _, _ in
                     self.syncedLyricsService.reloadProviderFromSettings()
                 }

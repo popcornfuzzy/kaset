@@ -287,13 +287,25 @@ final class PaxsenixProvider: LyricsProvider {
         if syllable {
             var lines: [SyncedLyricLine] = []
             for (index, line) in content.enumerated() {
-                let rawWords = line.text?.compactMap { word -> TimedWord? in
-                    guard let wordText = word.text, !wordText.isEmpty, let wordMs = word.timestamp else { return nil }
-                    return TimedWord(timeInMs: wordMs, word: wordText)
-                } ?? []
-                let words = Self.normalizeWordSpacing(rawWords)
+                let rawUnits = line.text ?? []
+                var words: [TimedWord] = []
+                var previousWasPart = false
+                for (unitIndex, unit) in rawUnits.enumerated() {
+                    guard let unitText = unit.text, !unitText.isEmpty, let wordMs = unit.timestamp else { continue }
+                    var rendered = unitText
+                    // Glue syllable parts of the same word together; insert a
+                    // single space only at word boundaries (or when the source
+                    // already carries leading whitespace).
+                    if unitIndex > 0, !previousWasPart,
+                       !rendered.hasPrefix(" "), !rendered.hasPrefix("\t")
+                    {
+                        rendered = " " + rendered
+                    }
+                    words.append(TimedWord(timeInMs: wordMs, word: rendered))
+                    previousWasPart = unit.part == true
+                }
                 let text = words.isEmpty
-                    ? (line.text?.compactMap(\.text).joined() ?? "")
+                    ? (rawUnits.compactMap(\.text).joined())
                     : words.map(\.word).joined()
                 guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let startMs = line.timestamp ?? 0
@@ -546,6 +558,16 @@ struct PaxsenixLyricsResponse: Decodable {
         let text: String?
         let timestamp: Int?
         let endtime: Int?
+        /// True when this unit is a non-final part (syllable) of a word. The
+        /// following unit belongs to the same word and must be glued to it.
+        let part: Bool?
+
+        init(text: String?, timestamp: Int?, endtime: Int?, part: Bool? = nil) {
+            self.text = text
+            self.timestamp = timestamp
+            self.endtime = endtime
+            self.part = part
+        }
     }
 }
 
@@ -576,6 +598,14 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
     private var inSpan = false
     private var spanBeginMs: Int?
     private var spanText = ""
+    private var spansSeen = 0
+    /// Set when whitespace-only text sits between two spans — Apple's Word
+    /// timing format marks word boundaries that way. Syllable continuations
+    /// have no inter-span whitespace and are glued together.
+    private var pendingSpaceBetweenSpans = false
+    /// Whether the span currently being closed begins a new word (so it needs
+    /// a leading space unless it already has one).
+    private var needsLeadingSpace = false
 
     func parser(
         _ parser: XMLParser,
@@ -591,6 +621,9 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             spanJoinedText = ""
             hasSpan = false
             pendingWords.removeAll()
+            spansSeen = 0
+            pendingSpaceBetweenSpans = false
+            needsLeadingSpace = false
             lineBeginMs = Self.timeToMs(attributeDict["begin"])
             lineEndMs = Self.timeToMs(attributeDict["end"])
         case "span":
@@ -598,6 +631,10 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             inSpan = true
             spanText = ""
             spanBeginMs = Self.timeToMs(attributeDict["begin"])
+            // Whitespace between the previous span and this one marks a word
+            // boundary; syllable continuations have no inter-span whitespace.
+            needsLeadingSpace = pendingSpaceBetweenSpans && spansSeen > 0
+            pendingSpaceBetweenSpans = false
         default:
             break
         }
@@ -607,7 +644,13 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         if inSpan {
             spanText += string
         } else if inLine {
-            plainText += string
+            if string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Whitespace-only text between spans (or around them) marks a
+                // word boundary rather than contributing to the line text.
+                pendingSpaceBetweenSpans = true
+            } else {
+                plainText += string
+            }
         }
     }
 
@@ -619,15 +662,20 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
     ) {
         switch elementName.lowercased() {
         case "span":
-            let text = spanText
+            var text = spanText
+            if needsLeadingSpace, !text.hasPrefix(" "), !text.hasPrefix("\t") {
+                text = " " + text
+            }
             if let begin = spanBeginMs,
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
                 pendingWords.append(TimedWord(timeInMs: begin, word: text))
             }
             spanJoinedText += text
+            spansSeen += 1
             inSpan = false
             spanBeginMs = nil
+            needsLeadingSpace = false
         case "p":
             guard inLine else { break }
             inLine = false
@@ -641,7 +689,9 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             }
             let begin = lineBeginMs ?? (pendingWords.first?.timeInMs ?? 0)
             let end = lineEndMs ?? (begin + 4_000)
-            let words = pendingWords.isEmpty ? nil : PaxsenixProvider.normalizeWordSpacing(pendingWords)
+            // Word spacing comes from the source (inter-span whitespace and
+            // span text) — never inject spaces between syllable parts.
+            let words = pendingWords.isEmpty ? nil : pendingWords
             lines.append(SyncedLyricLine(timeInMs: begin, duration: max(1, end - begin), text: text, words: words))
             pendingWords.removeAll()
         default:

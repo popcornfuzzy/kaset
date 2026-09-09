@@ -3,15 +3,9 @@ import Foundation
 @MainActor
 @Observable
 final class SyncedLyricsService {
-    private struct ResolvedLyrics: Sendable {
-        let result: LyricResult
-        let providerName: String?
-        let capability: LyricsCapability
-    }
-
     private struct InFlightSearch {
         let id: UUID
-        let task: Task<ResolvedLyrics, Never>
+        let flight: SearchFlight
     }
 
     var currentLyrics: LyricResult = .unavailable
@@ -41,7 +35,9 @@ final class SyncedLyricsService {
     private static func providersForCurrentSettings() -> [LyricsProvider] {
         switch SettingsManager.shared.lyricsProvider {
         case .paxsenixAndLRCLib:
-            [PaxsenixProvider(), LRCLibProvider()]
+            [PaxsenixProvider(), KuGoProvider(), LRCLibProvider()]
+        case .kugouAndLRCLib:
+            [KuGoProvider(), LRCLibProvider()]
         case .lrclib:
             [LRCLibProvider()]
         }
@@ -51,7 +47,7 @@ final class SyncedLyricsService {
         self.providers = Self.providersForCurrentSettings()
         self.fetchGeneration += 1
         for flight in self.inFlightSearches.values {
-            flight.task.cancel()
+            Task { await flight.flight.cancel() }
         }
         self.inFlightSearches.removeAll()
         self.cacheStore?.removeAll(except: nil)
@@ -66,6 +62,9 @@ final class SyncedLyricsService {
 
     func clearCache(keepCurrent: Bool = true) {
         self.cache.removeAll()
+        for flight in self.inFlightSearches.values {
+            Task { await flight.flight.cancel() }
+        }
         self.inFlightSearches.removeAll()
         self.cacheStore?.removeAll(except: keepCurrent ? self.currentLyricsVideoId : nil)
         if !keepCurrent {
@@ -85,7 +84,7 @@ final class SyncedLyricsService {
         if !forceRefresh, let inFlight = self.inFlightSearches[info.videoId] {
             self.isLoading = true
             self.loadingProvider = self.providers.first?.name
-            let resolved = await inFlight.task.value
+            let resolved = await inFlight.flight.value()
             self.finishSearch(resolved, for: info.videoId, requestID: self.fetchGeneration, flightID: inFlight.id)
             return
         }
@@ -128,20 +127,22 @@ final class SyncedLyricsService {
         }
 
         let flightID = UUID()
+        let flight = SearchFlight()
         let providers = self.providers
-        let task = Task { @MainActor in
-            await Self.searchProviders(providers: providers, info: info) { [weak self] resolved in
-                self?.applySearchResult(
-                    resolved,
-                    videoId: info.videoId,
-                    requestID: requestID,
-                    providers: providers
-                )
-            }
-        }
-        self.inFlightSearches[info.videoId] = InFlightSearch(id: flightID, task: task)
+        self.inFlightSearches[info.videoId] = InFlightSearch(id: flightID, flight: flight)
 
-        let resolved = await task.value
+        // The search runs directly in the caller's task; the shared flight lets
+        // a concurrent caller for the same track await the same result instead
+        // of launching a second search.
+        let resolved = await Self.searchProviders(providers: providers, info: info) { [weak self] resolved in
+            self?.applySearchResult(
+                resolved,
+                videoId: info.videoId,
+                requestID: requestID,
+                providers: providers
+            )
+        }
+        await flight.fulfill(resolved)
         self.finishSearch(resolved, for: info.videoId, requestID: requestID, flightID: flightID)
     }
 
@@ -280,5 +281,57 @@ final class SyncedLyricsService {
         _ = await Task.detached(priority: .utility) {
             cacheStore.migrateLegacyCacheIfNeeded()
         }.value
+    }
+}
+
+// MARK: - SearchFlight
+
+/// The outcome of a finished search: the best result found across providers
+/// plus the provider that produced it.
+private struct ResolvedLyrics: Sendable {
+    let result: LyricResult
+    let providerName: String?
+    let capability: LyricsCapability
+}
+
+/// A single shared in-flight search. The first caller runs the search and
+/// fulfills the flight; concurrent callers for the same track await the same
+/// result instead of launching a second search.
+private actor SearchFlight {
+    private var result: ResolvedLyrics?
+    private var isCancelled = false
+    private var waiters: [CheckedContinuation<ResolvedLyrics, Never>] = []
+
+    func value() async -> ResolvedLyrics {
+        if let result { return result }
+        if self.isCancelled {
+            return ResolvedLyrics(result: LyricResult.unavailable, providerName: nil, capability: LyricsCapability.plain)
+        }
+        return await withCheckedContinuation { continuation in
+            self.waiters.append(continuation)
+        }
+    }
+
+    func fulfill(_ value: ResolvedLyrics) {
+        guard self.result == nil, !self.isCancelled else { return }
+        self.result = value
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: value)
+        }
+    }
+
+    /// Marks the flight cancelled so waiting callers resolve to `.unavailable`
+    /// instead of hanging (e.g. when the provider set is reloaded).
+    func cancel() {
+        guard self.result == nil, !self.isCancelled else { return }
+        self.isCancelled = true
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        let unavailable = ResolvedLyrics(result: LyricResult.unavailable, providerName: nil, capability: LyricsCapability.plain)
+        for waiter in waiters {
+            waiter.resume(returning: unavailable)
+        }
     }
 }

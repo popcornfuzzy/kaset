@@ -92,13 +92,15 @@ final class SettingsManager {
 
     enum LyricsProviderChoice: String, CaseIterable, Identifiable {
         case paxsenixAndLRCLib
+        case kugouAndLRCLib
         case lrclib
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .paxsenixAndLRCLib: "Paxsenix + LRCLIB"
+            case .paxsenixAndLRCLib: "Paxsenix + KuGo + LRCLIB"
+            case .kugouAndLRCLib: "KuGo + LRCLIB"
             case .lrclib: "LRCLIB"
             }
         }

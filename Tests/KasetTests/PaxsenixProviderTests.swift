@@ -97,6 +97,51 @@ struct PaxsenixProviderTests {
         #expect(lyrics.lines[0].words?[1].word == " there")
     }
 
+    @Test("Glues syllable parts of the same word together, keeping word spaces")
+    func syllablePartsAreGlued() {
+        let content = [
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 1000,
+                background: nil,
+                oppositeTurn: nil,
+                text: [
+                    PaxsenixLyricsResponse.ContentWord(text: "conver", timestamp: 1000, endtime: 1300, part: true),
+                    PaxsenixLyricsResponse.ContentWord(text: "sation", timestamp: 1300, endtime: 1700, part: false),
+                    PaxsenixLyricsResponse.ContentWord(text: "with", timestamp: 1700, endtime: 1900, part: false),
+                ]
+            ),
+        ]
+        let result = PaxsenixProvider.parseContent(content, syllable: true)
+        guard case let .synced(lyrics) = result else {
+            Issue.record("Expected synced result")
+            return
+        }
+        #expect(lyrics.hasWordTiming)
+        #expect(lyrics.lines[0].text == "conversation with")
+        #expect(lyrics.lines[0].words?.map(\.word) == ["conver", "sation", " with"])
+    }
+
+    @Test("Uses inter-span whitespace as word boundaries in TTML")
+    func parsesTTMLInterSpanWordBoundaries() {
+        let raw = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns="http://www.w3.org/ns/ttml">
+          <body><div>
+            <p begin="00:00:01.500" end="00:00:04.000">
+              <span begin="00:00:01.500" end="00:00:01.600">And</span> <span begin="00:00:01.700" end="00:00:01.800">you</span> <span begin="00:00:01.900" end="00:00:02.100">conver</span><span begin="00:00:02.100" end="00:00:02.400">sation</span> <span begin="00:00:02.500" end="00:00:02.800">with</span>
+            </p>
+          </div></body>
+        </tt>
+        """
+
+        let result = PaxsenixProvider.parseTTML(raw)
+
+        #expect(result?.lines.count == 1)
+        #expect(result?.hasWordTiming == true)
+        #expect(result?.lines[0].text == "And you conversation with")
+        #expect(result?.lines[0].words?.map(\.word) == ["And", " you", " conver", "sation", " with"])
+    }
+
     @Test("Converts non-syllable content arrays to plain lyrics")
     func parsesPlainContent() {
         let content = [
