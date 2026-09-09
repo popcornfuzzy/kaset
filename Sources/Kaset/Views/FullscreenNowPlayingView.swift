@@ -192,6 +192,10 @@ struct FullscreenNowPlayingView: View {
 
     private var lyricsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if self.syncedLyricsService.searchingForBetterLyrics {
+                ShimmerLine(text: String(localized: "Still searching for lyrics"))
+                    .padding(.horizontal, 8)
+            }
             Group {
                 if self.playerService.currentTrack == nil {
                     self.emptyLyricsState(icon: "play.circle", title: String(localized: "No Song Playing"), message: String(localized: "Play a song to view synced lyrics."))
@@ -242,9 +246,7 @@ struct FullscreenNowPlayingView: View {
             if let track = self.playerService.currentTrack,
                !track.title.isEmpty,
                track.title != "Loading...",
-               !track.artistsDisplay.isEmpty,
-               self.playerService.duration > 0,
-               self.playerService.isPlaying
+               !track.artistsDisplay.isEmpty
             {
                 await self.loadLyrics(for: videoId)
                 return
@@ -259,9 +261,7 @@ struct FullscreenNowPlayingView: View {
         guard let track = self.playerService.currentTrack, track.videoId == videoId else { return }
         guard !track.title.isEmpty,
               track.title != "Loading...",
-              !track.artistsDisplay.isEmpty,
-              self.playerService.duration > 0,
-              self.playerService.isPlaying
+              !track.artistsDisplay.isEmpty
         else { return }
         self.lastLoadedVideoId = videoId
         let info = LyricsSearchInfo(title: track.title, artist: track.artistsDisplay, album: track.album?.title, duration: self.playerService.duration > 0 ? self.playerService.duration : track.duration, videoId: track.videoId)

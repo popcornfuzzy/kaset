@@ -50,7 +50,7 @@ struct GeneralSettingsView: View {
                         Text(provider.displayName).tag(provider)
                     }
                 }
-                .help("Try Musixmatch first, then use LRCLIB when Musixmatch has no lyrics.")
+                .help("Try Paxsenix first, then use LRCLIB when Paxsenix has no lyrics.")
                 .onChange(of: self.settings.lyricsProvider) { _, _ in
                     self.syncedLyricsService.reloadProviderFromSettings()
                 }

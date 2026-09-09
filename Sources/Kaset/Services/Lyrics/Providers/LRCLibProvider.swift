@@ -17,6 +17,7 @@ struct LRCLibModel: Decodable {
 
 final class LRCLibProvider: LyricsProvider {
     let name = "LRCLib"
+    let capability: LyricsCapability = .line
     private let userAgent = "Kaset/1.0"
 
     func search(info: LyricsSearchInfo) async -> LyricResult {

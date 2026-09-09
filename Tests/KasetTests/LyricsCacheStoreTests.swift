@@ -236,6 +236,7 @@ struct SyncedLyricsServicePersistenceTests {
 
 private final class PersistenceMockProvider: LyricsProvider, @unchecked Sendable {
     let name = "PersistenceMockProvider"
+    let capability: LyricsCapability = .line
 
     private let result: LyricResult
     private let counter = PersistenceSearchCounter()

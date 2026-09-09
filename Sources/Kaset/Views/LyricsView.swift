@@ -184,13 +184,23 @@ struct LyricsView: View {
         } else if !self.hasLyricsForCurrentTrack || self.syncedLyricsService.isLoading || self.isLoadingFallback {
             self.loadingView
         } else {
-            switch self.syncedLyricsService.currentLyrics {
-            case let .synced(synced):
-                self.syncedLyricsContentView(synced)
-            case let .plain(plain):
-                self.plainLyricsContentView(plain)
-            case .unavailable:
-                self.noLyricsView
+            VStack(alignment: .leading, spacing: 0) {
+                // A lower-fidelity result is shown, but a better one may still
+                // arrive from another provider.
+                if self.syncedLyricsService.searchingForBetterLyrics {
+                    ShimmerLine(text: String(localized: "Still searching for lyrics"))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+
+                switch self.syncedLyricsService.currentLyrics {
+                case let .synced(synced):
+                    self.syncedLyricsContentView(synced)
+                case let .plain(plain):
+                    self.plainLyricsContentView(plain)
+                case .unavailable:
+                    self.noLyricsView
+                }
             }
         }
     }
@@ -533,9 +543,7 @@ struct LyricsView: View {
             if let track = self.playerService.currentTrack,
                !track.title.isEmpty,
                track.title != "Loading...",
-               !track.artistsDisplay.isEmpty,
-               self.playerService.duration > 0,
-               self.playerService.isPlaying
+               !track.artistsDisplay.isEmpty
             {
                 await self.loadLyrics(for: videoId)
                 return

@@ -66,6 +66,14 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         self.lines.isEmpty
     }
 
+    /// Whether any line carries per-word timings (karaoke-capable).
+    var hasWordTiming: Bool {
+        self.lines.contains { line in
+            if let words = line.words { return !words.isEmpty }
+            return false
+        }
+    }
+
 
     enum LineStatus {
         case previous, current, upcoming

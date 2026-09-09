@@ -91,14 +91,14 @@ final class SettingsManager {
     // MARK: - Lyrics Provider
 
     enum LyricsProviderChoice: String, CaseIterable, Identifiable {
-        case musixmatchAndLRCLib
+        case paxsenixAndLRCLib
         case lrclib
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .musixmatchAndLRCLib: "Musixmatch + LRCLIB"
+            case .paxsenixAndLRCLib: "Paxsenix + LRCLIB"
             case .lrclib: "LRCLIB"
             }
         }
@@ -238,9 +238,9 @@ final class SettingsManager {
         {
             self.lyricsProvider = provider
         } else {
-            self.lyricsProvider = .musixmatchAndLRCLib
+            self.lyricsProvider = .paxsenixAndLRCLib
             UserDefaults.standard.set(
-                LyricsProviderChoice.musixmatchAndLRCLib.rawValue,
+                LyricsProviderChoice.paxsenixAndLRCLib.rawValue,
                 forKey: Keys.lyricsProvider
             )
         }
