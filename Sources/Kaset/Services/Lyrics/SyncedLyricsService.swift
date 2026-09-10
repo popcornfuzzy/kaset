@@ -3,220 +3,335 @@ import Foundation
 @MainActor
 @Observable
 final class SyncedLyricsService {
-    private struct ResolvedLyrics {
-        let result: LyricResult
-        let activeProvider: String?
+    private struct InFlightSearch {
+        let id: UUID
+        let flight: SearchFlight
     }
 
-    /// Current lyrics result.
     var currentLyrics: LyricResult = .unavailable
-
-    /// Which provider supplied the current lyrics.
     var activeProvider: String?
-
-    /// Video ID for which `currentLyrics` is valid.
+    /// Provider currently being attempted; useful for loading-state feedback.
+    var loadingProvider: String?
     var currentLyricsVideoId: String?
-
-    /// Loading state.
     var isLoading = false
+    /// True while a lower-fidelity result is on screen but a higher-fidelity
+    /// provider is still searching (drives the "Still searching for lyrics"
+    /// shimmer). Cleared when the search completes or the best possible
+    /// capability has already arrived.
+    var searchingForBetterLyrics = false
+    var errorMessage: String?
 
-    /// All registered providers, ordered by priority.
-    private let providers: [LyricsProvider]
-
-    /// In-memory cache keyed by videoId.
+    private var providers: [LyricsProvider]
     private var cache: [String: LyricResult] = [:]
-
-    /// Optional persistent cache that stores one file per song.
-    /// When `nil`, the service only caches in memory (used by unit tests).
     private let cacheStore: LyricsCacheStore?
-
-    /// Monotonic identifier used to ignore stale in-flight searches.
     private var fetchGeneration = 0
+    private var inFlightSearches: [String: InFlightSearch] = [:]
 
-    init(
-        providers: [LyricsProvider] = [LRCLibProvider()],
-        cacheStore: LyricsCacheStore? = nil
-    ) {
-        self.providers = providers
+    init(providers: [LyricsProvider]? = nil, cacheStore: LyricsCacheStore? = nil) {
+        self.providers = providers ?? Self.providersForCurrentSettings()
         self.cacheStore = cacheStore
+    }
+
+    private static func providersForCurrentSettings() -> [LyricsProvider] {
+        switch SettingsManager.shared.lyricsProvider {
+        case .paxsenixAndLRCLib:
+            [PaxsenixProvider(), KuGoProvider(), LRCLibProvider()]
+        case .kugouAndLRCLib:
+            [KuGoProvider(), LRCLibProvider()]
+        case .lrclib:
+            [LRCLibProvider()]
+        }
+    }
+
+    func reloadProviderFromSettings() {
+        self.providers = Self.providersForCurrentSettings()
+        self.fetchGeneration += 1
+        for flight in self.inFlightSearches.values {
+            Task { await flight.flight.cancel() }
+        }
+        self.inFlightSearches.removeAll()
+        self.cacheStore?.removeAll(except: nil)
+        self.currentLyrics = .unavailable
+        self.activeProvider = nil
+        self.loadingProvider = nil
+        self.currentLyricsVideoId = nil
+        self.errorMessage = nil
+        self.isLoading = false
+        self.searchingForBetterLyrics = false
     }
 
     func clearCache(keepCurrent: Bool = true) {
         self.cache.removeAll()
+        for flight in self.inFlightSearches.values {
+            Task { await flight.flight.cancel() }
+        }
+        self.inFlightSearches.removeAll()
         self.cacheStore?.removeAll(except: keepCurrent ? self.currentLyricsVideoId : nil)
         if !keepCurrent {
             self.currentLyrics = .unavailable
             self.activeProvider = nil
+            self.loadingProvider = nil
             self.currentLyricsVideoId = nil
+            self.isLoading = false
+            self.searchingForBetterLyrics = false
         }
-    }
-
-    func isCachedUnavailable(for videoId: String) -> Bool {
-        if case .unavailable? = self.cache[videoId] {
-            return true
-        }
-
-        if case .unavailable? = self.cacheStore?.load(for: videoId) {
-            self.cache[videoId] = .unavailable
-            return true
-        }
-        return false
     }
 
     func fetchLyrics(for info: LyricsSearchInfo, forceRefresh: Bool = false) async {
-        self.fetchGeneration += 1
-        let requestID = self.fetchGeneration
-        var cached: LyricResult?
-
-        if !forceRefresh {
-            cached = self.cache[info.videoId] ?? self.cacheStore?.load(for: info.videoId)
-            if let cached {
-                self.cache[info.videoId] = cached
-            }
+        // A presentation transition can make fullscreen and sidebar request the
+        // same track at nearly the same time. Share that search rather than
+        // letting one view invalidate the other with a second request.
+        if !forceRefresh, let inFlight = self.inFlightSearches[info.videoId] {
+            self.isLoading = true
+            self.loadingProvider = self.providers.first?.name
+            let resolved = await inFlight.flight.value()
+            self.finishSearch(resolved, for: info.videoId, requestID: self.fetchGeneration, flightID: inFlight.id)
+            return
         }
 
+        // Lyrics are already loaded for this track. Serve them immediately
+        // instead of searching again — opening fullscreen (or re-opening the
+        // sidebar) must not re-run the provider pipeline.
+        if !forceRefresh,
+           self.currentLyricsVideoId == info.videoId,
+           self.currentLyrics.isAvailable
+        {
+            self.activeProvider = Self.source(of: self.currentLyrics)
+            self.isLoading = false
+            self.searchingForBetterLyrics = false
+            return
+        }
+
+        self.fetchGeneration += 1
+        let requestID = self.fetchGeneration
+        let cached = forceRefresh ? nil : self.cachedResult(for: info.videoId)
+
         if let cached {
-            self.applyResolvedLyrics(
-                .init(
-                    result: cached,
-                    activeProvider: Self.cachedProviderName(for: cached)
-                ),
-                requestID: requestID,
-                videoId: info.videoId
-            )
+            self.apply(cached, provider: Self.source(of: cached), videoId: info.videoId, requestID: requestID)
             return
         }
 
         self.isLoading = true
+        self.loadingProvider = self.providers.first?.name
+        self.errorMessage = nil
+        self.searchingForBetterLyrics = false
+        if forceRefresh {
+            self.cache.removeValue(forKey: info.videoId)
+            self.cacheStore?.remove(for: info.videoId)
+            // Treat a refresh like a fresh load: clear the displayed result so
+            // the concurrent search behaves exactly like opening the lyrics
+            // panel on a new song — the first result appears immediately and
+            // better results swap in with the shimmer.
+            self.currentLyrics = .unavailable
+            self.currentLyricsVideoId = nil
+        }
 
-        // Don't clear currentLyrics immediately to prevent flicker, but reset state when done
-        var allResults: [(provider: String, result: LyricResult)] = []
+        let flightID = UUID()
+        let flight = SearchFlight()
+        let providers = self.providers
+        self.inFlightSearches[info.videoId] = InFlightSearch(id: flightID, flight: flight)
 
-        // Fetch concurrently
-        await withTaskGroup(of: (String, LyricResult)?.self) { group in
-            for provider in self.providers {
+        // The search runs directly in the caller's task; the shared flight lets
+        // a concurrent caller for the same track await the same result instead
+        // of launching a second search.
+        let resolved = await Self.searchProviders(providers: providers, info: info) { [weak self] resolved in
+            self?.applySearchResult(
+                resolved,
+                videoId: info.videoId,
+                requestID: requestID,
+                providers: providers
+            )
+        }
+        await flight.fulfill(resolved)
+        self.finishSearch(resolved, for: info.videoId, requestID: requestID, flightID: flightID)
+    }
+
+    private func finishSearch(
+        _ resolved: ResolvedLyrics,
+        for videoId: String,
+        requestID: Int,
+        flightID: UUID
+    ) {
+        if self.inFlightSearches[videoId]?.id == flightID {
+            self.inFlightSearches.removeValue(forKey: videoId)
+        }
+
+        guard requestID == self.fetchGeneration else { return }
+        if !resolved.result.isAvailable {
+            self.errorMessage = "No lyrics were found from the selected sources."
+        }
+
+        // The best result across all providers is what future plays should read.
+        self.searchingForBetterLyrics = false
+        self.store(resolved.result, for: videoId)
+        self.apply(
+            resolved.result,
+            provider: resolved.providerName,
+            videoId: videoId,
+            requestID: requestID
+        )
+    }
+
+    /// Applies a provider result the moment it arrives during a concurrent
+    /// search. The first valid result is displayed immediately; a later result
+    /// replaces it only when it is strictly better (word > line > plain).
+    private func applySearchResult(
+        _ resolved: ResolvedLyrics,
+        videoId: String,
+        requestID: Int,
+        providers: [LyricsProvider]
+    ) {
+        guard requestID == self.fetchGeneration, resolved.result.isAvailable else { return }
+
+        let displayedRank = self.currentLyricsVideoId == videoId ? self.currentLyrics.capabilityRank : -1
+        guard resolved.capability.rawValue > displayedRank else { return }
+
+        self.apply(resolved.result, provider: resolved.providerName, videoId: videoId, requestID: requestID)
+
+        let maxCapability = providers.map(\.capability).max() ?? .plain
+        self.searchingForBetterLyrics = providers.count > 1 && resolved.capability < maxCapability
+    }
+
+    /// Searches every provider concurrently. Valid results are reported as they
+    /// arrive so the first one can be displayed immediately; the returned value
+    /// is the highest-fidelity result found across all providers.
+    @MainActor
+    private static func searchProviders(
+        providers: [LyricsProvider],
+        info: LyricsSearchInfo,
+        onResult: @MainActor (ResolvedLyrics) -> Void
+    ) async -> ResolvedLyrics {
+        var best: ResolvedLyrics?
+
+        await withTaskGroup(of: ResolvedLyrics.self) { group in
+            for provider in providers {
                 group.addTask {
                     let result = await provider.search(info: info)
-                    return (provider.name, result)
+                    return ResolvedLyrics(
+                        result: result,
+                        providerName: provider.name,
+                        capability: result.capability
+                    )
                 }
             }
 
-            for await res in group {
-                if let res {
-                    allResults.append(res)
+            for await resolved in group {
+                guard resolved.result.isAvailable else { continue }
+                onResult(resolved)
+                if let currentBest = best {
+                    if resolved.capability > currentBest.capability {
+                        best = resolved
+                    }
+                } else {
+                    best = resolved
                 }
             }
         }
 
-        // Pick best result
-        // Score: Synced = 2, Plain = 1, YTMusic = +1 bias
-        let best = allResults.max { a, b in
-            let scoreA = self.score(result: a.result, providerName: a.provider)
-            let scoreB = self.score(result: b.result, providerName: b.provider)
-            return scoreA < scoreB
+        guard let best else {
+            return ResolvedLyrics(result: .unavailable, providerName: nil, capability: .plain)
         }
-
-        let resolved = self.resolveLyrics(best: best, cached: cached, videoId: info.videoId)
-        self.applyResolvedLyrics(resolved, requestID: requestID, videoId: info.videoId)
+        return best
     }
 
-    /// Fallback logic
     func fallbackToPlainLyrics(_ lyrics: Lyrics, videoId: String) {
-        if case .synced = self.currentLyrics, self.currentLyricsVideoId == videoId {
-            // Already synced, don't overwrite with plain
-            return
-        }
-
-        if lyrics.isAvailable {
-            self.currentLyrics = .plain(lyrics)
-            self.activeProvider = lyrics.source
-            self.currentLyricsVideoId = videoId
-            self.storeInCache(.plain(lyrics), for: videoId)
-        } else {
-            self.currentLyrics = .unavailable
-            self.activeProvider = nil
-            self.currentLyricsVideoId = videoId
-            self.storeInCache(.unavailable, for: videoId)
-        }
+        guard !self.currentLyrics.isAvailable || self.currentLyricsVideoId != videoId else { return }
+        let result: LyricResult = lyrics.isAvailable ? .plain(lyrics) : .unavailable
+        self.store(result, for: videoId)
+        self.apply(result, provider: lyrics.source, videoId: videoId, requestID: self.fetchGeneration)
     }
 
-    private func score(result: LyricResult, providerName: String) -> Int {
-        var s = 0
-        switch result {
-        case .synced: s += 2
-        case .plain: s += 1
-        case .unavailable: return -1 // Disqualified
-        }
-
-        if providerName == "YTMusic" {
-            s += 1
-        }
-        return s
+    private func cachedResult(for videoId: String) -> LyricResult? {
+        let result = self.cache[videoId] ?? self.cacheStore?.load(for: videoId)
+        guard let result else { return nil }
+        self.cache[videoId] = result
+        return result
     }
 
-    private func resolveLyrics(
-        best: (provider: String, result: LyricResult)?,
-        cached: LyricResult?,
-        videoId: String
-    ) -> ResolvedLyrics {
-        if let best {
-            switch best.result {
-            case .synced:
-                self.storeInCache(best.result, for: videoId)
-                return .init(result: best.result, activeProvider: best.provider)
-            case .plain:
-                if case let .plain(cachedPlain)? = cached {
-                    return .init(result: .plain(cachedPlain), activeProvider: cachedPlain.source)
-                }
-
-                self.storeInCache(best.result, for: videoId)
-                return .init(result: best.result, activeProvider: best.provider)
-            case .unavailable:
-                break
-            }
-        }
-
-        if case let .plain(cachedPlain)? = cached {
-            return .init(result: .plain(cachedPlain), activeProvider: cachedPlain.source)
-        }
-
-        self.storeInCache(.unavailable, for: videoId)
-        return .init(result: .unavailable, activeProvider: nil)
-    }
-
-    /// Stores a result in memory and, when enabled, in the per-song file cache.
-    private func storeInCache(_ result: LyricResult, for videoId: String) {
+    private func store(_ result: LyricResult, for videoId: String) {
         self.cache[videoId] = result
         self.cacheStore?.save(result, for: videoId)
     }
 
-    /// Splits a legacy single-file lyrics cache into per-song files.
-    /// Runs the disk work off the main actor so it stays in the background.
+    private func apply(_ result: LyricResult, provider: String?, videoId: String, requestID: Int) {
+        guard requestID == self.fetchGeneration else { return }
+        self.currentLyrics = result
+        self.activeProvider = provider ?? Self.source(of: result)
+        self.loadingProvider = nil
+        self.currentLyricsVideoId = videoId
+        self.isLoading = false
+        if case .synced = result {
+            SingletonPlayerWebView.shared.startLyricsPoll()
+            SingletonPlayerWebView.shared.sendCurrentLyricsTime()
+        } else {
+            SingletonPlayerWebView.shared.stopLyricsPoll()
+        }
+    }
+
+    private static func source(of result: LyricResult) -> String? {
+        switch result {
+        case let .synced(lyrics): lyrics.source
+        case let .plain(lyrics): lyrics.source
+        case .unavailable: nil
+        }
+    }
+
     func migrateLegacyCacheIfNeeded() async {
         guard let cacheStore else { return }
-
         _ = await Task.detached(priority: .utility) {
             cacheStore.migrateLegacyCacheIfNeeded()
         }.value
     }
+}
 
-    private func applyResolvedLyrics(_ resolved: ResolvedLyrics, requestID: Int, videoId: String) {
-        guard requestID == self.fetchGeneration else { return }
+// MARK: - SearchFlight
 
-        self.currentLyrics = resolved.result
-        self.activeProvider = resolved.activeProvider
-        self.currentLyricsVideoId = videoId
-        self.isLoading = false
+/// The outcome of a finished search: the best result found across providers
+/// plus the provider that produced it.
+private struct ResolvedLyrics: Sendable {
+    let result: LyricResult
+    let providerName: String?
+    let capability: LyricsCapability
+}
+
+/// A single shared in-flight search. The first caller runs the search and
+/// fulfills the flight; concurrent callers for the same track await the same
+/// result instead of launching a second search.
+private actor SearchFlight {
+    private var result: ResolvedLyrics?
+    private var isCancelled = false
+    private var waiters: [CheckedContinuation<ResolvedLyrics, Never>] = []
+
+    func value() async -> ResolvedLyrics {
+        if let result { return result }
+        if self.isCancelled {
+            return ResolvedLyrics(result: LyricResult.unavailable, providerName: nil, capability: LyricsCapability.plain)
+        }
+        return await withCheckedContinuation { continuation in
+            self.waiters.append(continuation)
+        }
     }
 
-    private static func cachedProviderName(for result: LyricResult) -> String? {
-        switch result {
-        case let .synced(lyrics):
-            lyrics.source
-        case let .plain(lyrics):
-            lyrics.source
-        case .unavailable:
-            nil
+    func fulfill(_ value: ResolvedLyrics) {
+        guard self.result == nil, !self.isCancelled else { return }
+        self.result = value
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: value)
+        }
+    }
+
+    /// Marks the flight cancelled so waiting callers resolve to `.unavailable`
+    /// instead of hanging (e.g. when the provider set is reloaded).
+    func cancel() {
+        guard self.result == nil, !self.isCancelled else { return }
+        self.isCancelled = true
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        let unavailable = ResolvedLyrics(result: LyricResult.unavailable, providerName: nil, capability: LyricsCapability.plain)
+        for waiter in waiters {
+            waiter.resume(returning: unavailable)
         }
     }
 }

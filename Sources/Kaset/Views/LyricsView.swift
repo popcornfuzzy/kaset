@@ -10,6 +10,7 @@ struct LyricsView: View {
     let client: any YTMusicClientProtocol
 
     @State private var lastLoadedVideoId: String?
+    @State private var loadTask: Task<Void, Never>?
     @State private var isLoadingFallback = false
 
     // AI explanation state
@@ -47,48 +48,42 @@ struct LyricsView: View {
         }
         .glassEffectTransition(.materialize)
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
+            self.loadTask?.cancel()
             if let videoId = newVideoId, videoId != lastLoadedVideoId {
                 // Reset explanation when track changes
                 self.lyricsSummary = nil
                 self.partialSummary = nil
                 self.showExplanation = false
                 self.explanationError = nil
-                Task {
-                    await self.loadLyrics(for: videoId)
-                }
+                self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
             }
         }
         .onChange(of: self.playerService.currentTrack?.title) { _, _ in
             guard let videoId = self.playerService.currentTrack?.videoId else { return }
 
-            let hasSyncedLyrics: Bool = {
-                if case .synced = self.syncedLyricsService.currentLyrics, self.syncedLyricsService.currentLyricsVideoId == videoId { return true }
-                return false
-            }()
-
-            // Re-trigger if metadata stabilized after a skipped or failed fetch
-            guard videoId != self.lastLoadedVideoId || !hasSyncedLyrics else { return }
-            Task {
-                await self.loadLyrics(for: videoId)
-            }
+            guard videoId != self.lastLoadedVideoId else { return }
+            self.loadTask?.cancel()
+            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
         }
         .onChange(of: self.playerService.duration) { _, newDuration in
-            guard let videoId = self.playerService.currentTrack?.videoId else { return }
-            guard newDuration > 0 else { return }
-
-            let hasSyncedLyrics: Bool = {
-                if case .synced = self.syncedLyricsService.currentLyrics, self.syncedLyricsService.currentLyricsVideoId == videoId { return true }
-                return false
-            }()
-
-            guard !hasSyncedLyrics else { return }
-            Task {
-                await self.loadLyrics(for: videoId)
-            }
+            guard newDuration > 0,
+                  let videoId = self.playerService.currentTrack?.videoId,
+                  videoId != self.lastLoadedVideoId
+            else { return }
+            self.loadTask?.cancel()
+            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+        }
+        .onChange(of: self.playerService.isPlaying) { _, isPlaying in
+            guard isPlaying,
+                  let videoId = self.playerService.currentTrack?.videoId,
+                  videoId != self.lastLoadedVideoId
+            else { return }
+            self.loadTask?.cancel()
+            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
         }
         .task {
             if let videoId = playerService.currentTrack?.videoId {
-                await self.loadLyrics(for: videoId)
+                await self.loadLyricsWhenReady(for: videoId)
             }
         }
         .onChange(of: self.syncedLyricsService.currentLyrics) { _, newLyrics in
@@ -102,6 +97,9 @@ struct LyricsView: View {
         }
         .onAppear {
             self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+            if case .synced = self.syncedLyricsService.currentLyrics {
+                SingletonPlayerWebView.shared.sendCurrentLyricsTime()
+            }
         }
     }
 
@@ -186,13 +184,23 @@ struct LyricsView: View {
         } else if !self.hasLyricsForCurrentTrack || self.syncedLyricsService.isLoading || self.isLoadingFallback {
             self.loadingView
         } else {
-            switch self.syncedLyricsService.currentLyrics {
-            case let .synced(synced):
-                self.syncedLyricsContentView(synced)
-            case let .plain(plain):
-                self.plainLyricsContentView(plain)
-            case .unavailable:
-                self.noLyricsView
+            VStack(alignment: .leading, spacing: 0) {
+                // A lower-fidelity result is shown, but a better one may still
+                // arrive from another provider.
+                if self.syncedLyricsService.searchingForBetterLyrics {
+                    ShimmerLine(text: String(localized: "Still searching for lyrics"))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+
+                switch self.syncedLyricsService.currentLyrics {
+                case let .synced(synced):
+                    self.syncedLyricsContentView(synced)
+                case let .plain(plain):
+                    self.plainLyricsContentView(plain)
+                case .unavailable:
+                    self.noLyricsView
+                }
             }
         }
     }
@@ -205,6 +213,11 @@ struct LyricsView: View {
             Text("Loading lyrics...", comment: "Lyrics panel loading state")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            if let provider = self.syncedLyricsService.loadingProvider {
+                Text(String(localized: "Searching \(provider)"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -228,14 +241,34 @@ struct LyricsView: View {
                 Divider().opacity(0.3)
             }
 
-            SyncedLyricsDisplayView(
-                lyrics: synced,
-                currentTimeMs: self.playerService.currentTimeMs,
-                onSeek: { timeMs in
-                    Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
-                }
-            )
-            .background(Color.clear)
+            VStack(spacing: 0) {
+                SyncedLyricsDisplayView(
+                        lyrics: synced,
+                        currentTimeMs: self.playerService.currentTimeMs,
+                        onSeek: { timeMs in
+                            Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
+                        }
+                    )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
+
+                self.sourceFooter(synced.source)
+            }
+            .onAppear {
+                self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+            }
+        }
+    }
+
+    private func sourceFooter(_ source: String) -> some View {
+        VStack(spacing: 0) {
+            Divider().opacity(0.3)
+            Text("Source: \(source)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
         }
     }
 
@@ -271,7 +304,7 @@ struct LyricsView: View {
                     Divider()
                         .padding(.horizontal, 16)
 
-                    Text(source)
+                    Text(source.hasPrefix("Source:") ? source : "Source: \(source)")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 16)
@@ -411,7 +444,7 @@ struct LyricsView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Text("There aren't any lyrics available for this song.", comment: "Lyrics unavailable message")
+            Text(self.syncedLyricsService.errorMessage ?? String(localized: "There aren't any lyrics available for this song."))
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -443,8 +476,6 @@ struct LyricsView: View {
 
     @MainActor
     private func loadLyrics(for videoId: String, forceRefresh: Bool = false) async {
-        self.isLoadingFallback = false
-
         guard let track = playerService.currentTrack else { return }
 
         // Don't search if it's not the current track anymore
@@ -475,10 +506,9 @@ struct LyricsView: View {
             self.syncedLyricsService.currentLyricsVideoId = videoId
         }
 
-        guard self.lastLoadedVideoId == videoId else { return }
         guard self.playerService.currentTrack?.videoId == videoId else { return }
 
-        // As a fallback to provide plain lyrics
+        /* Legacy YouTube Music plain-lyrics fallback retained for future opt-in.
         if case .unavailable = self.syncedLyricsService.currentLyrics {
             if !forceRefresh, self.syncedLyricsService.isCachedUnavailable(for: videoId) {
                 return
@@ -501,6 +531,24 @@ struct LyricsView: View {
             } catch {
                 DiagnosticsLogger.api.error("Failed to load plain lyrics fallback: \(error.localizedDescription)")
             }
+        }
+        */
+    }
+
+    @MainActor
+    private func loadLyricsWhenReady(for videoId: String) async {
+        for _ in 0 ..< 20 {
+            guard !Task.isCancelled else { return }
+            guard self.playerService.currentTrack?.videoId == videoId else { return }
+            if let track = self.playerService.currentTrack,
+               !track.title.isEmpty,
+               track.title != "Loading...",
+               !track.artistsDisplay.isEmpty
+            {
+                await self.loadLyrics(for: videoId)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 

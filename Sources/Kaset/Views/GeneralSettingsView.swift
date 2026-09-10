@@ -45,6 +45,16 @@ struct GeneralSettingsView: View {
                 Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
                     .help("Fetch and display real-time synced lyrics when available")
 
+                Picker("Synced Lyrics Source", selection: self.$settings.lyricsProvider) {
+                    ForEach(SettingsManager.LyricsProviderChoice.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .help("Search Paxsenix, KuGo, and LRCLIB concurrently; word-synced results upgrade line-synced ones.")
+                .onChange(of: self.settings.lyricsProvider) { _, _ in
+                    self.syncedLyricsService.reloadProviderFromSettings()
+                }
+
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Lyrics Cache")

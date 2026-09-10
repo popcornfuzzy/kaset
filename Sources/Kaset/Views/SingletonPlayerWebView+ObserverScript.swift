@@ -214,7 +214,7 @@ extension SingletonPlayerWebView {
             let lyricsPollId = null;
             window.startLyricsPoll = function() {
                 if (lyricsPollId) return;
-                lyricsPollId = setInterval(() => {
+                const sendLyricsTime = () => {
                     const v = document.querySelector('video');
                     if (v) {
                         bridge.postMessage({
@@ -222,7 +222,17 @@ extension SingletonPlayerWebView {
                             time: v.currentTime
                         });
                     }
-                }, 100);
+                };
+                window.sendLyricsTime = sendLyricsTime;
+                sendLyricsTime();
+                lyricsPollId = setInterval(sendLyricsTime, 100);
+            };
+
+            window.sendLyricsTime = window.sendLyricsTime || function() {
+                const v = document.querySelector('video');
+                if (v) {
+                    bridge.postMessage({ type: 'LYRICS_TIME', time: v.currentTime });
+                }
             };
 
             window.stopLyricsPoll = function() {
