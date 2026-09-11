@@ -411,6 +411,38 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrack?.likeStatus == .like)
     }
 
+    // MARK: - Track Change Tests
+
+    @Test("Queue advance releases the previous track's like state")
+    func queueAdvanceReleasesPreviousTrackLikeState() async {
+        let liked = TestFixtures.makeSong(id: "liked-video")
+        let next = TestFixtures.makeSong(id: "next-video")
+        await self.playerService.playQueue([liked, next], startingAt: 0)
+
+        // The user liked the playing song; the next queue song must not inherit that state.
+        self.playerService.currentTrackLikeStatus = .like
+        self.playerService.currentTrackInLibrary = true
+        self.playerService.currentTrackFeedbackTokens = FeedbackTokens(add: "add", remove: "remove")
+
+        await self.playerService.next()
+
+        #expect(self.playerService.currentTrack?.videoId == "next-video")
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(self.playerService.currentTrackInLibrary == false)
+        #expect(self.playerService.currentTrackFeedbackTokens == nil)
+    }
+
+    @Test("Replaying the same video keeps its like status")
+    func replayingSameVideoKeepsLikeStatus() async {
+        let song = TestFixtures.makeSong(id: "repeated-video")
+        await self.playerService.playQueue([song], startingAt: 0)
+        self.playerService.currentTrackLikeStatus = .like
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+    }
+
     // MARK: - Reset Track Status Tests
 
     @Test("resetTrackStatus resets all status properties")

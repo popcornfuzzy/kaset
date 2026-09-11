@@ -524,6 +524,13 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
 
+        // See `play(song:webLoadStrategy:episode:)`: release the previous video's per-track state.
+        // Compare against the last loaded video so callers that update `currentTrack` before
+        // calling in (e.g. `playWithMix`) still release it.
+        if (self.pendingPlayVideoId ?? self.currentTrack?.videoId) != videoId {
+            self.resetTrackStatus()
+        }
+
         // Create a minimal Song object for now
         self.currentTrack = Song(
             id: videoId,
@@ -567,7 +574,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        let previousVideoId = self.currentTrack?.videoId
         self.currentTrack = song
+
+        // Kaset-driven track changes (`next()`, `previous()`, `playFromQueue`) don't produce a
+        // WebView metadata change, so `updateTrackMetadata`'s `trackChanged` reconciliation never
+        // runs. Reset the outgoing song's like/library state here so it cannot stick to the
+        // incoming song.
+        if previousVideoId != song.videoId {
+            self.resetTrackStatus()
+        }
 
         // Mark that we initiated this playback (to detect and correct YouTube's autoplay override)
         self.isKasetInitiatedPlayback = true
