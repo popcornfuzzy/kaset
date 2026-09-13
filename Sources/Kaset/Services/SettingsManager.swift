@@ -22,6 +22,7 @@ final class SettingsManager {
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
         static let lyricsProvider = "settings.lyricsProvider"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
+        static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
     }
 
     // MARK: - Launch Page Options
@@ -215,6 +216,13 @@ final class SettingsManager {
         }
     }
 
+    /// Whether animated album canvases are shown in the fullscreen now-playing view.
+    var animatedCanvasEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.animatedCanvasEnabled, forKey: Keys.animatedCanvasEnabled)
+        }
+    }
+
     // MARK: - Initialization
 
     private init() {
@@ -247,6 +255,7 @@ final class SettingsManager {
             )
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
+        self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),
            let style = MediaControlStyle(rawValue: rawValue)

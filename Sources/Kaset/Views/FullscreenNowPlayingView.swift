@@ -6,6 +6,7 @@ import SwiftUI
 struct FullscreenNowPlayingView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
+    @Environment(CanvasService.self) private var canvasService
 
     let client: any YTMusicClientProtocol
 
@@ -16,6 +17,8 @@ struct FullscreenNowPlayingView: View {
     @State private var lyricsTimeMs: Int = 0
     @State private var isSeeking = false
     @State private var escapeKeyMonitor: Any?
+    @State private var canvasReady = false
+    @State private var canvasFailed = false
 
     private var hasLyricsForCurrentTrack: Bool {
         guard let videoId = self.playerService.currentTrack?.videoId else { return false }
@@ -69,6 +72,8 @@ struct FullscreenNowPlayingView: View {
             self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
             self.lyricsTimeMs = self.playerService.currentTimeMs
             self.installEscapeKeyMonitorIfNeeded()
+            self.canvasReady = false
+            self.canvasFailed = false
         }
         .onChange(of: self.playerService.progress) { _, _ in
             if !self.isSeeking { self.seekValue = self.normalizedProgress }
@@ -97,10 +102,17 @@ struct FullscreenNowPlayingView: View {
         .onChange(of: self.syncedLyricsService.currentLyrics) { _, newLyrics in
             self.updateLyricsPolling(for: newLyrics)
         }
+        .onChange(of: self.canvasService.currentCanvasURL) { _, _ in
+            self.canvasReady = false
+            self.canvasFailed = false
+        }
         .task {
             if let videoId = self.playerService.currentTrack?.videoId {
                 await self.loadLyricsWhenReady(for: videoId)
             }
+        }
+        .task(id: self.canvasTaskID) {
+            await self.loadCanvasWhenReady()
         }
         .onDisappear {
             self.removeEscapeKeyMonitor()
@@ -148,10 +160,30 @@ struct FullscreenNowPlayingView: View {
     }
 
     private var artworkCard: some View {
-        CachedAsyncImage(url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL) { image in
-            image.resizable().aspectRatio(contentMode: .fit)
-        } placeholder: {
-            ZStack { RoundedRectangle(cornerRadius: 22).fill(.white.opacity(0.08)); CassetteIcon(size: 76).foregroundStyle(.white.opacity(0.7)) }
+        ZStack {
+            // The YouTube Music still album art is always the base layer; the
+            // animated canvas crossfades in above it once ready.
+            CachedAsyncImage(url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL) { image in
+                image.resizable().aspectRatio(contentMode: .fit)
+            } placeholder: {
+                ZStack { RoundedRectangle(cornerRadius: 22).fill(.white.opacity(0.08)); CassetteIcon(size: 76).foregroundStyle(.white.opacity(0.7)) }
+            }
+
+            if self.shouldShowCanvas, let canvasURL = self.canvasService.currentCanvasURL {
+                CanvasVideoView(
+                    url: canvasURL,
+                    onReadyToPlay: { self.canvasReady = true },
+                    onFailure: {
+                        // Keep the still artwork: stop showing and unmount the
+                        // failed player so it is not retried every render.
+                        self.canvasReady = false
+                        self.canvasFailed = true
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .opacity(self.canvasReady ? 1 : 0)
+                .animation(self.shouldAnimateCanvas ? .easeInOut(duration: 0.6) : nil, value: self.canvasReady)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 22)).aspectRatio(1, contentMode: .fit)
         .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
@@ -236,6 +268,52 @@ struct FullscreenNowPlayingView: View {
     private func closeFullscreenNowPlaying() { withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false } }
     private func installEscapeKeyMonitorIfNeeded() { guard self.escapeKeyMonitor == nil else { return }; self.escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in if event.keyCode == 53 { self.closeFullscreenNowPlaying(); return nil }; return event } }
     private func removeEscapeKeyMonitor() { guard let monitor = self.escapeKeyMonitor else { return }; NSEvent.removeMonitor(monitor); self.escapeKeyMonitor = nil }
+
+    /// Canvas is shown only for the current non-podcast track when the feature
+    /// is enabled and the video did not fail to load.
+    private var shouldShowCanvas: Bool {
+        guard SettingsManager.shared.animatedCanvasEnabled,
+              !self.canvasFailed,
+              let track = self.playerService.currentTrack,
+              !self.playerService.isCurrentTrackPodcast
+        else { return false }
+        return self.canvasService.currentCanvasVideoId == track.videoId
+    }
+
+    private var shouldAnimateCanvas: Bool {
+        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    /// Restarts the canvas lookup whenever the fullscreen view opens or the
+    /// track changes (`.task(id:)` cancels the previous lookup).
+    private var canvasTaskID: String {
+        self.playerService.currentTrack?.videoId ?? "none"
+    }
+
+    @MainActor
+    private func loadCanvasWhenReady() async {
+        guard let videoId = self.playerService.currentTrack?.videoId else { return }
+        for _ in 0 ..< 40 {
+            guard !Task.isCancelled,
+                  self.playerService.currentTrack?.videoId == videoId
+            else { return }
+            if let track = self.playerService.currentTrack,
+               !track.title.isEmpty,
+               track.title != "Loading...",
+               !track.artistsDisplay.isEmpty
+            {
+                let info = CanvasSearchInfo(
+                    title: track.title,
+                    artist: track.artistsDisplay,
+                    album: track.album?.title,
+                    videoId: track.videoId
+                )
+                await self.canvasService.loadCanvas(for: info)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
 
     @MainActor
     private func loadLyricsWhenReady(for videoId: String) async {

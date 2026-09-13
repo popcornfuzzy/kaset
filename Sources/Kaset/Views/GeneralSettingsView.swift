@@ -5,10 +5,13 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @Environment(AuthService.self) private var authService
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
+    @Environment(CanvasService.self) private var canvasService
     @State private var settings = SettingsManager.shared
     @State private var cacheSize: String = .init(localized: "Calculating...")
     @State private var isClearing = false
     @State private var isClearingLyricsCache = false
+    @State private var canvasCacheSize: String = .init(localized: "Calculating...")
+    @State private var isClearingCanvasCache = false
 
     var body: some View {
         Form {
@@ -108,6 +111,32 @@ struct GeneralSettingsView: View {
                 Text("General")
             }
 
+            // MARK: - Animated Canvas Section
+
+            Section {
+                Toggle("Enable Animated Canvas", isOn: self.$settings.animatedCanvasEnabled)
+                    .help("Play looping album canvas videos in fullscreen now playing when available")
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Canvas Cache")
+                        Text(self.canvasCacheSize)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(self.isClearingCanvasCache ? String(localized: "Clearing...") : String(localized: "Clear Cache")) {
+                        Task {
+                            await self.clearCanvasCache()
+                        }
+                    }
+                    .disabled(self.isClearingCanvasCache)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Animated Canvas")
+            }
+
             // MARK: - Now Playing Section
 
             Section {
@@ -128,6 +157,7 @@ struct GeneralSettingsView: View {
         .navigationTitle("General")
         .task {
             await self.updateCacheSize()
+            await self.updateCanvasCacheSize()
         }
         .onChange(of: self.settings.safeAdBlockingEnabled) { _, enabled in
             SingletonPlayerWebView.shared.setSafeAdBlockingEnabled(enabled)
@@ -158,5 +188,17 @@ struct GeneralSettingsView: View {
         self.isClearingLyricsCache = true
         self.syncedLyricsService.clearCache(keepCurrent: true)
         self.isClearingLyricsCache = false
+    }
+
+    private func updateCanvasCacheSize() async {
+        let size = await self.canvasService.diskCacheSize()
+        self.canvasCacheSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    private func clearCanvasCache() async {
+        self.isClearingCanvasCache = true
+        await self.canvasService.clearCache()
+        await self.updateCanvasCacheSize()
+        self.isClearingCanvasCache = false
     }
 }
