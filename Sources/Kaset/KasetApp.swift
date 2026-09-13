@@ -37,6 +37,7 @@ struct KasetApp: App {
     @State private var accountService: AccountService?
     @State private var scrobblingCoordinator: ScrobblingCoordinator
     @State private var syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
+    @State private var canvasService = CanvasService()
 
     /// Triggers search field focus when set to true.
     @State private var searchFocusTrigger = false
@@ -120,6 +121,7 @@ struct KasetApp: App {
                     .environment(self.accountService)
                     .environment(self.scrobblingCoordinator)
                     .environment(self.syncedLyricsService)
+                    .environment(self.canvasService)
                     .environment(\.searchFocusTrigger, self.$searchFocusTrigger)
                     .environment(\.navigationSelection, self.$navigationSelection)
                     .environment(\.showCommandBar, self.$showCommandBar)
@@ -159,6 +161,7 @@ struct KasetApp: App {
                 .environment(self.updaterService)
                 .environment(self.scrobblingCoordinator)
                 .environment(self.syncedLyricsService)
+                .environment(self.canvasService)
         }
         .commands {
             // Check for Updates command in app menu
