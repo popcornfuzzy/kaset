@@ -48,6 +48,9 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     /// network error) and then succeed afterwards. Lets tests simulate transient failures.
     var rateSongFailuresBeforeSuccess: Int = 0
     var getSongDelay: Duration?
+    /// Artificial latency for playlist continuation requests, so tests can exercise page loads
+    /// that overlap.
+    var playlistContinuationDelay: Duration?
     var shouldAutoUpdatePlaylistLibraryOnMutation = true
     var shouldAutoUpdatePodcastLibraryOnMutation = true
     var shouldAutoUpdateArtistLibraryOnMutation = true
@@ -567,6 +570,11 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     func getPlaylistContinuation() async throws -> PlaylistContinuationResponse? {
         self.getPlaylistContinuationCalled = true
         self.getPlaylistContinuationCallCount += 1
+        if let playlistContinuationDelay = self.playlistContinuationDelay {
+            // Unlike the other stub delays this one propagates cancellation: a cancelled
+            // request must not consume the continuation, matching URLSession behaviour.
+            try await Task.sleep(for: playlistContinuationDelay)
+        }
         if let error = shouldThrowError { throw error }
         guard let playlistId = _currentPlaylistId,
               let continuations = playlistContinuationTracks[playlistId],

@@ -829,12 +829,18 @@ Cancel async work when views disappear or inputs change:
 Before completing non-trivial features, verify:
 
 - [ ] No `await` calls inside loops or `ForEach`
-- [ ] Lists use `LazyVStack`/`LazyHStack` for large datasets
+- [ ] Long, scroll-critical lists of rich rows use `List`, not `ScrollView` + `LazyVStack`:
+      a `LazyVStack` re-measures and re-renders the whole realised page every scroll frame, so
+      scroll cost scales with each row's view-tree size — see [adr/0014](adr/0014-playlist-scroll-performance.md)
 - [ ] Network calls cancelled on view disappear (`.task` handles this)
 - [ ] Parsers have `measure {}` tests if processing large payloads
 - [ ] Images use `ImageCache` with appropriate `targetSize`
 - [ ] Search input is debounced (not firing on every keystroke)
 - [ ] ForEach uses stable identity (avoid `Array(enumerated())` unless needed)
+- [ ] Large lists use their own row view (not inline row builders in the parent body) so a
+      parent update doesn't rebuild every visible row — see [adr/0014](adr/0014-playlist-scroll-performance.md)
+- [ ] Rows under a right-clicked menu in a `List` don't draw a stray focus ring
+      (`.focusEffectDisabled()`)
 
 ## UI Design (macOS 26+)
 

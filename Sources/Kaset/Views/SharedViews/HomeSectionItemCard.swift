@@ -22,6 +22,14 @@ struct HomeSectionItemCard: View {
         self.action = action
     }
 
+    /// TEMPORARY: honors the PerfHUD "Materials" switch (see PerfHUD).
+    private var playOverlayStyle: AnyShapeStyle {
+        if PerfHUD.isEnabled, !PerfHUD.shared.usesMaterials {
+            return AnyShapeStyle(Color.black.opacity(0.35))
+        }
+        return AnyShapeStyle(.ultraThinMaterial)
+    }
+
     var body: some View {
         Button(action: self.action) {
             if let rank {
@@ -88,7 +96,7 @@ struct HomeSectionItemCard: View {
             // Play overlay on hover (for songs)
             if case .song = self.item, self.isHovering {
                 Circle()
-                    .fill(.ultraThinMaterial)
+                    .fill(self.playOverlayStyle)
                     .frame(width: 48, height: 48)
                     .overlay {
                         Image(systemName: "play.fill")

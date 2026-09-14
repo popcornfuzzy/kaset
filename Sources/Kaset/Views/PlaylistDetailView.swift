@@ -53,11 +53,21 @@ struct PlaylistDetailView: View {
     /// Error message for playlist management actions.
     @State private var playlistActionError: String?
 
-    /// Row key currently showing Add-to-Playlist popover (opened from context menu action).
-    @State private var addToPlaylistPopoverRowKey: String?
+    /// Whether the track list is scrolling. Used to suspend row hover highlighting so rows
+    /// passing under a stationary pointer don't animate their background mid-flick.
+    @State private var isScrolling: Bool = false
 
-    /// Song currently selected for Add-to-Playlist popover.
-    @State private var addToPlaylistPopoverSong: Song?
+    /// Scroll distance from the bottom, in points, at which the next page is requested.
+    /// Requesting a page this early keeps the fetch and its spinner below the visible
+    /// window, so scrolling never waits on the network.
+    private static let paginationThreshold: CGFloat = 1200
+
+    /// Bucket size for the near-bottom check. Bucketing instead of a plain boolean means a
+    /// short page that still leaves the list near its bottom triggers on the next nudge.
+    private static let paginationBucket: CGFloat = 200
+
+    /// How many upcoming rows' artwork to warm in the image cache.
+    private static let thumbnailPrefetchWindow = 60
 
     /// Computed property to check if playlist is in library.
     private var isInLibrary: Bool {
@@ -146,27 +156,62 @@ struct PlaylistDetailView: View {
 
     // MARK: - Views
 
+    /// The header, divider and tracks live in one AppKit-backed `List`, whose rows are laid out
+    /// and reused by NSTableView. A `ScrollView` + `LazyVStack` re-measures and re-renders the
+    /// whole realised page on every scroll frame, which made the per-frame cost proportional to
+    /// the rows' view-tree size — see ADR-0014 for the measurements.
     private func contentView(_ detail: PlaylistDetail) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        self.withScrollObservers(
+            List {
                 // Header
                 self.headerView(detail)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 24, trailing: 24))
+                    .listRowBackground(Color.clear)
 
                 Divider()
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                    .listRowBackground(Color.clear)
 
                 // Tracks
-                let fallbackAlbum = Album(
-                    id: detail.id,
-                    title: detail.title,
-                    artists: detail.author.map { [Artist(id: "unknown", name: $0)] },
-                    thumbnailURL: detail.thumbnailURL,
-                    year: nil,
-                    trackCount: detail.trackCount ?? detail.tracks.count
-                )
-                self.tracksView(detail.tracks, isAlbum: detail.isAlbum, author: detail.author, fallbackAlbum: fallbackAlbum)
+                self.trackRows(detail)
             }
-            .padding(24)
-        }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            // Rows are click targets rather than controls: without this, the row under a
+            // right-click keeps the accent-coloured focus ring drawn around it.
+            .focusEffectDisabled()
+            .task(id: detail.tracks.count) {
+                await self.prefetchUpcomingThumbnails(for: detail.tracks)
+            }
+        )
+    }
+
+    /// Paging and hover suppression are attached to whichever scroll container renders the page.
+    private func withScrollObservers<V: View>(_ content: V) -> some View {
+        content
+            .onScrollPhaseChange { _, newPhase, _ in
+                // Suspend hover highlighting while rows move under a stationary pointer.
+                let isScrolling = newPhase != .idle
+                if isScrolling != self.isScrolling {
+                    self.isScrolling = isScrolling
+                }
+            }
+            .onScrollGeometryChange(for: Int.self) { geometry in
+                // Bucket the remaining scroll distance so the value keeps changing as the user
+                // scrolls near the bottom instead of latching true.
+                guard self.viewModel.hasMore else { return .max }
+                let remaining = geometry.contentSize.height
+                    - (geometry.contentOffset.y + geometry.containerSize.height)
+                guard remaining < Self.paginationThreshold else { return .max }
+                return max(0, Int(remaining / Self.paginationBucket))
+            } action: { _, bucket in
+                guard bucket != .max else { return }
+                Task {
+                    await self.viewModel.loadMore()
+                }
+            }
     }
 
     private func headerView(_ detail: PlaylistDetail) -> some View {
@@ -411,237 +456,88 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private func tracksView(_ tracks: [Song], isAlbum: Bool, author: String?, fallbackAlbum: Album? = nil) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                self.trackRow(track, index: index, tracks: tracks, isAlbum: isAlbum, author: author, fallbackAlbum: fallbackAlbum)
-                    .onAppear {
-                        // Load more when reaching the last few items
-                        if index >= tracks.count - 3, self.viewModel.hasMore {
-                            Task { await self.viewModel.loadMore() }
-                        }
-                    }
-
-                if index < tracks.count - 1 {
-                    Divider()
-                        // For albums: 28 (index) + 12 (spacing)
-                        // For playlists: 28 (index) + 12 (spacing) + 40 (thumbnail) + 16 (spacing)
-                        .padding(.leading, isAlbum ? 40 : 96)
-                }
-            }
-
-            // Loading indicator for pagination
-            if self.viewModel.loadingState == .loadingMore {
-                HStack {
-                    Spacer()
-                    ProgressView()
-                        .controlSize(.small)
-                        .padding()
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private func trackRow(_ track: Song, index: Int, tracks: [Song], isAlbum: Bool, author: String?, fallbackAlbum: Album? = nil) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                self.playTrackInQueue(tracks: tracks, startingAt: index, fallbackArtist: author, fallbackAlbum: fallbackAlbum)
-            } label: {
-                HStack(spacing: 12) {
-                    // Now playing indicator or index
-                    Group {
-                        if self.playerService.currentTrack?.videoId == track.videoId {
-                            NowPlayingIndicator(isPlaying: self.playerService.isPlaying, size: 14)
-                        } else {
-                            Text("\(index + 1)")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(width: 28, alignment: .trailing)
-
-                    // Thumbnail - only show for playlists (different album art per track)
-                    // Albums share the same artwork, so we hide per-track thumbnails
-                    if !isAlbum {
-                        CachedAsyncImage(url: track.thumbnailURL) { image in
-                            image
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } placeholder: {
-                            Rectangle()
-                                .fill(.quaternary)
-                        }
-                        .frame(width: 40, height: 40)
-                        .clipShape(.rect(cornerRadius: 4))
-                    }
-
-                    // Title and artist
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
-                            .font(.system(size: 14))
-                            .foregroundStyle(self.playerService.currentTrack?.videoId == track.videoId ? .red : .primary)
-                            .lineLimit(1)
-
-                        Text(track.artistsDisplay)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    // Duration
-                    Text(track.durationDisplay)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 45, alignment: .trailing)
-                }
-                .padding(.vertical, 8)
-                .padding(.horizontal, 4)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.interactiveRow(cornerRadius: 6))
-            .staggeredAppearance(index: min(index, 10))
-            .contextMenu {
-                self.trackRowMenuContent(
-                    track: track,
-                    index: index,
-                    tracks: tracks,
-                    isAlbum: isAlbum,
-                    author: author,
-                    fallbackAlbum: fallbackAlbum
-                )
-            }
-            .popover(isPresented: self.addToPlaylistPopoverBinding(for: track, index: index), arrowEdge: .top) {
-                if let song = self.addToPlaylistPopoverSong {
-                    AddToPlaylistPopoverContent(
-                        song: song,
-                        client: self.viewModel.client,
-                        libraryViewModel: self.libraryViewModel
-                    )
-                }
-            }
-
-            Menu {
-                self.trackRowMenuContent(
-                    track: track,
-                    index: index,
-                    tracks: tracks,
-                    isAlbum: isAlbum,
-                    author: author,
-                    fallbackAlbum: fallbackAlbum
-                )
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
+    /// Tracks list. Rows are individually equatable so player and paging updates no longer
+    /// rebuild the visible window, and upcoming artwork is warmed ahead of the scroll.
+    /// The track rows plus the paging spinner.
     @ViewBuilder
-    private func trackRowMenuContent(
-        track: Song,
-        index: Int,
-        tracks: [Song],
-        isAlbum: Bool,
-        author: String?,
-        fallbackAlbum: Album?
-    ) -> some View {
-        Button {
-            self.playTrackInQueue(tracks: tracks, startingAt: index, fallbackArtist: author, fallbackAlbum: fallbackAlbum)
-        } label: {
-            Label("Play", systemImage: "play.fill")
-        }
+    private func trackRows(_ detail: PlaylistDetail) -> some View {
+        let tracks = detail.tracks
+        let isAlbum = detail.isAlbum
+        // Read the player state once per pass: each row only needs to know whether *it* is the
+        // current track, which keeps rows out of the observation dependency for playback.
+        let currentVideoId = self.playerService.currentTrack?.videoId
+        let isPlaying = self.playerService.isPlaying
 
-        Divider()
-
-        FavoritesContextMenu.menuItem(for: track, manager: self.favoritesManager)
-
-        Divider()
-
-        LikeDislikeContextMenu(song: track, likeStatusManager: self.likeStatusManager)
-
-        Divider()
-
-        StartRadioContextMenu.menuItem(for: track, playerService: self.playerService)
-
-        Divider()
-
-        Button {
-            SongActionsHelper.addToLibrary(track, playerService: self.playerService)
-        } label: {
-            Label("Add to Library", systemImage: "plus.circle")
-        }
-
-        Divider()
-
-        ShareContextMenu.menuItem(for: track)
-
-        Divider()
-
-        AddToQueueContextMenu(song: track, playerService: self.playerService)
-
-        Divider()
-
-        Button {
-            self.addToPlaylistPopoverSong = track
-            self.addToPlaylistPopoverRowKey = self.trackRowKey(index: index, track: track)
-        } label: {
-            Label("Add to Playlist", systemImage: "text.badge.plus")
-        }
-
-        if !isAlbum {
-            Divider()
-
-            Button(role: .destructive) {
-                Task {
-                    await self.removeTrackFromCurrentPlaylist(track)
+        ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+            PlaylistTrackRow(
+                song: track,
+                index: index,
+                isAlbum: isAlbum,
+                isCurrentTrack: currentVideoId == track.videoId,
+                isPlaying: isPlaying,
+                showsSeparator: index < tracks.count - 1,
+                isScrolling: self.isScrolling,
+                favoritesManager: self.favoritesManager,
+                likeStatusManager: self.likeStatusManager,
+                playerService: self.playerService,
+                client: self.viewModel.client,
+                libraryViewModel: self.libraryViewModel,
+                onPlay: { self.playTrack(at: index) },
+                onRemoveFromPlaylist: { song in
+                    Task {
+                        await self.removeTrackFromCurrentPlaylist(song)
+                    }
                 }
-            } label: {
-                Label("Remove from Playlist", systemImage: "minus.circle")
-            }
-        }
-
-        Divider()
-
-        if let artist = track.artists.first(where: { $0.hasNavigableId }) {
-            NavigationLink(value: artist) {
-                Label("Go to Artist", systemImage: "person")
-            }
-        }
-
-        if let album = track.album, album.hasNavigableId {
-            let playlist = Playlist(
-                id: album.id,
-                title: album.title,
-                description: nil,
-                thumbnailURL: album.thumbnailURL ?? track.thumbnailURL,
-                trackCount: album.trackCount,
-                author: album.artistsDisplay
             )
-            NavigationLink(value: playlist) {
-                Label("Go to Album", systemImage: "square.stack")
+            .equatable()
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+            .listRowBackground(Color.clear)
+        }
+
+        // Loading indicator for pagination. Paging itself is driven by scroll proximity,
+        // so the fetch and this spinner sit below the visible window.
+        if self.viewModel.loadingState == .loadingMore {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                    .padding()
+                Spacer()
             }
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
         }
     }
 
-    private func trackRowKey(index: Int, track: Song) -> String {
-        "\(index)-\(track.videoId)"
+    /// Plays the row's queue. Reads the playlist live instead of a captured snapshot, so a row
+    /// skipped by `Equatable` still queues every track that has been loaded.
+    private func playTrack(at index: Int) {
+        guard let detail = self.viewModel.playlistDetail,
+              detail.tracks.indices.contains(index)
+        else { return }
+
+        self.playTrackInQueue(
+            tracks: detail.tracks,
+            startingAt: index,
+            fallbackArtist: detail.author,
+            fallbackAlbum: self.makeFallbackAlbum(from: detail)
+        )
     }
 
-    private func addToPlaylistPopoverBinding(for track: Song, index: Int) -> Binding<Bool> {
-        let rowKey = self.trackRowKey(index: index, track: track)
-        return Binding(
-            get: { self.addToPlaylistPopoverRowKey == rowKey },
-            set: { isPresented in
-                if !isPresented, self.addToPlaylistPopoverRowKey == rowKey {
-                    self.addToPlaylistPopoverRowKey = nil
-                    self.addToPlaylistPopoverSong = nil
-                }
-            }
+    /// Warms the image cache for the rows the user is about to scroll into, at the same size
+    /// the rows decode.
+    private func prefetchUpcomingThumbnails(for tracks: [Song]) async {
+        guard !Task.isCancelled else { return }
+
+        let start = max(0, tracks.count - Self.thumbnailPrefetchWindow)
+        let urls = tracks[start...].compactMap(\.thumbnailURL)
+        guard !urls.isEmpty else { return }
+
+        await ImageCache.shared.prefetch(
+            urls: urls,
+            targetSize: PlaylistTrackRow.thumbnailSize,
+            maxConcurrent: 4
         )
     }
 

@@ -13,6 +13,14 @@ struct PlaylistDetailViewModelTests {
         self.mockClient = MockYTMusicClient()
         let playlist = TestFixtures.makePlaylist(id: "VL-test-playlist", title: "Test Playlist")
         self.viewModel = PlaylistDetailViewModel(playlist: playlist, client: self.mockClient)
+        // Page counts below are deterministic only without the background prefill, which has its
+        // own tests.
+        self.viewModel.prefetchesFollowingPage = false
+    }
+
+    /// Waits for the background prefill task to finish.
+    private func waitForPrefill() async {
+        try? await Task.sleep(for: .milliseconds(50))
     }
 
     // MARK: - Initial State Tests
@@ -193,6 +201,130 @@ struct PlaylistDetailViewModelTests {
         await self.viewModel.loadMore()
 
         #expect(self.mockClient.getPlaylistContinuationCalled == false)
+    }
+
+    // MARK: - Background Prefill Tests
+
+    @Test("Load prefetches the following page")
+    func loadPrefetchesFollowingPage() async {
+        self.viewModel.prefetchesFollowingPage = true
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 5
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [
+                TestFixtures.makeSong(id: "cont-1"),
+                TestFixtures.makeSong(id: "cont-2"),
+            ],
+        ]
+
+        await self.viewModel.load()
+        await self.waitForPrefill()
+
+        #expect(self.mockClient.getPlaylistContinuationCallCount == 1)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 7)
+        #expect(self.viewModel.loadingState == .loaded)
+    }
+
+    @Test("Preload keeps a single page of headroom")
+    func preloadKeepsSinglePageOfHeadroom() async {
+        self.viewModel.prefetchesFollowingPage = true
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 3
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [TestFixtures.makeSong(id: "page-2-a"), TestFixtures.makeSong(id: "page-2-b")],
+            [TestFixtures.makeSong(id: "page-3-a")],
+        ]
+
+        await self.viewModel.load()
+        await self.waitForPrefill()
+
+        // Only one page beyond the first is fetched, and the rest is left to scroll-driven paging.
+        #expect(self.mockClient.getPlaylistContinuationCallCount == 1)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 5)
+        #expect(self.viewModel.hasMore == true)
+    }
+
+    @Test("Overlapping page loads issue a single continuation request")
+    func overlappingPageLoadsCoalesce() async {
+        self.viewModel.prefetchesFollowingPage = true
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 3
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [TestFixtures.makeSong(id: "page-2-a")],
+            [TestFixtures.makeSong(id: "page-3-a")],
+        ]
+        self.mockClient.playlistContinuationDelay = .milliseconds(50)
+
+        await self.viewModel.load()
+
+        // The prefill is still in flight, so both scroll-triggered loads join it instead of
+        // starting their own continuation request.
+        async let first: Void = self.viewModel.loadMore()
+        async let second: Void = self.viewModel.loadMore()
+        _ = await (first, second)
+
+        #expect(self.mockClient.getPlaylistContinuationCallCount == 1)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 4)
+
+        // Once the shared page settles, the next page still loads on demand.
+        await self.viewModel.loadMore()
+
+        #expect(self.mockClient.getPlaylistContinuationCallCount == 2)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 5)
+    }
+
+    @Test("Dedupe set persists across pages")
+    func dedupeSetPersistsAcrossPages() async {
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 2
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [TestFixtures.makeSong(id: "page-2-a"), TestFixtures.makeSong(id: "video-0")],
+            [TestFixtures.makeSong(id: "page-2-a"), TestFixtures.makeSong(id: "page-3-a")],
+        ]
+
+        await self.viewModel.load()
+        await self.viewModel.loadMore()
+        await self.viewModel.loadMore()
+
+        // video-0 is a first-page duplicate, page-2-a is a duplicate of the previous page.
+        #expect(self.viewModel.playlistDetail?.tracks.count == 4)
+    }
+
+    @Test("Refresh drops a stale in-flight page and rebuilds the dedupe set")
+    func refreshDropsStalePageAndRebuildsDedupeSet() async {
+        self.viewModel.prefetchesFollowingPage = true
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 3
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [TestFixtures.makeSong(id: "page-2-a")],
+        ]
+        self.mockClient.playlistContinuationDelay = .milliseconds(300)
+
+        await self.viewModel.load()
+        await self.waitForPrefill()
+
+        // The prefetched page is still in flight, so it has not landed yet.
+        #expect(self.viewModel.playlistDetail?.tracks.count == 3)
+        #expect(self.viewModel.hasMore == true)
+
+        // Refresh replaces the track list, so the stale page is dropped and the refreshed
+        // detail prefetches again.
+        self.mockClient.playlistContinuationDelay = nil
+        await self.viewModel.refresh()
+        await self.waitForPrefill()
+
+        #expect(self.viewModel.playlistDetail?.tracks.count == 4)
+        #expect(self.viewModel.playlistDetail?.tracks.last?.videoId == "page-2-a")
     }
 
     // MARK: - Refresh Tests

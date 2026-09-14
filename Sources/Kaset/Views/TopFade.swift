@@ -32,10 +32,15 @@ struct TopFadeModifier: ViewModifier {
     let height: CGFloat
 
     func body(content: Content) -> some View {
-        content
-            .overlay(alignment: .top) {
-                TopFade(height: self.height)
-            }
+        // TEMPORARY: honors the PerfHUD "PageFX" switch (see PerfHUD).
+        if PerfHUD.isEnabled, !PerfHUD.shared.usesPageEffects {
+            content
+        } else {
+            content
+                .overlay(alignment: .top) {
+                    TopFade(height: self.height)
+                }
+        }
     }
 }
 

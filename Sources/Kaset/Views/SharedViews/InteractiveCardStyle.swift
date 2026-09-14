@@ -56,19 +56,30 @@ struct InteractiveRowStyle: ButtonStyle {
     /// Optional haptic feedback type to trigger on press.
     var hapticFeedback: HapticService.FeedbackType?
 
-    @State private var isHovering = false
+    /// Whether the hover highlight is active. Lists that scroll rows under a stationary
+    /// pointer set this to `false` while scrolling so every row passing beneath the cursor
+    /// doesn't swap its background and start an animation mid-flick.
+    var isHoverEnabled: Bool = true
+
+    /// Whether the pointer is currently over the row.
+    @State private var isPointerInside = false
+
+    /// Hover highlight is only shown while hovering *and* enabled.
+    private var showsHover: Bool {
+        self.isPointerInside && self.isHoverEnabled
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background(
                 RoundedRectangle(cornerRadius: self.cornerRadius)
-                    .fill(self.isHovering || configuration.isPressed ? self.hoverColor : .clear)
+                    .fill(self.showsHover || configuration.isPressed ? self.hoverColor : .clear)
             )
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(AppAnimation.quick, value: configuration.isPressed)
-            .animation(AppAnimation.quick, value: self.isHovering)
+            .animation(AppAnimation.quick, value: self.showsHover)
             .onHover { hovering in
-                self.isHovering = hovering
+                self.isPointerInside = hovering
             }
             .onChange(of: configuration.isPressed) { _, isPressed in
                 if isPressed, let feedback = hapticFeedback {
@@ -155,11 +166,18 @@ extension ButtonStyle where Self == InteractiveRowStyle {
     }
 
     /// Interactive row style with custom corner radius and optional haptic feedback.
+    /// - Parameter isHoverEnabled: Pass `false` while a list is scrolling to keep rows
+    ///   passing under the pointer from animating their hover highlight.
     static func interactiveRow(
         cornerRadius: CGFloat = 8,
-        hapticFeedback: HapticService.FeedbackType? = nil
+        hapticFeedback: HapticService.FeedbackType? = nil,
+        isHoverEnabled: Bool = true
     ) -> InteractiveRowStyle {
-        InteractiveRowStyle(cornerRadius: cornerRadius, hapticFeedback: hapticFeedback)
+        InteractiveRowStyle(
+            cornerRadius: cornerRadius,
+            hapticFeedback: hapticFeedback,
+            isHoverEnabled: isHoverEnabled
+        )
     }
 }
 

@@ -85,13 +85,17 @@ extension View {
     /// Applies a staggered appearance animation based on item index.
     /// - Parameters:
     ///   - index: The index of this item in the list.
+    ///   - itemId: Stable identifier for the item. Pass this for data-backed rows: the
+    ///     default index-based key means an item that moved (or a row rebuilt at the same
+    ///     position) is treated as "already animated" and silently skips its animation.
     ///   - animation: The animation to use (default: smooth).
     /// - Returns: A view with staggered appearance animation.
     func staggeredAppearance(
         index: Int,
+        itemId: String? = nil,
         animation: Animation = AppAnimation.smooth
     ) -> some View {
-        modifier(StaggeredAppearanceModifier(index: index, animation: animation))
+        modifier(StaggeredAppearanceModifier(index: index, animation: animation, itemId: itemId))
     }
 }
 
