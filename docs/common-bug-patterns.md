@@ -208,8 +208,13 @@ artists (or `MPRE`/`OLAK` for albums, `MPSPP` for podcasts).
 - [ ] Large lists use their own row view (not inline row builders in the parent body) so a
       parent update doesn't rebuild every visible row — see
       [adr/0014](adr/0014-playlist-scroll-performance.md)
-- [ ] Rows under a right-clicked menu in a `List` don't draw a stray focus ring
-      (`.focusEffectDisabled()`)
+- [ ] Rich rows in a `List` draw their highlight **full-bleed** at row level (zero
+      `listRowInsets` + an internal content inset). Right-clicking a row makes SwiftUI decorate
+      the whole row — full-width fill plus a 2 pt accent outline — and that decoration cannot be
+      removed (`selectionHighlightStyle = .none`, `focusRingType = .none` on the table/row/cell
+      views, `deselectAll` and `.focusEffectDisabled()` all leave it in place). A highlight that
+      is inset and rounded disagrees with it, so the row's own highlight has to occupy the same
+      rectangle (see [adr/0014](adr/0014-playlist-scroll-performance.md))
 
 ### Concurrency Safety
 

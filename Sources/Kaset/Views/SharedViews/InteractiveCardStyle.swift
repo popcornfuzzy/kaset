@@ -61,6 +61,11 @@ struct InteractiveRowStyle: ButtonStyle {
     /// doesn't swap its background and start an animation mid-flick.
     var isHoverEnabled: Bool = true
 
+    /// Whether the style paints its own hover/press background. Rows that draw the highlight
+    /// themselves — so it can span the full row rather than just the button's label — pass
+    /// `false` and keep only the press feedback.
+    var drawsBackground: Bool = true
+
     /// Whether the pointer is currently over the row.
     @State private var isPointerInside = false
 
@@ -73,7 +78,11 @@ struct InteractiveRowStyle: ButtonStyle {
         configuration.label
             .background(
                 RoundedRectangle(cornerRadius: self.cornerRadius)
-                    .fill(self.showsHover || configuration.isPressed ? self.hoverColor : .clear)
+                    .fill(
+                        self.drawsBackground && (self.showsHover || configuration.isPressed)
+                            ? self.hoverColor
+                            : .clear
+                    )
             )
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(AppAnimation.quick, value: configuration.isPressed)
@@ -168,15 +177,19 @@ extension ButtonStyle where Self == InteractiveRowStyle {
     /// Interactive row style with custom corner radius and optional haptic feedback.
     /// - Parameter isHoverEnabled: Pass `false` while a list is scrolling to keep rows
     ///   passing under the pointer from animating their hover highlight.
+    /// - Parameter drawsBackground: Pass `false` when the row draws its own highlight across the
+    ///   full width of the list; the style then only provides press feedback.
     static func interactiveRow(
         cornerRadius: CGFloat = 8,
         hapticFeedback: HapticService.FeedbackType? = nil,
-        isHoverEnabled: Bool = true
+        isHoverEnabled: Bool = true,
+        drawsBackground: Bool = true
     ) -> InteractiveRowStyle {
         InteractiveRowStyle(
             cornerRadius: cornerRadius,
             hapticFeedback: hapticFeedback,
-            isHoverEnabled: isHoverEnabled
+            isHoverEnabled: isHoverEnabled,
+            drawsBackground: drawsBackground
         )
     }
 }

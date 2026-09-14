@@ -18,9 +18,19 @@ struct PlaylistDetailViewModelTests {
         self.viewModel.prefetchesFollowingPage = false
     }
 
-    /// Waits for the background prefill task to finish.
-    private func waitForPrefill() async {
-        try? await Task.sleep(for: .milliseconds(50))
+    /// Waits for the background prefill to satisfy `expectation`, or for `timeout` to elapse.
+    ///
+    /// The prefill is fire-and-forget, so there is no handle to await and its completion is only
+    /// observable through its effects. Polling a condition until a deadline — rather than sleeping a
+    /// fixed interval — keeps these tests from flaking when the whole suite runs in parallel.
+    private func waitForPrefill(
+        until expectation: @autoclosure () -> Bool,
+        timeout: Duration = .seconds(3)
+    ) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !expectation(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     // MARK: - Initial State Tests
@@ -220,7 +230,7 @@ struct PlaylistDetailViewModelTests {
         ]
 
         await self.viewModel.load()
-        await self.waitForPrefill()
+        await self.waitForPrefill(until: self.viewModel.playlistDetail?.tracks.count == 7)
 
         #expect(self.mockClient.getPlaylistContinuationCallCount == 1)
         #expect(self.viewModel.playlistDetail?.tracks.count == 7)
@@ -240,7 +250,7 @@ struct PlaylistDetailViewModelTests {
         ]
 
         await self.viewModel.load()
-        await self.waitForPrefill()
+        await self.waitForPrefill(until: self.viewModel.playlistDetail?.tracks.count == 5)
 
         // Only one page beyond the first is fetched, and the rest is left to scroll-driven paging.
         #expect(self.mockClient.getPlaylistContinuationCallCount == 1)
@@ -311,7 +321,9 @@ struct PlaylistDetailViewModelTests {
         self.mockClient.playlistContinuationDelay = .milliseconds(300)
 
         await self.viewModel.load()
-        await self.waitForPrefill()
+        // Wait only until the request has been issued: the page is deliberately still in flight, so
+        // there is nothing to wait for beyond that.
+        await self.waitForPrefill(until: self.mockClient.getPlaylistContinuationCallCount == 1)
 
         // The prefetched page is still in flight, so it has not landed yet.
         #expect(self.viewModel.playlistDetail?.tracks.count == 3)
@@ -321,7 +333,7 @@ struct PlaylistDetailViewModelTests {
         // detail prefetches again.
         self.mockClient.playlistContinuationDelay = nil
         await self.viewModel.refresh()
-        await self.waitForPrefill()
+        await self.waitForPrefill(until: self.viewModel.playlistDetail?.tracks.count == 4)
 
         #expect(self.viewModel.playlistDetail?.tracks.count == 4)
         #expect(self.viewModel.playlistDetail?.tracks.last?.videoId == "page-2-a")

@@ -17,6 +17,13 @@ struct PlaylistTrackRow: View, Equatable {
     /// it keeps the cache from decoding a 320×320 bitmap for a 40×40 slot.
     static let thumbnailSize = CGSize(width: 40, height: 40)
 
+    /// Horizontal inset applied to the row's *content*. The row itself and its highlight span the
+    /// full width of the list — see `body`.
+    static let contentInset: CGFloat = 24
+
+    /// Hover/press highlight fill, matching `InteractiveRowStyle`'s default.
+    static let highlightColor = Color.primary.opacity(0.06)
+
     /// Rows that get the staggered entrance animation. Only the first page animates so rows
     /// realized mid-flick appear instantly instead of animating while the list scrolls.
     static let entranceAnimationRowLimit = 25
@@ -46,6 +53,9 @@ struct PlaylistTrackRow: View, Equatable {
 
     /// Whether the add-to-playlist popover is presented for this row.
     @State private var isShowingAddToPlaylist = false
+
+    /// Whether the pointer is anywhere over this row.
+    @State private var isPointerInside = false
 
     /// Compares only what the row draws. The action closures and service references are
     /// deliberately excluded: `onPlay` and `onRemoveFromPlaylist` are stateless, and the
@@ -79,14 +89,32 @@ struct PlaylistTrackRow: View, Equatable {
             }
             .buttonStyle(.plain)
         }
+        .padding(.horizontal, Self.contentInset)
+        // The highlight is drawn at row level, not by the play button's style, so that it covers
+        // the whole row. `List` draws its own decoration around a right-clicked row spanning the
+        // entire row, and that decoration cannot be turned off or reshaped (see ADR-0014), so the
+        // row's element is made the same shape instead of an inset rounded pill that does not line
+        // up with it. Zero `listRowInsets` at the call site is what lets this fill reach the edges.
+        .background(Rectangle().fill(self.showsHighlight ? Self.highlightColor : .clear))
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            self.isPointerInside = hovering
+        }
+        .animation(AppAnimation.quick, value: self.showsHighlight)
         .overlay(alignment: .bottom) {
             if self.showsSeparator {
                 Divider()
                     // For albums: 28 (index) + 12 (spacing)
                     // For playlists: 28 (index) + 12 (spacing) + 40 (thumbnail) + 16 (spacing)
-                    .padding(.leading, self.isAlbum ? 40 : 96)
+                    .padding(.leading, Self.contentInset + (self.isAlbum ? 40 : 96))
             }
         }
+    }
+
+    /// Highlight is shown only while hovering *and* not scrolling: rows passing under a stationary
+    /// pointer during a flick must not swap their background mid-scroll.
+    private var showsHighlight: Bool {
+        self.isPointerInside && !self.isScrolling
     }
 
     /// The tappable row content, with its context menu and add-to-playlist popover.
@@ -97,7 +125,9 @@ struct PlaylistTrackRow: View, Equatable {
         } label: {
             self.rowLabel
         }
-        .buttonStyle(.interactiveRow(cornerRadius: 6, isHoverEnabled: !self.isScrolling))
+        // This row draws its own full-bleed highlight, so the style contributes only its press
+        // feedback.
+        .buttonStyle(.interactiveRow(cornerRadius: 6, drawsBackground: false))
         .contextMenu {
             self.menuContent
         }
@@ -166,7 +196,6 @@ struct PlaylistTrackRow: View, Equatable {
                 .frame(width: 45, alignment: .trailing)
         }
         .padding(.vertical, 8)
-        .padding(.horizontal, 4)
         .contentShape(Rectangle())
     }
 

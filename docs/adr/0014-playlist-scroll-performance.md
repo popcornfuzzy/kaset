@@ -58,13 +58,35 @@ scrolling smooth, which is what this ADR now specifies.
 ### Track lists are rendered by an AppKit-backed `List`
 
 `PlaylistDetailView` renders its header, divider and tracks inside a `List`
-(`.listStyle(.plain)`, hidden row separators, clear row backgrounds, and `listRowInsets` matching
-the 24 pt page padding the previous `ScrollView` applied) instead of a `ScrollView` +
+(`.listStyle(.plain)`, hidden row separators, clear row backgrounds, zero `listRowInsets` with the
+row applying the page's 24 pt inset to its own content) instead of a `ScrollView` +
 `LazyVStack`. NSTableView lays out and reuses row views and scrolls by moving the clip view, so
 the per-frame cost stops scaling with the realised rows' view-tree size while the row design
 survives intact: the row still draws its own separator, keeps its context menu, ellipsis menu and
-add-to-playlist popover, and `.focusEffectDisabled()` suppresses the accent-coloured focus ring a
-table row otherwise draws around the row under a right-click.
+add-to-playlist popover.
+
+One `List` behaviour has to be worked around rather than undone. Right-clicking a row makes the
+list decorate the row it targets: the row gets a full-width highlight and a 2 pt accent-coloured
+outline (measured at `#D94359` against the app accent `#FF0056` — the muted tint an accent
+indicator takes while the window is not key, which a window is while one of its menus is open).
+That decoration is drawn by SwiftUI's list internals, not reachable as AppKit decoration, and
+three attempts to remove it through AppKit changed nothing: `selectionHighlightStyle = .none` on the
+backing `NSTableView` (`SwiftUIOutlineListView` in the hierarchy), `focusRingType = .none` on the
+table and on every `ListTableRowView`/`ListTableCellView`, and `deselectAll` from the two
+`NSTableView` selection notifications — with a temporary HUD confirming the table *was* found
+(`1` table) while the outline stayed on screen. `.focusEffectDisabled()` was equally ineffective,
+because it only covers SwiftUI's own focus effect. There is no public API that removes it, so the
+decoration is now made to agree with the row instead of being fought.
+
+That works because the row *is* the element the decoration is drawn around. `.listRowInsets(EdgeInsets())`
+at the call site makes the row span the full width of the list, `PlaylistTrackRow.contentInset`
+keeps the content at the page's 24 pt inset, and the row draws its hover/press highlight itself as a
+full-bleed rectangle rather than letting `InteractiveRowStyle` paint an inset rounded pill around
+the play button alone. The framework's highlight, the outline and the row's own highlight are then
+the same rectangle, and the outline lands on the row's edge instead of cutting across the middle of
+it. The style is invoked with `drawsBackground: false` so it contributes press feedback only. This is
+the one place worth knowing about when editing the row's appearance: the highlight must stay
+full-bleed, so any new row decoration belongs at row level, not inside the play button's label.
 
 The alternatives were to keep the `LazyVStack` and diet the row's view tree, which is bounded at
 roughly a 2–3× reduction and cannot reach the measured slim-row behaviour, or to accept the

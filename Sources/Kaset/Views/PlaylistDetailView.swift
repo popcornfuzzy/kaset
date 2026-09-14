@@ -179,9 +179,6 @@ struct PlaylistDetailView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            // Rows are click targets rather than controls: without this, the row under a
-            // right-click keeps the accent-coloured focus ring drawn around it.
-            .focusEffectDisabled()
             .task(id: detail.tracks.count) {
                 await self.prefetchUpcomingThumbnails(for: detail.tracks)
             }
@@ -491,7 +488,10 @@ struct PlaylistDetailView: View {
             )
             .equatable()
             .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+            // No row insets: the row spans the full width of the list and insets its own content,
+            // so its highlight can be full-bleed like the decoration `List` draws around the row a
+            // right-click lands on (see ADR-0014). An inset row cannot be made to line up with it.
+            .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
         }
 
