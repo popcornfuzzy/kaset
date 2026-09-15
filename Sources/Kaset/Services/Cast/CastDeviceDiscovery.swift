@@ -1,24 +1,94 @@
 import Foundation
 import Network
 
+// MARK: - CastDeviceBrowsing
+
+/// What ``CastService`` needs from a Cast device browser.
+///
+/// Discovery is the only part of casting that talks to the network before a device has been
+/// chosen, so keeping it behind this seam lets the Cast menu's behaviour be tested without mDNS.
+@MainActor
+protocol CastDeviceBrowsing: AnyObject {
+    /// Devices the browser knows about.
+    var devices: [CastDevice] { get }
+
+    /// Called whenever the visible device list changes.
+    var onDevicesChanged: (([CastDevice]) -> Void)? { get set }
+
+    /// Called when browsing fails.
+    var onError: ((String) -> Void)? { get set }
+
+    /// Starts browsing.
+    func start()
+
+    /// Stops browsing.
+    func stop()
+}
+
+// MARK: - CastDiscoveredService
+
+/// A Cast service the Bonjour browser reported.
+///
+/// `NWBrowser.Result` cannot be built outside Network framework, so the browser's answer is copied
+/// into this value type. Discovery then works on plain values, which is also what makes the
+/// publication path testable without a device on the network.
+struct CastDiscoveredService: Equatable, Sendable {
+    /// Bonjour coordinates of the service.
+    let identity: CastServiceIdentity
+
+    /// The service's TXT record, which carries the friendly name and model the menu shows.
+    let txtRecord: [String: String]
+
+    /// Bonjour instance name, e.g. `Living Room TV._googlecast._tcp.local.`.
+    var instanceName: String {
+        "\(self.identity.name).\(self.identity.type).\(self.identity.domain)"
+    }
+
+    /// Reads a browse result, or `nil` when it is not a Bonjour service.
+    init?(result: NWBrowser.Result) {
+        guard case let .service(serviceName, serviceType, domain, _) = result.endpoint else { return nil }
+        guard case let .bonjour(record) = result.metadata else { return nil }
+
+        self.identity = CastServiceIdentity(name: serviceName, type: serviceType, domain: domain)
+        self.txtRecord = record.dictionary
+    }
+
+    init(identity: CastServiceIdentity, txtRecord: [String: String]) {
+        self.identity = identity
+        self.txtRecord = txtRecord
+    }
+}
+
 // MARK: - CastDeviceDiscovery
 
 /// Finds Cast devices on the local network.
 ///
 /// Cast devices advertise a `_googlecast._tcp` Bonjour service. Browsing gives the friendly name,
-/// model, and device id; the device address is resolved from the advertised instance name. The
-/// default Cast control port is used, which is what every device listens on.
+/// model, and device id; the device is then dialed through its Bonjour identity, whose address
+/// lives in the service's SRV record and is resolved by Network framework itself. The advertised
+/// instance name is kept as the device's host, and is only used for logging and as a fallback.
 @MainActor
-final class CastDeviceDiscovery {
+final class CastDeviceDiscovery: CastDeviceBrowsing {
     /// Default Cast control port.
     static let defaultControlPort = 8009
 
     private let queue = DispatchQueue(label: "com.sertacozercan.Kaset.cast.discovery")
     private let port: Int
     private var browser: NWBrowser?
+
+    /// Devices keyed by Bonjour instance name, which is what mDNS re-announces and removals use.
+    private var devicesByInstance: [String: CastDevice] = [:]
+
     private var registry = CastDeviceRegistry()
-    private var resolvedDevices: [String: CastDevice] = [:]
-    private var visibleInstances: Set<String> = []
+
+    /// When the current browse started, used to report how long the first device took to show up.
+    private var browseStartedAt: ContinuousClock.Instant?
+
+    /// Whether the current browse has published anything, including an empty list.
+    ///
+    /// The Cast menu needs to tell "mDNS has not answered yet" apart from "there is nothing here",
+    /// and both look like an empty list.
+    private var hasReportedThisBrowse = false
 
     /// Called whenever the visible device list changes.
     var onDevicesChanged: (([CastDevice]) -> Void)?
@@ -26,7 +96,10 @@ final class CastDeviceDiscovery {
     /// Called when browsing fails.
     var onError: ((String) -> Void)?
 
-    /// Devices currently visible on the network, ordered by name.
+    /// Devices currently known to the browser, ordered by name.
+    ///
+    /// These are kept after browsing stops, so the Cast menu can show the last known devices while
+    /// a fresh browse answers.
     var devices: [CastDevice] {
         self.registry.devices
     }
@@ -60,9 +133,11 @@ final class CastDeviceDiscovery {
                     DiagnosticsLogger.cast.error("Cast discovery failed: \(error.localizedDescription)")
                     self?.onError?(error.localizedDescription)
                 case .cancelled:
-                    self?.visibleInstances.removeAll()
-                    self?.resolvedDevices.removeAll()
-                    self?.publishDevices()
+                    // A cancelled browse reports nothing more, so drop the entries and let the next
+                    // browse answer from scratch. The published list is deliberately left alone: it
+                    // is what the menu shows until then.
+                    self?.devicesByInstance.removeAll()
+                    self?.hasReportedThisBrowse = false
                 default:
                     break
                 }
@@ -70,128 +145,89 @@ final class CastDeviceDiscovery {
         }
 
         self.browser = browser
+        self.browseStartedAt = .now
+        self.hasReportedThisBrowse = false
         browser.start(queue: self.queue)
     }
 
-    /// Stops browsing and clears the device list.
+    /// Stops browsing.
+    ///
+    /// Discovered devices are kept so the menu can show them again immediately; the next browse
+    /// replaces them, removing anything that is no longer advertised.
     func stop() {
         self.browser?.stateUpdateHandler = nil
         self.browser?.browseResultsChangedHandler = nil
         self.browser?.cancel()
         self.browser = nil
 
-        self.visibleInstances.removeAll()
-        self.resolvedDevices.removeAll()
-        self.publishDevices()
+        self.browseStartedAt = nil
+        self.hasReportedThisBrowse = false
+        self.devicesByInstance.removeAll()
     }
 
     // MARK: - Results
 
     private func update(with results: Set<NWBrowser.Result>) {
-        var instances: Set<String> = []
-
-        for result in results {
-            guard case let .service(serviceName, serviceType, domain, _) = result.endpoint else { continue }
-
-            let instanceName = "\(serviceName).\(serviceType).\(domain)"
-            guard let txtRecord = self.txtRecord(from: result) else { continue }
-
-            // The service instance is what the connection has to dial: its address comes from the
-            // SRV record, which only a service endpoint resolves.
-            let identity = CastServiceIdentity(name: serviceName, type: serviceType, domain: domain)
-
-            instances.insert(instanceName)
-
-            // A device that has already been resolved keeps its address; mDNS re-announces would
-            // otherwise trigger repeated lookups.
-            if self.resolvedDevices[instanceName] != nil {
-                continue
-            }
-
-            let hostname = instanceName
-            let port = self.port
-            Task.detached(priority: .utility) { [weak self] in
-                let address = CastDeviceDiscovery.resolveIPv4(hostname: hostname, port: port) ?? hostname
-
-                await MainActor.run { [weak self] in
-                    guard let self, self.visibleInstances.contains(instanceName) else { return }
-                    guard let device = CastDiscoveryMetadata.device(
-                        from: txtRecord,
-                        host: address,
-                        port: port,
-                        service: identity
-                    ) else { return }
-
-                    self.resolvedDevices[instanceName] = device
-                    self.publishDevices()
-                }
-            }
-        }
-
-        self.visibleInstances = instances
-        self.resolvedDevices = self.resolvedDevices.filter { instances.contains($0.key) }
-        self.publishDevices()
+        self.apply(services: results.compactMap(CastDiscoveredService.init(result:)))
     }
 
-    private func txtRecord(from result: NWBrowser.Result) -> [String: String]? {
-        guard case let .bonjour(record) = result.metadata else { return nil }
-        return record.dictionary
+    /// Publishes the services the browser currently sees.
+    ///
+    /// Everything the menu needs — name, model, device id — comes from the TXT record, so a device
+    /// is published the moment mDNS reports it and nothing here is asynchronous.
+    ///
+    /// Resolving an address at this point would hold every device back by five seconds: a Bonjour
+    /// service instance is not a hostname, so `getaddrinfo` on one has no answer and spends the
+    /// whole mDNS timeout before failing. The control connection dials the service endpoint
+    /// instead, so a numeric address is only ever cosmetic.
+    func apply(services: [CastDiscoveredService]) {
+        var nextDevices: [String: CastDevice] = [:]
+
+        for service in services {
+            guard let device = CastDiscoveryMetadata.device(
+                from: service.txtRecord,
+                host: service.identity.name,
+                port: self.port,
+                service: service.identity
+            ) else { continue }
+
+            nextDevices[service.instanceName] = device
+        }
+
+        self.devicesByInstance = nextDevices
+        self.publishDevices()
     }
 
     private func publishDevices() {
         var nextRegistry = CastDeviceRegistry()
-        for instanceName in self.visibleInstances {
-            guard let device = self.resolvedDevices[instanceName] else { continue }
+        for device in self.devicesByInstance.values {
             nextRegistry.upsert(device)
         }
 
-        guard nextRegistry.devices != self.registry.devices else { return }
+        // The first answer of a browse is published even when it is empty, so listeners stop waiting
+        // for a device list that is never coming. Later unchanged answers are not republished.
+        let isFirstAnswer = !self.hasReportedThisBrowse
+        guard isFirstAnswer || nextRegistry.devices != self.registry.devices else { return }
 
+        self.hasReportedThisBrowse = true
         self.registry = nextRegistry
-        DiagnosticsLogger.cast.debug("Discovered \(nextRegistry.devices.count) Cast device(s)")
+
+        if let startedAt = self.browseStartedAt, !nextRegistry.devices.isEmpty {
+            self.browseStartedAt = nil
+            DiagnosticsLogger.cast.info(
+                "Found \(nextRegistry.devices.count) Cast device(s) \(Self.describe(.now - startedAt)) after browsing started"
+            )
+        } else {
+            DiagnosticsLogger.cast.debug("Discovered \(nextRegistry.devices.count) Cast device(s)")
+        }
+
         self.onDevicesChanged?(nextRegistry.devices)
     }
 
-    // MARK: - Address Resolution
-
-    /// Resolves a Bonjour instance name to a numeric IPv4 address.
-    ///
-    /// This is a convenience for logs only: the control connection uses the device's
-    /// ``CastServiceIdentity`` rather than whichever address this happens to return. Returns `nil`
-    /// when the name cannot be resolved, in which case the caller keeps the Bonjour name as the
-    /// device address.
-    nonisolated static func resolveIPv4(hostname: String, port: Int) -> String? {
-        var hints = addrinfo(
-            ai_flags: 0,
-            ai_family: AF_INET,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: 0,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(hostname, String(port), &hints, &result) == 0, let firstResult = result else {
-            return nil
-        }
-        defer { freeaddrinfo(result) }
-
-        guard let address = firstResult.pointee.ai_addr else { return nil }
-
-        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-        let status = getnameinfo(
-            address,
-            firstResult.pointee.ai_addrlen,
-            &host,
-            socklen_t(host.count),
-            nil,
-            0,
-            NI_NUMERICHOST
-        )
-        guard status == 0 else { return nil }
-
-        return String(cString: host)
+    /// Formats a duration for the discovery log, e.g. `0.42s`.
+    private static func describe(_ duration: Duration) -> String {
+        let seconds = Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1e18
+        return String(format: "%.2fs", seconds)
     }
 }

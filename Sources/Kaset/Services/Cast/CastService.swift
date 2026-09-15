@@ -35,7 +35,7 @@ final class CastService {
     /// resuming its receiver application, which is slow on a cold device.
     private static let connectionTimeout: Duration = .seconds(20)
 
-    private let discovery: CastDeviceDiscovery
+    private let discovery: any CastDeviceBrowsing
     private var connection: CastConnection?
     private var session: CastReceiverSession?
     private var streamer: CastAudioStreamer?
@@ -53,11 +53,18 @@ final class CastService {
     /// Whether the device is reading the stream.
     private(set) var isReceiverConnected = false
 
-    init(discovery: CastDeviceDiscovery = CastDeviceDiscovery()) {
+    /// Whether a browse is running and has not answered yet.
+    ///
+    /// Browsing stays active while the menu is open, so this separates "waiting for mDNS to answer"
+    /// from "browsing for changes" — only the former is worth showing as a spinner.
+    private(set) var isAwaitingDevices = false
+
+    init(discovery: any CastDeviceBrowsing = CastDeviceDiscovery()) {
         self.discovery = discovery
 
         self.discovery.onDevicesChanged = { [weak self] devices in
             self?.devices = devices
+            self?.isAwaitingDevices = false
         }
 
         self.discovery.onError = { [weak self] message in
@@ -100,6 +107,9 @@ final class CastService {
     // MARK: - Discovery
 
     /// Starts browsing for Cast devices.
+    ///
+    /// Any devices found by an earlier browse stay listed: they are what the menu shows while the
+    /// fresh browse runs, and the browser drops the ones that are no longer advertised.
     func startDiscovery() {
         guard !self.isCasting else { return }
 
@@ -107,7 +117,7 @@ final class CastService {
             self.state = .idle
         }
 
-        self.devices = []
+        self.isAwaitingDevices = true
         self.discovery.start()
 
         if case .idle = self.state {
@@ -116,7 +126,11 @@ final class CastService {
     }
 
     /// Stops browsing for devices.
+    ///
+    /// The device list is kept, so reopening the menu is instant instead of showing an empty list
+    /// while mDNS answers again.
     func stopDiscovery() {
+        self.isAwaitingDevices = false
         self.discovery.stop()
 
         if case .searching = self.state {
@@ -127,7 +141,6 @@ final class CastService {
     /// Restarts browsing, used by the refresh button in the Cast menu.
     func refresh() {
         self.discovery.stop()
-        self.devices = []
         self.startDiscovery()
     }
 

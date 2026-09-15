@@ -68,6 +68,14 @@ final class CastConnection: CastMessageChannel {
         CastControlEndpoint.ipv4Address(of: self.connection?.currentPath?.localEndpoint)
     }
 
+    /// The device's IPv4 address, once the connection has resolved it.
+    ///
+    /// Discovery deliberately reports no address — a Bonjour service instance cannot be resolved as
+    /// a host — so this is where the device's numeric address becomes known, for log messages only.
+    var resolvedIPv4Address: String? {
+        CastControlEndpoint.ipv4Address(of: self.connection?.currentPath?.remoteEndpoint)
+    }
+
     /// Opens the connection.
     func connect() {
         let tlsOptions = NWProtocolTLS.Options()
@@ -106,7 +114,10 @@ final class CastConnection: CastMessageChannel {
                     )
 
                 case .ready:
-                    DiagnosticsLogger.cast.info("Connected to Cast device at \(self.endpoint.diagnosticDescription)")
+                    let resolved = self.resolvedIPv4Address.map { ", resolved to \($0)" } ?? ""
+                    DiagnosticsLogger.cast.info(
+                        "Connected to Cast device at \(self.endpoint.diagnosticDescription)\(resolved)"
+                    )
                     self.onReady?()
                     self.receiveNext()
 

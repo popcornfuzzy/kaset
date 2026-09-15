@@ -32,10 +32,12 @@ struct CastDevice: Identifiable, Equatable, Hashable, Sendable {
     /// Device model from the mDNS TXT record, when the device advertises one.
     let model: String?
 
-    /// Host address of the device.
+    /// How the device is named for log messages and address fallbacks.
     ///
     /// Devices found over Bonjour also carry ``service``, which is what the control connection
-    /// dials; this address is then only used for logging and as a fallback.
+    /// dials, and for those this is the Bonjour instance name: a service instance cannot be resolved
+    /// as a host, and resolving one anyway costs the full mDNS timeout. The address is negotiated
+    /// while connecting instead.
     let host: String
 
     /// Cast control port. Cast devices listen on 8009 by default.
@@ -44,7 +46,7 @@ struct CastDevice: Identifiable, Equatable, Hashable, Sendable {
     /// Bonjour service coordinates, present for every device found by browsing.
     var service: CastServiceIdentity? = nil
 
-    /// The address the device is reachable at, used in log messages.
+    /// How the device is identified in log messages.
     var displayAddress: String {
         "\(self.host):\(self.port)"
     }

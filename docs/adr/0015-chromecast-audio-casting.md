@@ -62,7 +62,10 @@ Cast by streaming Kaset's own decoded audio to the Cast Default Media Receiver o
    connects to the platform receiver, launches or attaches to the Default Media Receiver, and sends `LOAD`
    with the stream URL.
 5. **Discover** — `NWBrowser` browses `_googlecast._tcp`, reading the friendly name, model, and device id from
-   the mDNS TXT record.
+   the mDNS TXT record, and publishes each device the moment mDNS reports it. Nothing is resolved on the way: a
+   Bonjour service instance is not a hostname, so a `getaddrinfo` for one has no answer and burns the full
+   five-second mDNS timeout. Devices used to appear only once a browse window closed; they now appear in about
+   20 ms, and their address comes from the path the control connection negotiates.
 
 Because Kaset remains the source of audio, the queue, seeking, syncing, scrobbling, and track changes all keep
 working exactly as they do locally.
@@ -75,6 +78,9 @@ working exactly as they do locally.
   audio is captured after WebKit decodes it. No YouTube API is involved beyond what Kaset already uses.
 - **No new dependencies** — the CASTV2 codec, ADTS framing, and HTTP streaming layer are ~800 lines of
   first-party Swift over system frameworks.
+- **The device list is immediate** — discovery publishes on the browse callback, and the known devices stay
+  listed while a fresh browse runs, so opening or refreshing the Cast menu never shows an empty list for long
+  enough to notice.
 - **Survives track changes** — unlike AirPlay, the session does not die when YouTube Music recreates its video
   element, because Kaset owns the stream.
 - **Works with any Cast device** — audio-only receivers and Google TV devices alike, since the Default Media
@@ -125,6 +131,7 @@ Automated coverage lives in `Tests/KasetTests`:
 | `CastMessageTests` | CASTV2 protobuf encoding/decoding and stream framing |
 | `CastProtocolTests` | Payload builders and receiver/media status decoding |
 | `CastDeviceTests` | mDNS TXT parsing and device registry merge/remove |
+| `CastDeviceDiscoveryTests` | Immediate publication with no address resolution, re-announce/prune behaviour, and the device list surviving a stop |
 | `CastReceiverSessionTests` | Handshake, launch, attach, `LOAD`, heartbeat, stop |
 | `CastServiceTests` | Cast state and menu text |
 | `CastStreamAddressTests` | Local address selection for the stream URL |
@@ -139,7 +146,10 @@ Automated coverage lives in `Tests/KasetTests`:
 Two bugs found in this pipeline were caught by these tests rather than by the device, and both produced a
 stream that looked healthy from the outside: the CASTV2 framer trapped on a second message because
 `Data.removeFirst` leaves a non-zero `startIndex`, and the encoder stopped after its first conversion because a
-zero-packet callback means end of stream.
+zero-packet callback means end of stream. A third was found by measuring rather than by reading code: every
+discovered device waited on an address lookup for its Bonjour instance name, which cannot succeed, so the menu
+stayed empty for five seconds however quickly mDNS answered. `CastDeviceDiscoveryTests` now pins the invariant
+that publication involves no lookup at all.
 
 Manual verification on hardware:
 

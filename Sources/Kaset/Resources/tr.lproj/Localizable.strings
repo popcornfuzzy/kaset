@@ -40,7 +40,11 @@
 
 "Looking for devices…" = "Looking for devices…";
 
+"Looking for more devices…" = "Looking for more devices…";
+
 "Make sure the device is on the same Wi-Fi network." = "Make sure the device is on the same Wi-Fi network.";
+
+"No devices found" = "No devices found";
 
 "Not connected" = "Not connected";
 

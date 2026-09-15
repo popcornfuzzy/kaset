@@ -105,6 +105,19 @@ struct CastStreamAddressTests {
         #expect(CastStreamAddress.bestAddress(forDeviceHost: "192.168.9.40", candidates: withEthernet) == "192.168.9.9")
     }
 
+    @Test("Handles a device named by its Bonjour instance rather than an address")
+    func handlesBonjourInstanceName() {
+        // Discovered devices carry their Bonjour instance name, which is what the fallback sees when
+        // the control connection has not reported the interface it is using.
+        let candidates = [
+            CastStreamAddress.InterfaceAddress(name: "utun3", address: "10.8.0.2", prefixLength: 32),
+            CastStreamAddress.InterfaceAddress(name: "en0", address: "192.168.1.10", prefixLength: 24),
+        ]
+
+        let address = CastStreamAddress.bestAddress(forDeviceHost: "Living Room TV", candidates: candidates)
+        #expect(address == "192.168.1.10")
+    }
+
     @Test("Returns nothing when the Mac has no IPv4 address")
     func returnsNilWithoutAddresses() {
         #expect(CastStreamAddress.bestAddress(forDeviceHost: "192.168.1.5", candidates: []) == nil)

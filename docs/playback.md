@@ -410,7 +410,7 @@ Default Media Receiver, so the queue, seeking, and track changes keep working ex
 
 | Stage | Component | Notes |
 |-------|-----------|-------|
-| Discovery | `CastDeviceDiscovery` | Browses `_googlecast._tcp`; name, model, and id come from the TXT record |
+| Discovery | `CastDeviceDiscovery` | Browses `_googlecast._tcp`; name, model, and id come from the TXT record, and each device is listed the moment mDNS reports it |
 | Capture | `AudioProcessTap`, `CastAudioProcessResolver` | Core Audio process tap over Kaset and WebKit's XPC helpers, muted while tapped |
 | Encode | `AACStreamEncoder`, `ADTSHeader` | AAC-LC at 192 kbps, framed as `audio/aac` |
 | Serve | `LocalAudioStreamServer` | Endless chunked HTTP response on an ephemeral port |
@@ -425,7 +425,9 @@ Default Media Receiver, so the queue, seeking, and track changes keep working ex
   System Settings → Privacy & Security → Screen & System Audio Recording. Without it the tap still runs and
   still mutes the Mac, but streams silence — the cast log calls that out explicitly.
 - Audio is captured after decoding, so DRM-protected tracks, podcasts, and ads all cast unchanged.
-- Expect roughly 1-3 seconds of latency; the Mac keeps playing (muted by the tap) for the whole session.
+- The Cast menu lists a device as soon as mDNS reports it — measured at ~20 ms, since nothing is resolved
+  before publishing — and keeps the last known devices while a fresh browse runs, so reopening or refreshing the
+  menu is instant. A browse that no longer sees a device removes it from the list.
 - The slider shapes the stream rather than the device volume; a paused track simply stops sending audio.
 - The device must be able to reach the Mac, so guest Wi-Fi and AP isolation block casting.
 - WebKit renders playback in helper processes `launchd` owns, not the app, so the tap selects them from Core

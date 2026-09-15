@@ -169,10 +169,18 @@ struct CastDevicePopover: View {
         ScrollView {
             LazyVStack(spacing: 6) {
                 if castService.devices.isEmpty {
-                    self.searchingPlaceholder
+                    if castService.isAwaitingDevices {
+                        self.searchingPlaceholder
+                    } else {
+                        self.noDevicesPlaceholder
+                    }
                 } else {
                     ForEach(castService.devices) { device in
                         self.deviceRow(device, castService: castService)
+                    }
+
+                    if castService.isAwaitingDevices {
+                        self.moreDevicesIndicator
                     }
                 }
             }
@@ -202,6 +210,44 @@ struct CastDevicePopover: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 10)
+    }
+
+    /// Shown when the browse has answered with nothing, which is not the same as still looking.
+    private var noDevicesPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("No devices found", comment: "Shown when a device search found nothing")
+                .font(.system(size: 13, weight: .medium))
+
+            Text(
+                "Make sure the device is on the same Wi-Fi network.",
+                comment: "Hint shown while searching for Chromecasts"
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+    }
+
+    /// Shown under a list that already has devices, so a running browse is still visible without
+    /// hiding the devices that are ready to use.
+    private var moreDevicesIndicator: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.mini)
+
+            Text(
+                "Looking for more devices…",
+                comment: "Shown under the device list while a refresh is running"
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 2)
     }
 
     private var unavailableMessage: some View {
