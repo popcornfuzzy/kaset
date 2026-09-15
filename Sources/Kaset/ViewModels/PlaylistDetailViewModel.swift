@@ -20,9 +20,34 @@ final class PlaylistDetailViewModel {
     let client: any YTMusicClientProtocol
     private let logger = DiagnosticsLogger.api
 
+    /// Video IDs already loaded. Maintained incrementally so appending a page doesn't rebuild a
+    /// set over every loaded track.
+    private var loadedVideoIds: Set<String> = []
+
+    /// In-flight page load, shared so a scroll-triggered page and a background prefill never
+    /// issue two continuation requests against the same token.
+    private var inFlightPageLoad: Task<Bool, Never>?
+
+    /// Background task that keeps a page of headroom below the loaded tracks.
+    // swiftformat:disable modifierOrder
+    /// nonisolated(unsafe) required for deinit access; Swift 6.2 warning is expected.
+    nonisolated(unsafe) private var prefillTask: Task<Void, Never>?
+    // swiftformat:enable modifierOrder
+
+    /// Generation counter so a cancelled prefill can't clear the handle of a newer one.
+    private var prefillGeneration = 0
+
+    /// Whether loading a playlist prefetches the following page in the background. Tests turn
+    /// this off to keep page accounting deterministic.
+    var prefetchesFollowingPage = true
+
     init(playlist: Playlist, client: any YTMusicClientProtocol) {
         self.playlist = playlist
         self.client = client
+    }
+
+    deinit {
+        self.prefillTask?.cancel()
     }
 
     /// Strips song count patterns from author text (e.g., " • 145 songs" or " • 2,429 tracks").
@@ -53,11 +78,15 @@ final class PlaylistDetailViewModel {
         do {
             let result = try await self.fetchPlaylistDetail()
             self.playlistDetail = result.detail
+            self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
             self.loadingState = .loaded
             let loadedTrackCount = result.detail.tracks.count
             let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
             self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+
+            // Keep a page of headroom below the loaded tracks so a fast scroll never waits on the network.
+            self.prefillNextPage()
         } catch is CancellationError {
             // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
             self.logger.debug("Playlist detail load cancelled")
@@ -149,32 +178,83 @@ final class PlaylistDetailViewModel {
     }
 
     /// Loads more tracks via continuation.
+    ///
+    /// Driven by scroll proximity rather than a row callback, so the request starts while there
+    /// is still content below the visible window and the spinner stays off-screen.
     func loadMore() async {
-        guard self.loadingState == .loaded, self.hasMore, let currentDetail = playlistDetail else { return }
+        _ = await self.loadNextPage(showIndicator: true)
+    }
 
-        self.loadingState = .loadingMore
+    /// Keeps one continuation page of headroom below the loaded tracks so a fast scroll never
+    /// has to wait on the network. Fire-and-forget by design: the loaded tracks already fill the
+    /// window, so there is nothing to await.
+    private func prefillNextPage() {
+        guard self.prefetchesFollowingPage, self.prefillTask == nil, self.hasMore else { return }
+
+        self.prefillGeneration += 1
+        let generation = self.prefillGeneration
+        self.prefillTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await self.loadNextPage(showIndicator: false)
+            if self.prefillGeneration == generation {
+                self.prefillTask = nil
+            }
+        }
+    }
+
+    /// Loads the next page, coalescing concurrent requests into one continuation call.
+    /// - Parameter showIndicator: Whether to surface the loading indicator for this page.
+    /// - Returns: Whether a page was appended.
+    private func loadNextPage(showIndicator: Bool) async -> Bool {
+        // A page is already on the way — wait for it instead of issuing a second request.
+        if let inFlightPageLoad {
+            return await inFlightPageLoad.value
+        }
+
+        guard self.hasMore, self.playlistDetail != nil else { return false }
+
+        if showIndicator {
+            self.loadingState = .loadingMore
+        }
         self.logger.info("Loading more playlist tracks")
 
+        let page = Task { await self.appendNextPage() }
+        self.inFlightPageLoad = page
+        let didAppend = await page.value
+        self.inFlightPageLoad = nil
+
+        if showIndicator {
+            // Keep loaded state so the user can retry a failed page.
+            self.loadingState = .loaded
+        }
+
+        return didAppend
+    }
+
+    /// Fetches one continuation page and appends its unique tracks.
+    private func appendNextPage() async -> Bool {
         do {
             guard let response = try await client.getPlaylistContinuation() else {
                 self.hasMore = false
-                self.loadingState = .loaded
-                return
+                self.logger.info("No playlist continuation available, stopping pagination")
+                return false
             }
 
-            // Build a set of existing video IDs for deduplication
-            let existingVideoIds = Set(currentDetail.tracks.map(\.videoId))
+            // A cancelled page (refresh or navigation) must not mutate the list.
+            guard !Task.isCancelled else {
+                self.logger.debug("Playlist continuation cancelled")
+                return false
+            }
 
-            // Filter out duplicates from the new tracks
-            let newTracks = response.tracks.filter { !existingVideoIds.contains($0.videoId) }
+            // Dedupe against the incrementally maintained set, which also records the new IDs.
+            // This handles radio playlists that return overlapping data.
+            let newTracks = response.tracks.filter { self.loadedVideoIds.insert($0.videoId).inserted }
 
-            // If no new unique tracks were added, stop pagination
-            // This handles radio playlists that return overlapping data
-            if newTracks.isEmpty {
+            // If no new unique tracks were added, stop pagination.
+            guard !newTracks.isEmpty, let currentDetail = self.playlistDetail else {
                 self.hasMore = false
-                self.loadingState = .loaded
                 self.logger.info("No new unique tracks in continuation, stopping pagination")
-                return
+                return false
             }
 
             // Append only new tracks to existing playlist
@@ -195,20 +275,27 @@ final class PlaylistDetailViewModel {
             )
             self.hasMore = response.hasMore
 
-            self.loadingState = .loaded
-            self.logger.info("Loaded \(newTracks.count) new tracks (from \(response.tracks.count)), loaded total: \(allTracks.count), reported total: \(preservedTrackCount), hasMore: \(self.hasMore)")
+            let loadedTrackCount = allTracks.count
+            self.logger.info("Loaded \(newTracks.count) new tracks (from \(response.tracks.count)), loaded total: \(loadedTrackCount), reported total: \(preservedTrackCount), hasMore: \(self.hasMore)")
+            return true
         } catch is CancellationError {
             self.logger.debug("Playlist continuation cancelled")
-            self.loadingState = .loaded
+            return false
         } catch {
             self.logger.error("Failed to load more playlist tracks: \(error.localizedDescription)")
-            // Keep loaded state so user can retry
-            self.loadingState = .loaded
+            return false
         }
     }
 
     /// Refreshes the playlist.
     func refresh() async {
+        // A refresh replaces the track list, so any in-flight prefill or page fetch is stale.
+        self.prefillGeneration += 1
+        self.prefillTask?.cancel()
+        self.prefillTask = nil
+        self.inFlightPageLoad?.cancel()
+        self.inFlightPageLoad = nil
+
         // Manual refresh should fetch fresh data instead of reusing browse cache.
         APICache.shared.invalidate(matching: "browse:")
         guard self.loadingState != .loading, self.loadingState != .loadingMore else { return }
@@ -227,10 +314,12 @@ final class PlaylistDetailViewModel {
         do {
             let result = try await self.fetchPlaylistDetail()
             self.playlistDetail = result.detail
+            self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
             let loadedTrackCount = result.detail.tracks.count
             let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
             self.logger.info("Playlist refreshed: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+            self.prefillNextPage()
         } catch is CancellationError {
             self.logger.debug("Playlist refresh cancelled")
         } catch {

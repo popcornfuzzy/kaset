@@ -250,6 +250,14 @@ private struct FavoriteItemCard: View {
         .accessibilityHint(String(localized: "Drag to reorder"))
     }
 
+    /// TEMPORARY: honors the PerfHUD "Materials" switch (see PerfHUD).
+    private var playOverlayStyle: AnyShapeStyle {
+        if PerfHUD.isEnabled, !PerfHUD.shared.usesMaterials {
+            return AnyShapeStyle(Color.black.opacity(0.35))
+        }
+        return AnyShapeStyle(.ultraThinMaterial)
+    }
+
     private var thumbnail: some View {
         ZStack {
             if let url = item.thumbnailURL?.highQualityThumbnailURL {
@@ -270,7 +278,7 @@ private struct FavoriteItemCard: View {
             // Play overlay on hover (for songs)
             if case .song = self.item.itemType, self.isHovering {
                 Circle()
-                    .fill(.ultraThinMaterial)
+                    .fill(self.playOverlayStyle)
                     .frame(width: 48, height: 48)
                     .overlay {
                         Image(systemName: "play.fill")

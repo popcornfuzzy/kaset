@@ -31,6 +31,15 @@ struct PlayerBar: View {
     @State private var lastProgressSecond: Int = -1
 
     var body: some View {
+        // TEMPORARY: scroll diagnostics (see PerfHUD).
+        if PerfHUD.isEnabled, !PerfHUD.shared.showsPlayerBar {
+            EmptyView()
+        } else {
+            self.barBody
+        }
+    }
+
+    private var barBody: some View {
         GlassEffectContainer(spacing: 0) {
             HStack(spacing: 0) {
                 // Left section: Playback controls
@@ -49,8 +58,7 @@ struct PlayerBar: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
             .frame(height: 52)
-            .glassEffect(.regular.interactive(), in: .capsule)
-            .glassEffectID("playerBar", in: self.playerNamespace)
+            .modifier(PlayerBarGlassModifier(namespace: self.playerNamespace))
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
@@ -607,6 +615,25 @@ struct PlayerBar: View {
             return "speaker.wave.1.fill"
         } else {
             return "speaker.wave.2.fill"
+        }
+    }
+}
+
+// MARK: - PlayerBarGlassModifier
+
+/// TEMPORARY: applies the player bar's Liquid Glass treatment unless the PerfHUD turned it off
+/// to test whether backdrop sampling over the scrolling list is what caps the frame rate.
+@available(macOS 26.0, *)
+private struct PlayerBarGlassModifier: ViewModifier {
+    let namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if PerfHUD.isEnabled, !PerfHUD.shared.usesGlass {
+            content
+        } else {
+            content
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .glassEffectID("playerBar", in: self.namespace)
         }
     }
 }

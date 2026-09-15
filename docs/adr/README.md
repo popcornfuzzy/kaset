@@ -48,3 +48,4 @@ What becomes easier or more difficult because of this change?
 | [0011](0011-scrobbling-support.md) | Scrobbling Support (Last.fm) | Accepted |
 | [0012](0012-synced-lyrics-architecture.md) | Synced Lyrics Provider Architecture | Accepted |
 | [0013](0013-like-status-coalescing.md) | Coalesced, Cancellable Like/Dislike Rating Pipeline | Accepted |
+| [0014](0014-playlist-scroll-performance.md) | Playlist Scroll Performance | Accepted |

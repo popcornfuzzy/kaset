@@ -142,7 +142,7 @@ struct MainWindow: View {
             // Persistent WebView - always present once a video has been requested
             // Uses a SINGLETON WebView instance that persists for the app lifetime
             // The mini player can be resized by dragging any edge.
-            if let videoId = playerService.pendingPlayVideoId {
+            if let videoId = playerService.pendingPlayVideoId, self.showsWebLayer {
                 let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
                 let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
                 let shouldPreferVideo = self.playerService.currentTrackHasVideo
@@ -339,6 +339,20 @@ struct MainWindow: View {
                 self.playerService.currentTrackLikeStatus = event.status
             }
         }
+        // TEMPORARY: scroll diagnostics (see PerfHUD).
+        .overlay(alignment: .topLeading) {
+            if PerfHUD.isEnabled {
+                PerfHUDOverlay()
+            }
+        }
+        .task {
+            PerfHUD.shared.start()
+        }
+    }
+
+    /// TEMPORARY: honors the PerfHUD "WebLayer" switch.
+    private var showsWebLayer: Bool {
+        !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
     }
 
     private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {
