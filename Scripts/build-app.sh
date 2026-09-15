@@ -213,6 +213,10 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <!-- Google Cast discovery and audio streaming -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>Kaset looks for Google Cast devices on your network and streams audio to the device you choose.</string>
+    <!-- Required for the Core Audio process tap that captures playback while casting. Without this key
+         macOS never prompts, and the tap runs but delivers silence. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Kaset captures the audio it is playing so it can send it to the Google Cast device you choose.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_googlecast._tcp</string>

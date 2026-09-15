@@ -143,6 +143,36 @@ struct AudioTapFormatTests {
         )
     }
 
+    // MARK: - Silence
+
+    @Test("Recognises a buffer of digital silence")
+    func recognisesSilentBuffer() {
+        // A tap without the system audio recording permission delivers exactly this, which is why the
+        // streamer checks for it rather than trusting that captured buffers contain audio.
+        let silence = AudioTapBuffer(
+            payload: Data(repeating: 0, count: 4096),
+            bufferByteSizes: [4096],
+            frameCount: 512
+        )
+
+        #expect(silence.isSilent)
+    }
+
+    @Test("Does not mistake quiet audio for silence")
+    func recognisesAudibleBuffer() {
+        // One sample's worth of signal is enough to tell the difference: silence is all zero bytes.
+        var payload = Data(repeating: 0, count: 4096)
+        payload[2048] = 0x01
+
+        let audible = AudioTapBuffer(payload: payload, bufferByteSizes: [4096], frameCount: 512)
+        #expect(!audible.isSilent)
+    }
+
+    @Test("Treats an empty buffer as silent")
+    func treatsEmptyBufferAsSilent() {
+        #expect(AudioTapBuffer(payload: Data(), bufferByteSizes: [], frameCount: 0).isSilent)
+    }
+
     private static func nonInterleavedMono() -> AudioStreamBasicDescription {
         AudioStreamBasicDescription(
             mSampleRate: 48000,

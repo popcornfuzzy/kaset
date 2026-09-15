@@ -46,5 +46,9 @@
 	<array>
 		<string>_googlecast._tcp</string>
 	</array>
+	<!-- Required for the Core Audio process tap that captures playback while casting. Without this key
+	     macOS never prompts for system audio recording, and the tap runs but delivers silence. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Kaset captures the audio it is playing so it can send it to the Google Cast device you choose.</string>
 </dict>
 </plist>

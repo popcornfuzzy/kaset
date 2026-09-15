@@ -18,6 +18,15 @@ struct AudioTapBuffer: Sendable, Equatable {
 
     /// Number of sample frames in this buffer.
     let frameCount: Int
+
+    /// Whether every captured byte is zero, meaning the buffer carries digital silence.
+    ///
+    /// A tap whose process never received the system audio recording permission still runs — it even mutes
+    /// the processes it covers — but delivers nothing except silence. Checking the captured bytes tells that
+    /// failure apart from a healthy stream, where the same silence looks like audio that never started.
+    var isSilent: Bool {
+        self.payload.allSatisfy { $0 == 0 }
+    }
 }
 
 // MARK: - AudioTapFormatLayout

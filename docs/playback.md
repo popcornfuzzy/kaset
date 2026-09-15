@@ -411,7 +411,7 @@ Default Media Receiver, so the queue, seeking, and track changes keep working ex
 | Stage | Component | Notes |
 |-------|-----------|-------|
 | Discovery | `CastDeviceDiscovery` | Browses `_googlecast._tcp`; name, model, and id come from the TXT record |
-| Capture | `AudioProcessTap` | Core Audio process tap over Kaset and its WebKit audio helpers, muted while tapped |
+| Capture | `AudioProcessTap`, `CastAudioProcessResolver` | Core Audio process tap over Kaset and WebKit's XPC helpers, muted while tapped |
 | Encode | `AACStreamEncoder`, `ADTSHeader` | AAC-LC at 192 kbps, framed as `audio/aac` |
 | Serve | `LocalAudioStreamServer` | Endless chunked HTTP response on an ephemeral port |
 | Hand over | `CastConnection`, `CastReceiverSession` | CASTV2 over TLS to port 8009, `LOAD` on `CC1AD845` |
@@ -419,13 +419,35 @@ Default Media Receiver, so the queue, seeking, and track changes keep working ex
 
 ### Notes and limitations
 
-- The first cast triggers the macOS local-network and firewall prompts. The sandbox needs
-  `com.apple.security.network.server`, and `NSBonjourServices` lists `_googlecast._tcp`.
+- The first cast triggers the macOS local-network, firewall, and **system audio recording** prompts. Capture
+  needs the audio recording permission (`kTCCServiceAudioCapture`), declared through
+  `NSAudioCaptureUsageDescription` and the sandbox's audio input entitlement; the grant lives under
+  System Settings → Privacy & Security → Screen & System Audio Recording. Without it the tap still runs and
+  still mutes the Mac, but streams silence — the cast log calls that out explicitly.
 - Audio is captured after decoding, so DRM-protected tracks, podcasts, and ads all cast unchanged.
 - Expect roughly 1-3 seconds of latency; the Mac keeps playing (muted by the tap) for the whole session.
-- The slider shapes the stream rather than the device volume, and a paused track streams silence so the
-  receiver session stays alive.
+- The slider shapes the stream rather than the device volume; a paused track simply stops sending audio.
 - The device must be able to reach the Mac, so guest Wi-Fi and AP isolation block casting.
+- WebKit renders playback in helper processes `launchd` owns, not the app, so the tap selects them from Core
+  Audio's process list. Another WebKit-based app playing at the same time is captured too.
+
+### When casting does not play
+
+The cast log names the stage it stopped at, which separates the three failure modes:
+
+```bash
+log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info | grep -i cast
+```
+
+| Log line | Meaning |
+|----------|---------|
+| `Connecting to Cast device at …` then `Never reached …` | The network blocked the control connection |
+| `Connected to Cast device` then `Stream server listening on port …` | The control path works |
+| `Tapping N process(es) for audio capture: …` | Which processes the tap covers; the app and WebKit's `com.apple.WebKit.GPU` should be listed |
+| `Cast receiver connected to the audio stream` | The device fetched the stream URL |
+| `Captured the first buffer from the audio tap` | Audio is being captured; without it the stream is empty |
+| `The audio tap has captured nothing 5s after starting` | The tap is not receiving audio — the device will show a spinner forever. Start the track playing and cast again: the tap set is resolved when casting starts, and WebKit's helper must have opened the audio hardware by then. |
+| `The audio tap has delivered only silence 5s after starting` | The system audio recording permission is missing. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording and cast again. |
 
 ## Video Mode
 

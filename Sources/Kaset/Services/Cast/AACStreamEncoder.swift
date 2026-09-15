@@ -44,6 +44,19 @@ enum AACStreamEncoderError: LocalizedError {
 ///
 /// AAC access units are variable length, so every converted packet is framed with an ADTS header
 /// before it is written to the stream.
+///
+/// ## Feeding a live converter
+///
+/// `AudioConverterFillComplexBuffer` pulls input through a callback, and the callback's contract is
+/// what shapes this class. The converter asks for a *minimum* number of input packets — two AAC
+/// frames' worth, in practice — and calls back again while it has less. Returning **zero** packets
+/// means *end of stream*: the converter flushes and never encodes again, which is how a live stream
+/// turns into a silent one.
+///
+/// A capture tap delivers far less than that per callback (tens of milliseconds), so the encoder
+/// queues input and only starts a conversion once a whole conversion's worth is available. That keeps
+/// every request satisfiable from real audio, and with it the stream's timeline: padding requests
+/// with silence would insert gaps and stretch the track.
 final class AACStreamEncoder {
     /// Encoder configuration.
     struct Configuration: Sendable {
@@ -60,9 +73,31 @@ final class AACStreamEncoder {
     private let converter: AudioConverterRef
     private let sampleRate: Double
     private let channelCount: Int
-    private let packetsPerFrame: UInt32
+    private let framesPerPacket: Int
     private let maximumOutputPacketSize: Int
     private let conversionContext = ConversionContext()
+
+    /// Frames of input a conversion needs before it is worth starting.
+    ///
+    /// The converter asks for about two packets per call, so waiting for two keeps its requests
+    /// satisfiable from real audio. If a conversion ever has to pad a request instead, the requirement
+    /// grows to the size it asked for, so an unusual configuration self-corrects rather than thinning
+    /// the stream on every conversion.
+    private var requiredFrameCount: Int
+
+    /// Ceiling on ``requiredFrameCount``, so a demanding converter cannot buffer a noticeable delay
+    /// into a live stream.
+    private let maximumRequiredFrameCount: Int
+
+    /// Frames of silence that had to be substituted for missing audio, for diagnostics and tests.
+    ///
+    /// A growing value means the encoder is not being fed enough audio to satisfy the converter, which
+    /// would stretch playback instead of playing it.
+    private(set) var paddedFrameCount = 0
+
+    /// Queued capture, held in the shape of the converter's input buffers.
+    private var queuedBuffers: [Data]
+    private var queuedFrameCount = 0
 
     /// Creates an encoder fed by the given PCM format.
     ///
@@ -102,12 +137,17 @@ final class AACStreamEncoder {
         }
 
         var bitRate = UInt32(configuration.bitRate)
-        AudioConverterSetProperty(
+        let bitRateStatus = AudioConverterSetProperty(
             converter,
             kAudioConverterEncodeBitRate,
             UInt32(MemoryLayout<UInt32>.size),
             &bitRate
         )
+        if bitRateStatus != noErr {
+            DiagnosticsLogger.cast.warning(
+                "The AAC encoder refused the \(configuration.bitRate) bit/s target (OSStatus \(bitRateStatus)); the stream will use the encoder's own rate."
+            )
+        }
 
         var maximumPacketSize: UInt32 = 0
         var maximumPacketSizeValue = UInt32(MemoryLayout<UInt32>.size)
@@ -118,41 +158,98 @@ final class AACStreamEncoder {
             &maximumPacketSize
         )
 
+        let framesPerPacket = max(Int(outputFormat.mFramesPerPacket), 1)
+
         self.converter = converter
         self.inputFormat = inputFormat
         self.layout = layout
         self.sampleRate = inputFormat.mSampleRate
         self.channelCount = layout.channelCount
-        self.packetsPerFrame = outputFormat.mFramesPerPacket
+        self.framesPerPacket = framesPerPacket
+        self.requiredFrameCount = framesPerPacket * 2
+        self.maximumRequiredFrameCount = framesPerPacket * 8
         self.maximumOutputPacketSize = sizeStatus == noErr && maximumPacketSize > 0
             ? Int(maximumPacketSize)
             : 2048
+        self.queuedBuffers = Array(repeating: Data(), count: layout.bufferCount)
     }
 
     deinit {
         AudioConverterDispose(self.converter)
     }
 
-    /// Encodes one captured PCM buffer and returns ADTS-framed AAC.
+    /// Queues one captured PCM buffer and returns the ADTS-framed AAC it completed, if any.
+    ///
+    /// Most calls return nothing: a capture buffer holds a fraction of an AAC frame, so audio comes
+    /// out every few callbacks rather than on every one.
     func encode(_ buffer: AudioTapBuffer) throws -> Data {
         guard !buffer.payload.isEmpty else { return Data() }
 
-        let inputByteCount = buffer.payload.count
-        let inputStorage = UnsafeMutableRawPointer.allocate(
-            byteCount: inputByteCount,
+        self.enqueue(buffer)
+
+        guard self.queuedFrameCount >= self.requiredFrameCount else {
+            return Data()
+        }
+
+        return try self.convertQueuedAudio()
+    }
+
+    // MARK: - Queueing
+
+    /// Copies a captured buffer into the queue, keeping one entry per input buffer.
+    private func enqueue(_ buffer: AudioTapBuffer) {
+        guard buffer.bufferByteSizes.count == self.layout.bufferCount else { return }
+        guard buffer.bufferByteSizes.reduce(0, +) <= buffer.payload.count else { return }
+
+        var offset = 0
+        for index in 0 ..< self.layout.bufferCount {
+            let byteCount = buffer.bufferByteSizes[index]
+            self.queuedBuffers[index].append(buffer.payload[offset ..< offset + byteCount])
+            offset += byteCount
+        }
+
+        self.queuedFrameCount += buffer.frameCount
+    }
+
+    /// Discards the queued audio, called once it has been handed to a conversion.
+    private func resetQueue() {
+        for index in 0 ..< self.queuedBuffers.count {
+            self.queuedBuffers[index].removeAll(keepingCapacity: true)
+        }
+        self.queuedFrameCount = 0
+    }
+
+    // MARK: - Conversion
+
+    /// Converts the queued audio into ADTS-framed AAC.
+    private func convertQueuedAudio() throws -> Data {
+        let frameCount = self.queuedFrameCount
+        let packetCapacity = frameCount / self.framesPerPacket
+        guard packetCapacity > 0 else { return Data() }
+
+        // The queue is laid out as one contiguous block per input buffer, in buffer order, which is
+        // what the converter's buffer list points into.
+        let bufferByteSizes = self.queuedBuffers.map(\.count)
+        let byteCount = bufferByteSizes.reduce(0, +)
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: max(byteCount, 1),
             alignment: MemoryLayout<Float>.alignment
         )
-        defer { inputStorage.deallocate() }
-        buffer.payload.copyBytes(to: inputStorage.assumingMemoryBound(to: UInt8.self), count: inputByteCount)
+        defer { storage.deallocate() }
 
-        guard let inputBufferList = self.makeInputBufferList(from: buffer, storage: inputStorage) else {
-            throw AACStreamEncoderError.unsupportedFormat("buffer layout did not match the stream format")
+        var offset = 0
+        for (index, queued) in self.queuedBuffers.enumerated() {
+            guard !queued.isEmpty else { continue }
+            queued.copyBytes(
+                to: storage.advanced(by: offset).assumingMemoryBound(to: UInt8.self),
+                count: queued.count
+            )
+            offset += bufferByteSizes[index]
         }
-        defer { free(inputBufferList.unsafeMutablePointer) }
 
-        let maximumPackets = max(Int(ceil(Double(buffer.frameCount) / Double(self.packetsPerFrame))) + 1, 2)
-        let outputCapacity = maximumPackets * self.maximumOutputPacketSize
+        self.resetQueue()
 
+        let outputCapacity = packetCapacity * self.maximumOutputPacketSize
         let outputBufferList = AudioBufferList.allocate(maximumBuffers: 1)
         defer { free(outputBufferList.unsafeMutablePointer) }
         outputBufferList[0].mNumberChannels = UInt32(self.channelCount)
@@ -166,15 +263,17 @@ final class AACStreamEncoder {
 
         var packetDescriptions = [AudioStreamPacketDescription](
             repeating: AudioStreamPacketDescription(),
-            count: maximumPackets
+            count: packetCapacity
         )
 
         self.conversionContext.prepare(
-            bufferList: inputBufferList,
-            packetCount: UInt32(buffer.frameCount)
+            storage: storage,
+            bufferByteSizes: bufferByteSizes,
+            frameCount: frameCount,
+            channelsPerBuffer: self.layout.channelsPerBuffer
         )
 
-        var outputPacketCount = UInt32(maximumPackets)
+        var outputPacketCount = UInt32(packetCapacity)
         let status = packetDescriptions.withUnsafeMutableBufferPointer { descriptions in
             AudioConverterFillComplexBuffer(
                 self.converter,
@@ -183,6 +282,16 @@ final class AACStreamEncoder {
                 &outputPacketCount,
                 outputBufferList.unsafeMutablePointer,
                 descriptions.baseAddress
+            )
+        }
+
+        // A request the converter could not satisfy from real audio was padded, so ask for more input
+        // next time rather than letting every conversion stretch the stream.
+        if self.conversionContext.paddedFrameCount > 0 {
+            self.paddedFrameCount += self.conversionContext.paddedFrameCount
+            self.requiredFrameCount = min(
+                max(self.requiredFrameCount, self.conversionContext.maximumRequestedFrameCount),
+                self.maximumRequiredFrameCount
             )
         }
 
@@ -201,34 +310,6 @@ final class AACStreamEncoder {
             packetCount: Int(outputPacketCount),
             packetDescriptions: packetDescriptions
         )
-    }
-
-    // MARK: - Helpers
-
-    /// Rebuilds an `AudioBufferList` from the flattened tap buffer.
-    ///
-    /// The returned list points into `storage`, which the caller keeps alive for the duration of the
-    /// conversion call.
-    private func makeInputBufferList(
-        from buffer: AudioTapBuffer,
-        storage: UnsafeMutableRawPointer
-    ) -> UnsafeMutableAudioBufferListPointer? {
-        guard buffer.bufferByteSizes.count == self.layout.bufferCount else { return nil }
-        guard buffer.payload.count >= buffer.bufferByteSizes.reduce(0, +) else { return nil }
-
-        let bufferList = AudioBufferList.allocate(maximumBuffers: self.layout.bufferCount)
-        bufferList.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(self.layout.bufferCount)
-
-        var offset = 0
-        for index in 0 ..< self.layout.bufferCount {
-            let byteCount = buffer.bufferByteSizes[index]
-            bufferList[index].mNumberChannels = UInt32(self.layout.channelsPerBuffer)
-            bufferList[index].mDataByteSize = UInt32(byteCount)
-            bufferList[index].mData = storage.advanced(by: offset)
-            offset += byteCount
-        }
-
-        return bufferList
     }
 
     /// Walks the converter output, wrapping each packet in an ADTS header.
@@ -269,43 +350,131 @@ final class AACStreamEncoder {
 
 /// Hand-off between the encoder and the C input callback that feeds the converter.
 ///
-/// `AudioConverterFillComplexBuffer` pulls input through a C function pointer, so the buffer for the
-/// current call is parked here and reached through the callback's `userData` pointer.
+/// `AudioConverterFillComplexBuffer` pulls input through a C function pointer, so the source audio for
+/// the current call is parked here and reached through the callback's `userData` pointer. The callback
+/// hands the converter one slice per request, because the converter consumes exactly what it asked
+/// for and forgets the rest.
 final class ConversionContext: @unchecked Sendable {
-    private var bufferList: UnsafeMutableAudioBufferListPointer?
-    private var packetCount: UInt32 = 0
-    private var hasProvidedBuffer = false
+    private var storage: UnsafeMutableRawPointer?
+    private var bufferByteSizes: [Int] = []
+    private var bufferOffsets: [Int] = []
+    private var bytesPerBufferFrame: [Int] = []
+    private var channelsPerBuffer: UInt32 = 2
+    private var totalFrameCount = 0
+    private var providedFrameCount = 0
 
-    /// Stores the input for the next conversion call.
-    func prepare(bufferList: UnsafeMutableAudioBufferListPointer, packetCount: UInt32) {
-        self.bufferList = bufferList
-        self.packetCount = packetCount
-        self.hasProvidedBuffer = false
+    /// Frames of silence handed over during the current conversion.
+    private(set) var paddedFrameCount = 0
+
+    /// Largest request the converter made during the current conversion.
+    private(set) var maximumRequestedFrameCount = 0
+
+    /// Scratch used to answer a request that outruns the prepared audio.
+    private var silence: UnsafeMutableRawPointer?
+    private var silenceCapacity = 0
+
+    deinit {
+        self.silence?.deallocate()
     }
 
-    /// Copies the parked input into the converter's request.
+    /// Parks the audio for the next conversion call.
     ///
-    /// Returns `0` when all input for this call has already been handed over, which tells the
-    /// converter there is nothing more to read for now.
+    /// The pointers must stay valid until that call returns, which the encoder guarantees.
+    func prepare(
+        storage: UnsafeMutableRawPointer,
+        bufferByteSizes: [Int],
+        frameCount: Int,
+        channelsPerBuffer: Int
+    ) {
+        self.storage = storage
+        self.bufferByteSizes = bufferByteSizes
+        self.channelsPerBuffer = UInt32(channelsPerBuffer)
+        self.totalFrameCount = frameCount
+        self.providedFrameCount = 0
+        self.paddedFrameCount = 0
+        self.maximumRequestedFrameCount = 0
+
+        // Bytes one sample frame occupies in each buffer, and where each buffer starts. All buffers
+        // carry the same number of frames, so the offsets follow from the byte sizes.
+        self.bytesPerBufferFrame = bufferByteSizes.map { size in
+            frameCount > 0 ? size / frameCount : 0
+        }
+
+        var offset = 0
+        self.bufferOffsets = bufferByteSizes.map { size in
+            defer { offset += size }
+            return offset
+        }
+    }
+
+    /// Answers the converter's request, advancing through the prepared audio.
     func provide(
         packetCountPointer: UnsafeMutablePointer<UInt32>,
         bufferListPointer: UnsafeMutablePointer<AudioBufferList>
-    ) -> UInt32 {
-        guard !self.hasProvidedBuffer, let inputList = self.bufferList else {
+    ) -> OSStatus {
+        guard let storage = self.storage, !self.bufferByteSizes.isEmpty else {
             packetCountPointer.pointee = 0
-            return 0
+            return noErr
         }
 
-        self.hasProvidedBuffer = true
-        packetCountPointer.pointee = self.packetCount
+        let requested = Int(packetCountPointer.pointee)
+        self.maximumRequestedFrameCount = max(self.maximumRequestedFrameCount, requested)
+        let remaining = self.totalFrameCount - self.providedFrameCount
+        let supplied = min(requested, remaining)
+
+        // Padding keeps a request answerable when the converter asks for more than the queued audio
+        // covers, which happens once per converter while it primes. Answering zero instead would end
+        // the stream for good.
+        let isPadding = supplied < requested
+        let frames = isPadding ? requested : supplied
+        let maximumBytesPerFrame = self.bytesPerBufferFrame.max() ?? 0
+
+        let source = isPadding
+            ? self.silenceBuffer(byteCount: self.bufferByteSizes.count * frames * maximumBytesPerFrame)
+            : storage
+        guard let source else {
+            packetCountPointer.pointee = 0
+            return noErr
+        }
 
         let destination = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-        destination.unsafeMutablePointer.pointee.mNumberBuffers = inputList.unsafeMutablePointer.pointee.mNumberBuffers
-        for index in 0 ..< inputList.count {
-            destination[index] = inputList[index]
+        destination.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(self.bufferByteSizes.count)
+
+        for index in 0 ..< self.bufferByteSizes.count {
+            let bytesPerFrame = isPadding ? maximumBytesPerFrame : self.bytesPerBufferFrame[index]
+            destination[index].mNumberChannels = self.channelsPerBuffer
+            destination[index].mDataByteSize = UInt32(frames * bytesPerFrame)
+            destination[index].mData = isPadding
+                ? source.advanced(by: index * frames * bytesPerFrame)
+                : source.advanced(by: self.bufferOffsets[index] + self.providedFrameCount * bytesPerFrame)
         }
 
-        return self.packetCount
+        packetCountPointer.pointee = UInt32(frames)
+        if isPadding {
+            self.paddedFrameCount += requested
+        } else {
+            self.providedFrameCount += supplied
+        }
+
+        return noErr
+    }
+
+    /// A zero-filled buffer of at least `byteCount` bytes, used to answer requests that outrun the
+    /// prepared audio.
+    private func silenceBuffer(byteCount: Int) -> UnsafeMutableRawPointer? {
+        guard byteCount > 0 else { return nil }
+
+        if let silence = self.silence, self.silenceCapacity >= byteCount {
+            return silence
+        }
+
+        self.silence?.deallocate()
+        let capacity = byteCount * 2
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: MemoryLayout<Float>.alignment)
+        buffer.initializeMemory(as: UInt8.self, repeating: 0, count: capacity)
+        self.silence = buffer
+        self.silenceCapacity = capacity
+        return buffer
     }
 }
 
@@ -317,6 +486,5 @@ private let aacStreamEncoderInputProc: AudioConverterComplexInputDataProc = { _,
     }
 
     let context = Unmanaged<ConversionContext>.fromOpaque(userData).takeUnretainedValue()
-    _ = context.provide(packetCountPointer: packetCountPointer, bufferListPointer: bufferListPointer)
-    return noErr
+    return context.provide(packetCountPointer: packetCountPointer, bufferListPointer: bufferListPointer)
 }

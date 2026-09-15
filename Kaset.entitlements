@@ -15,5 +15,10 @@
 	<!-- Casting serves the audio stream to the Cast device over the local network. -->
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Casting captures Kaset's own playback with a Core Audio process tap, which the sandbox grants
+	     through the audio input entitlement. The system audio recording permission is requested separately
+	     via NSAudioCaptureUsageDescription in Info.plist. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

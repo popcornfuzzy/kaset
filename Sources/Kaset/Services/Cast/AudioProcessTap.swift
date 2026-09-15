@@ -56,6 +56,13 @@ final class AudioProcessTap: @unchecked Sendable {
     /// How ``format`` maps onto captured buffers.
     let layout: AudioTapFormatLayout
 
+    /// Processes that were actually tapped.
+    ///
+    /// Processes Core Audio does not know about cannot be tapped, so this can be a subset of the
+    /// requested identifiers — a difference worth reporting, because the missing process is usually
+    /// the one making the sound.
+    let tappedProcessIDs: [pid_t]
+
     private let system: AudioHardwareSystem
     private let tap: AudioHardwareTap
     private let aggregateDevice: AudioHardwareAggregateDevice
@@ -73,9 +80,12 @@ final class AudioProcessTap: @unchecked Sendable {
         let system = AudioHardwareSystem.shared
         self.system = system
 
-        let processObjects: [AudioObjectID] = processIDs.compactMap { pid in
-            guard let process = try? system.process(for: pid) else { return nil }
-            return process.id
+        var processObjects: [AudioObjectID] = []
+        var tappedProcessIDs: [pid_t] = []
+        for pid in processIDs {
+            guard let process = try? system.process(for: pid) else { continue }
+            processObjects.append(process.id)
+            tappedProcessIDs.append(pid)
         }
 
         guard !processObjects.isEmpty else {
@@ -139,6 +149,7 @@ final class AudioProcessTap: @unchecked Sendable {
         self.aggregateDevice = aggregateDevice
         self.format = tapFormat
         self.layout = AudioTapFormatLayout(format: tapFormat)
+        self.tappedProcessIDs = tappedProcessIDs
     }
 
     /// Starts capturing and returns the audio stream.
@@ -174,8 +185,9 @@ final class AudioProcessTap: @unchecked Sendable {
         do {
             try self.aggregateDevice.start(IOProcID: ioProcID)
             self.isRunning = true
+            let bufferLayout = self.layout.isInterleaved ? "interleaved" : "one buffer per channel"
             DiagnosticsLogger.cast.info(
-                "Audio capture started at \(Int(self.format.mSampleRate)) Hz, \(self.layout.channelCount) channels"
+                "Audio capture started at \(Int(self.format.mSampleRate)) Hz, \(self.layout.channelCount) channels, \(bufferLayout)"
             )
         } catch {
             DiagnosticsLogger.cast.error("Failed to start audio capture: \(error.localizedDescription)")
