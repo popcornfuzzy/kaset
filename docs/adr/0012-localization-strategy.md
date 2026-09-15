@@ -1,8 +1,14 @@
 # ADR-0012: Localization Strategy (String Catalogs)
 
+> **Superseded by [ADR-0016](0016-strings-files-as-localization-source-of-truth.md).**
+> String Catalogs were dropped: a `Localizable.xcstrings` catalog cannot share a
+> target's resources with `.lproj/Localizable.strings` files for the same
+> locales, because SwiftPM then emits two build tasks for one output path and
+> fails the build. The string-wrapping patterns described below remain in force.
+
 ## Status
 
-Proposed
+Superseded by [ADR-0016](0016-strings-files-as-localization-source-of-truth.md)
 
 ## Context
 

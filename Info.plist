@@ -38,5 +38,13 @@
 	<true/>
 	<key>OSAScriptingDefinition</key>
 	<string>Kaset.sdef</string>
+
+	<!-- Google Cast discovery and audio streaming -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kaset looks for Google Cast devices on your network and streams audio to the device you choose.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_googlecast._tcp</string>
+	</array>
 </dict>
 </plist>

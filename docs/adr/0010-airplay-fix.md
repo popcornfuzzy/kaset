@@ -2,7 +2,13 @@
 
 ## Status
 
-Implemented (with known limitations)
+Superseded by [ADR-0015](0015-chromecast-audio-casting.md)
+
+> AirPlay support was removed from Kaset. The limitations documented below were never resolved: WebKit ties the
+> AirPlay session to the video element that YouTube Music recreates on every track change, and there is no
+> programmatic way to reconnect. The player bar's cast button now targets Google Cast instead — see
+> [ADR-0015](0015-chromecast-audio-casting.md). This ADR is kept as a record of why the WebKit AirPlay picker
+> was tried, and why it was abandoned.
 
 ## Context
 

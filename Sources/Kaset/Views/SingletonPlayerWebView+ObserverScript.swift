@@ -71,40 +71,6 @@ extension SingletonPlayerWebView {
                     video.addEventListener('waiting', () => sendUpdate()); // Buffer state
                     video.addEventListener('seeked', () => sendUpdate()); // Seek completed
 
-                    // AirPlay state tracking
-                    video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => {
-                        const isWireless = video.webkitCurrentPlaybackTargetIsWireless;
-                        const wasConnected = window.__kasetAirPlayConnected;
-                        window.__kasetAirPlayConnected = isWireless;
-
-                        bridge.postMessage({
-                            type: 'AIRPLAY_STATUS',
-                            isConnected: isWireless,
-                            wasConnected: wasConnected,
-                            wasRequested: window.__kasetAirPlayRequested || false
-                        });
-                    });
-
-                    // Check initial AirPlay state
-                    const initialWireless = video.webkitCurrentPlaybackTargetIsWireless;
-                    if (initialWireless) {
-                        window.__kasetAirPlayConnected = true;
-                        bridge.postMessage({
-                            type: 'AIRPLAY_STATUS',
-                            isConnected: true,
-                            wasConnected: false,
-                            wasRequested: window.__kasetAirPlayRequested || false
-                        });
-                    } else if (window.__kasetAirPlayRequested && window.__kasetAirPlayConnected) {
-                        window.__kasetAirPlayConnected = false;
-                        bridge.postMessage({
-                            type: 'AIRPLAY_STATUS',
-                            isConnected: false,
-                            wasConnected: true,
-                            wasRequested: true
-                        });
-                    }
-
                     // Volume enforcement: immediately revert external volume changes
                     // No debounce — the isEnforcingVolume flag prevents feedback loops.
                     // A debounce allowed YouTube's rapid-fire init events to keep pushing

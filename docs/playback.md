@@ -400,6 +400,33 @@ The continuation token is cleared when:
 
 This prevents infinite fetch from triggering on non-mix playback.
 
+## Google Cast
+
+Casting sends Kaset's audio to a Google Cast device; see [ADR-0015](adr/0015-chromecast-audio-casting.md) for why the
+approach was chosen over the official SDK and the YouTube Lounge protocol. AirPlay is no longer offered.
+
+Kaset stays the player: the audio the WebView decodes is captured, encoded, and served to the device's built-in
+Default Media Receiver, so the queue, seeking, and track changes keep working exactly as they do locally.
+
+| Stage | Component | Notes |
+|-------|-----------|-------|
+| Discovery | `CastDeviceDiscovery` | Browses `_googlecast._tcp`; name, model, and id come from the TXT record |
+| Capture | `AudioProcessTap` | Core Audio process tap over Kaset and its WebKit audio helpers, muted while tapped |
+| Encode | `AACStreamEncoder`, `ADTSHeader` | AAC-LC at 192 kbps, framed as `audio/aac` |
+| Serve | `LocalAudioStreamServer` | Endless chunked HTTP response on an ephemeral port |
+| Hand over | `CastConnection`, `CastReceiverSession` | CASTV2 over TLS to port 8009, `LOAD` on `CC1AD845` |
+| Coordinate | `CastService` | Device list, session state, and the player bar's cast menu |
+
+### Notes and limitations
+
+- The first cast triggers the macOS local-network and firewall prompts. The sandbox needs
+  `com.apple.security.network.server`, and `NSBonjourServices` lists `_googlecast._tcp`.
+- Audio is captured after decoding, so DRM-protected tracks, podcasts, and ads all cast unchanged.
+- Expect roughly 1-3 seconds of latency; the Mac keeps playing (muted by the tap) for the whole session.
+- The slider shapes the stream rather than the device volume, and a paused track streams silence so the
+  receiver session stays alive.
+- The device must be able to reach the Mac, so guest Wi-Fi and AP isolation block casting.
+
 ## Video Mode
 
 For floating video window functionality, see [docs/video.md](video.md).

@@ -455,20 +455,8 @@ struct PlayerBar: View {
             }
             
 
-                        // AirPlay button
-            Button {
-                HapticService.toggle()
-                self.playerService.showAirPlayPicker()
-            } label: {
-                Image(systemName: "airplayaudio")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(self.playerService.isAirPlayConnected ? .red : .primary.opacity(0.85))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(.pressable)
-            .accessibilityIdentifier(AccessibilityID.PlayerBar.airplayButton)
-            .accessibilityLabel(self.playerService.isAirPlayConnected ? String(localized: "AirPlay Connected") : String(localized: "AirPlay"))
-            .disabled(self.playerService.currentTrack == nil)
+            // Cast button
+            CastButton()
         }
     }
 
@@ -643,6 +631,7 @@ private struct PlayerBarGlassModifier: ViewModifier {
     PlayerBar()
         .environment(PlayerService())
         .environment(WebKitManager.shared)
+        .environment(CastService())
         .frame(width: 600)
         .padding()
         .background(Color(nsColor: .windowBackgroundColor))

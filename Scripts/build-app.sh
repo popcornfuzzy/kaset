@@ -61,10 +61,12 @@ mkdir -p "$APP_BUNDLE/Contents/Frameworks"
 build_product_path() {
   local name="$1"
   local arch="$2"
-  case "$arch" in
-    arm64|x86_64) echo ".build/${arch}-apple-macosx/$CONF/$name" ;;
-    *) echo ".build/$CONF/$name" ;;
-  esac
+  # Ask SwiftPM where it actually put the product rather than guessing a layout.
+  # The classic `.build/<arch>-apple-macosx/<conf>/` directory outlives the build
+  # system that wrote it, so reading it can silently package a stale binary.
+  local bin_dir
+  bin_dir=$(swift build -c "$CONF" --arch "$arch" --show-bin-path | tail -n 1)
+  echo "${bin_dir}/${name}"
 }
 
 # Verify binary architectures
@@ -117,6 +119,14 @@ install_binary() {
 
 # Copy executable
 install_binary "$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+# Refuse to package a binary that predates the sources: a stale product from another
+# build system is worse than a failed build, because the app silently runs old code.
+STALE_SOURCE=$(find Sources -name '*.swift' -newer "$APP_BUNDLE/Contents/MacOS/$APP_NAME" -print -quit)
+if [[ -n "$STALE_SOURCE" ]]; then
+  echo "ERROR: Packaged binary is older than $STALE_SOURCE, so it does not contain the current sources." >&2
+  exit 1
+fi
 
 # Generate Info.plist with build metadata
 BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -200,6 +210,14 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>OSAScriptingDefinition</key>
     <string>Kaset.sdef</string>
 
+    <!-- Google Cast discovery and audio streaming -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Kaset looks for Google Cast devices on your network and streams audio to the device you choose.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_googlecast._tcp</string>
+    </array>
+
     <!-- Build Metadata -->
     <key>KasetBuildTimestamp</key>
     <string>${BUILD_TIMESTAMP}</string>
@@ -275,27 +293,37 @@ if [[ ${#SWIFTPM_BUNDLES[@]} -gt 0 ]]; then
     bundle_dest="$APP_BUNDLE/Contents/Resources/$bundle_name"
     echo "  → Copying resource bundle: $bundle_name"
     cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"
-    if [[ -d "$bundle_dest/Assets.xcassets" ]] && command -v actool &>/dev/null; then
-      echo "    ↳ Compiling bundle asset catalog"
-      compile_asset_catalog "$bundle_dest/Assets.xcassets" "$bundle_dest"
-    fi
+    # Resources live at the bundle root or under Contents/Resources, depending on the
+    # build system that produced the bundle.
+    for resources_root in "$bundle_dest" "$bundle_dest/Contents/Resources"; do
+      if [[ -d "$resources_root/Assets.xcassets" ]] && command -v actool &>/dev/null; then
+        echo "    ↳ Compiling bundle asset catalog"
+        compile_asset_catalog "$resources_root/Assets.xcassets" "$resources_root"
+        break
+      fi
+    done
   done
 
-  # Compile catalogs into both the copied SwiftPM resource bundle and the
-  # app's top-level Resources directory so Bundle.module and Bundle.main
-  # lookups can both resolve packaged localizations.
+  # Mirror the packaged localizations into the app's top-level Resources
+  # directory so both the SwiftPM resource bundle and Bundle.main lookups can
+  # resolve them. Kaset ships .lproj/Localizable.strings files; a string catalog
+  # must not be added alongside them, because SwiftPM would then emit two build
+  # tasks for the same output path.
+  # See docs/adr/0016-strings-files-as-localization-source-of-truth.md.
   for bundle in "${SWIFTPM_BUNDLES[@]}"; do
     bundle_name=$(basename "$bundle")
     bundle_dest="$APP_BUNDLE/Contents/Resources/$bundle_name"
 
-    for xcstrings in "$bundle"/*.xcstrings; do
-      if [[ -f "$xcstrings" ]]; then
-        echo "  → Compiling localization catalog: $(basename "$xcstrings")"
-        xcrun xcstringstool compile "$xcstrings" \
-          --output-directory "$bundle_dest"
-        xcrun xcstringstool compile "$xcstrings" \
-          --output-directory "$APP_BUNDLE/Contents/Resources"
-      fi
+    # SwiftPM resource bundles either keep their resources at the bundle root
+    # (classic .build layout) or under Contents/Resources (Swift Build layout).
+    for resources_root in "$bundle_dest" "$bundle_dest/Contents/Resources"; do
+      for lproj in "$resources_root"/*.lproj; do
+        [[ -d "$lproj" ]] || continue
+        lproj_name=$(basename "$lproj")
+        echo "  → Copying localization: $lproj_name"
+        mkdir -p "$APP_BUNDLE/Contents/Resources/$lproj_name"
+        cp -R "$lproj/." "$APP_BUNDLE/Contents/Resources/$lproj_name/"
+      done
     done
   done
 fi

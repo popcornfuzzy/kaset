@@ -44,8 +44,11 @@ What becomes easier or more difficult because of this change?
 | [0007](0007-sparkle-auto-updates.md) | Sparkle Auto-Updates | Accepted |
 | [0008](0008-nonisolated-network-helpers.md) | Nonisolated Network Helpers for MainActor Classes | Accepted |
 | [0009](0009-prompt-request-workflow.md) | Prompt Request Workflow | Accepted |
-| [0010](0010-airplay-fix.md) | Fix AirPlay for WebView-Based Playback | Implemented (with known limitations) |
+| [0010](0010-airplay-fix.md) | Fix AirPlay for WebView-Based Playback | Superseded by ADR-0015 |
 | [0011](0011-scrobbling-support.md) | Scrobbling Support (Last.fm) | Accepted |
 | [0012](0012-synced-lyrics-architecture.md) | Synced Lyrics Provider Architecture | Accepted |
+| [0012](0012-localization-strategy.md) | Localization Strategy (String Catalogs) | Superseded by ADR-0016 |
 | [0013](0013-like-status-coalescing.md) | Coalesced, Cancellable Like/Dislike Rating Pipeline | Accepted |
 | [0014](0014-playlist-scroll-performance.md) | Playlist Scroll Performance | Accepted |
+| [0015](0015-chromecast-audio-casting.md) | Google Cast Support via Local Audio Streaming | Accepted |
+| [0016](0016-strings-files-as-localization-source-of-truth.md) | `.lproj` String Files as the Localization Source of Truth | Accepted |

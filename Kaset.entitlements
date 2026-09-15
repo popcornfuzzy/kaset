@@ -12,5 +12,8 @@
 	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- Casting serves the audio stream to the Cast device over the local network. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>

@@ -30,6 +30,11 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             resources: [
+                // Resources ships .lproj/Localizable.strings files. Do not add a
+                // Localizable.xcstrings catalog: SwiftPM emits one compile task per
+                // catalog localization, which collides with the .lproj output paths
+                // and fails the build.
+                // See docs/adr/0016-strings-files-as-localization-source-of-truth.md.
                 .process("Resources"),
             ],
             swiftSettings: [
