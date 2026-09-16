@@ -443,6 +443,29 @@ Application lifecycle management:
 - Keeps app running when window is closed (`applicationShouldTerminateAfterLastWindowClosed` returns `false`)
 - Handles dock icon click to reopen window
 
+### CastService
+
+**File**: `Sources/Kaset/Services/Cast/CastService.swift`
+
+Streams Kaset's audio to a Google Cast device. Kaset stays the player: the audio the WebView decodes is
+tapped, encoded, and served to the device's built-in Default Media Receiver. See
+[ADR-0015](adr/0015-chromecast-audio-casting.md) for the design and [docs/playback.md](playback.md#google-cast)
+for the pipeline.
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `state` | `State` | `idle`, `searching`, `connecting`, `casting`, or `failed` |
+| `devices` | `[CastDevice]` | Cast devices visible on the network |
+| `isCasting` | `Bool` | Whether audio is being streamed to a device |
+| `isReceiverConnected` | `Bool` | Whether the device is reading the audio stream |
+| `activeDevice` | `CastDevice?` | Device being connected to or cast to |
+
+Supporting types: `CastDeviceDiscovery` (mDNS), `CastConnection` and `CastReceiverSession` (CASTV2),
+`AudioProcessTap` and `AACStreamEncoder` (capture and encode), `LocalAudioStreamServer` (HTTP stream).
+
+**Note**: `LocalAudioStreamServer` uses `DispatchQueue` for `NWListener` callbacks, since Network framework
+has no async/await entry points.
+
 ## Authentication Flow
 
 ```

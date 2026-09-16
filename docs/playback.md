@@ -400,6 +400,57 @@ The continuation token is cleared when:
 
 This prevents infinite fetch from triggering on non-mix playback.
 
+## Google Cast
+
+Casting sends Kaset's audio to a Google Cast device; see [ADR-0015](adr/0015-chromecast-audio-casting.md) for why the
+approach was chosen over the official SDK and the YouTube Lounge protocol. AirPlay is no longer offered.
+
+Kaset stays the player: the audio the WebView decodes is captured, encoded, and served to the device's built-in
+Default Media Receiver, so the queue, seeking, and track changes keep working exactly as they do locally.
+
+| Stage | Component | Notes |
+|-------|-----------|-------|
+| Discovery | `CastDeviceDiscovery` | Browses `_googlecast._tcp`; name, model, and id come from the TXT record, and each device is listed the moment mDNS reports it |
+| Capture | `AudioProcessTap`, `CastAudioProcessResolver` | Core Audio process tap over Kaset and WebKit's XPC helpers, muted while tapped |
+| Encode | `AACStreamEncoder`, `ADTSHeader` | AAC-LC at 192 kbps, framed as `audio/aac` |
+| Serve | `LocalAudioStreamServer` | Endless chunked HTTP response on an ephemeral port |
+| Hand over | `CastConnection`, `CastReceiverSession` | CASTV2 over TLS to port 8009, `LOAD` on `CC1AD845` |
+| Coordinate | `CastService` | Device list, session state, and the player bar's cast menu |
+
+### Notes and limitations
+
+- The first cast triggers the macOS local-network, firewall, and **system audio recording** prompts. Capture
+  needs the audio recording permission (`kTCCServiceAudioCapture`), declared through
+  `NSAudioCaptureUsageDescription` and the sandbox's audio input entitlement; the grant lives under
+  System Settings → Privacy & Security → Screen & System Audio Recording. Without it the tap still runs and
+  still mutes the Mac, but streams silence — the cast log calls that out explicitly.
+- Audio is captured after decoding, so DRM-protected tracks, podcasts, and ads all cast unchanged.
+- The Cast menu lists a device as soon as mDNS reports it — measured at ~20 ms, since nothing is resolved
+  before publishing — and keeps the last known devices while a fresh browse runs, so reopening or refreshing the
+  menu is instant. A browse that no longer sees a device removes it from the list.
+- The slider shapes the stream rather than the device volume; a paused track simply stops sending audio.
+- The device must be able to reach the Mac, so guest Wi-Fi and AP isolation block casting.
+- WebKit renders playback in helper processes `launchd` owns, not the app, so the tap selects them from Core
+  Audio's process list. Another WebKit-based app playing at the same time is captured too.
+
+### When casting does not play
+
+The cast log names the stage it stopped at, which separates the three failure modes:
+
+```bash
+log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info | grep -i cast
+```
+
+| Log line | Meaning |
+|----------|---------|
+| `Connecting to Cast device at …` then `Never reached …` | The network blocked the control connection |
+| `Connected to Cast device` then `Stream server listening on port …` | The control path works |
+| `Tapping N process(es) for audio capture: …` | Which processes the tap covers; the app and WebKit's `com.apple.WebKit.GPU` should be listed |
+| `Cast receiver connected to the audio stream` | The device fetched the stream URL |
+| `Captured the first buffer from the audio tap` | Audio is being captured; without it the stream is empty |
+| `The audio tap has captured nothing 5s after starting` | The tap is not receiving audio — the device will show a spinner forever. Start the track playing and cast again: the tap set is resolved when casting starts, and WebKit's helper must have opened the audio hardware by then. |
+| `The audio tap has delivered only silence 5s after starting` | The system audio recording permission is missing. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording and cast again. |
+
 ## Video Mode
 
 For floating video window functionality, see [docs/video.md](video.md).

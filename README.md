@@ -14,6 +14,7 @@ This is a fork of [Kaset made by sozercan](https://github.com/sozercan/kaset) th
 - 🎵 **Native macOS Experience** — Apple Music-style UI with Liquid Glass player bar and clean sidebar navigation
 - 🎛️ **System Integration** — Now Playing in Control Center, media key support
 - 📳 **Trackpad Support** — Tactile feedback on Force Touch trackpads for player controls and navigation
+- 📺 **Google Cast** — Send audio to Chromecast and other Cast devices from the player bar
 - 🔊 **Background Audio** — Music continues playing when the window is closed; stops on quit
 - ⌨️ **[Keyboard Shortcuts](docs/keyboard-shortcuts.md)** — Full keyboard control for playback, navigation, and more
 - 🧭 **Explore** — Discover new releases, charts, and moods & genres

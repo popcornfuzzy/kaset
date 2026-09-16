@@ -1,0 +1,6 @@
+/* Kaset localization — source of truth for this language.
+   Do not add a Localizable.xcstrings catalog alongside these .lproj files:
+   SwiftPM would emit two build tasks for the same output path and the build
+   would fail. See docs/adr/0016-strings-files-as-localization-source-of-truth.md */
+
+"Home" = "Beranda";

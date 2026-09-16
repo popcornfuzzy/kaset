@@ -559,9 +559,6 @@ final class WebKitManager: NSObject, WebKitManagerProtocol {
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
 
-        // Enable AirPlay for streaming to Apple TV, HomePod, etc.
-        configuration.allowsAirPlayForMediaPlayback = true
-
         return configuration
     }
 

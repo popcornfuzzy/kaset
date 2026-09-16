@@ -349,8 +349,54 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(PlayerService.artistsEquivalent("Artist A • Artist B", "Artist A, Artist B"))
         #expect(PlayerService.artistsEquivalent("artist a, artist b", "Artist A, Artist B"))
         #expect(!PlayerService.artistsEquivalent("Artist A, Artist B", "Artist C, Artist B"))
-        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius, Lynnic und Dinia") == "itsarius, lynnic, dinia")
-        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius und Lynnic und Dinia") == "itsarius, lynnic, dinia")
+        // Display output keeps the casing YouTube reports — only separators are rewritten.
+        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius, Lynnic und Dinia") == "ItsArius, Lynnic, Dinia")
+        #expect(PlayerService.commaSeparatedArtistDisplay("ItsArius und Lynnic und Dinia") == "ItsArius, Lynnic, Dinia")
+        #expect(PlayerService.commaSeparatedArtistDisplay("The Weeknd") == "The Weeknd")
+        #expect(PlayerService.commaSeparatedArtistDisplay("Daryl Hall & John Oates") == "Daryl Hall, John Oates")
+    }
+
+    @Test("Single-artist byline keeps YouTube's casing when it replaces queue metadata")
+    func singleArtistBylineKeepsYouTubeCasing() async {
+        // Rows parsed from Home shelves carry the album/year as extra artist entries, so the
+        // player-bar byline (the artist alone) can never be equivalent to them. The byline is
+        // then adopted as the displayed artist and must not be lowercased on the way in.
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Staender",
+                artists: [
+                    Artist(id: "uc-sxtn", name: "SXTN"),
+                    Artist(id: "album", name: "Leben am Limit"),
+                    Artist(id: "year", name: "2017"),
+                ],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.isKasetInitiatedPlayback = false
+
+        self.playerService.updateTrackMetadata(
+            title: "Staender",
+            artist: "SXTN",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrack?.artistsDisplay == "SXTN")
+
+        // Stale/incomplete followed by the full byline keeps the artist name as sent.
+        self.playerService.updateTrackMetadata(
+            title: "Staender",
+            artist: "Terror Jr • 3 Strikes • 2016",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+        #expect(self.playerService.currentTrack?.artistsDisplay == "Terror Jr, 3 Strikes, 2016")
     }
 
     @Test("Localized 'and' byline keeps structured artists and like status")
