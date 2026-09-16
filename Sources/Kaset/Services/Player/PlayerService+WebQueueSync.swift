@@ -22,23 +22,55 @@ extension PlayerService {
 
     // MARK: - Artist Identity Matching
 
-    /// Canonicalizes an artist display string for identity comparisons so that
-    /// YouTube's localized multi-artist separators compare equal to ours:
-    /// "Artist A, Artist B", "Artist A and Artist B", "Artist A und Artist B",
-    /// "Artist A et Artist B", and "Artist A & Artist B" all describe the same song.
+    /// Canonicalizes an artist string for **identity comparisons** so that YouTube's
+    /// localized multi-artist separators compare equal to ours: "Artist A, Artist B",
+    /// "Artist A and Artist B", "Artist A und Artist B", "Artist A et Artist B", and
+    /// "Artist A & Artist B" all describe the same song.
+    ///
+    /// - Important: This is a *comparison* normalization — it folds diacritics and
+    ///   lowercases, which is lossy. Never build user-visible text from its result;
+    ///   use ``commaSeparatedArtistDisplay(_:)`` instead.
     static func canonicalArtistString(_ artist: String) -> String {
-        var normalized = artist.folding(
-            options: [.diacriticInsensitive],
-            locale: .current
-        )
-            .lowercased()
+        Self.normalizingArtistSeparators(artist, forComparison: true)
+    }
+
+    /// Returns whether two artist display strings refer to the same set of artists,
+    /// ignoring case, diacritics, and separator/conjunction formatting.
+    static func artistsEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        Self.canonicalArtistString(lhs) == Self.canonicalArtistString(rhs)
+    }
+
+    /// Converts a localized YouTube byline into Kaset's stable comma-separated display format.
+    ///
+    /// The normalization only rewrites separators; it never case-folds, so the artist
+    /// name is shown exactly as YouTube reports it ("ItsArius, Lynnic und Dinia" becomes
+    /// "ItsArius, Lynnic, Dinia", not "itsarius, lynnic, dinia").
+    static func commaSeparatedArtistDisplay(_ artist: String) -> String {
+        let normalized = Self.normalizingArtistSeparators(artist, forComparison: false)
+        guard !normalized.isEmpty else { return "" }
+        return normalized
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: ", ")
+    }
+
+    /// Rewrites the separators YouTube uses between artists into plain commas.
+    ///
+    /// - Parameter forComparison: `true` additionally folds diacritics and lowercases the
+    ///   result for identity matching. `false` keeps the original characters so the value
+    ///   is safe to show to the user. Both variants apply the exact same separator rules so
+    ///   the displayed string always canonicalizes back to the compared one.
+    private static func normalizingArtistSeparators(_ artist: String, forComparison: Bool) -> String {
+        var normalized = forComparison
+            ? artist.folding(options: [.diacriticInsensitive], locale: .current).lowercased()
+            : artist
 
         // Localized conjunctions used to join multiple artists become separators
         // ("and", German "und", French "et", Spanish "y", ampersand).
         normalized = normalized.replacingOccurrences(
             of: #"\b(?:and|und|et|y)\b"#,
             with: ",",
-            options: .regularExpression
+            options: [.regularExpression, .caseInsensitive]
         )
         normalized = normalized.replacingOccurrences(of: "&", with: ",")
 
@@ -62,22 +94,6 @@ extension PlayerService {
         )
 
         return normalized.trimmingCharacters(in: CharacterSet(charactersIn: ", "))
-    }
-
-    /// Returns whether two artist display strings refer to the same set of artists,
-    /// ignoring case, diacritics, and separator/conjunction formatting.
-    static func artistsEquivalent(_ lhs: String, _ rhs: String) -> Bool {
-        Self.canonicalArtistString(lhs) == Self.canonicalArtistString(rhs)
-    }
-
-    /// Converts a localized YouTube byline into Kaset's stable comma-separated display format.
-    static func commaSeparatedArtistDisplay(_ artist: String) -> String {
-        let canonical = Self.canonicalArtistString(artist)
-        guard !canonical.isEmpty else { return "" }
-        return canonical
-            .split(separator: ",", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .joined(separator: ", ")
     }
 
     private func observedTrackMatchesSong(
