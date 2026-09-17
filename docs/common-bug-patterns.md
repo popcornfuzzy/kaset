@@ -189,6 +189,68 @@ have no hyphens and pass naive `!contains("-")` checks, but fail when used as
 API parameters. Always use `hasNavigableId` which validates the `UC` prefix for
 artists (or `MPRE`/`OLAK` for albums, `MPSPP` for podcasts).
 
+## ❌ Mode Flags That Select a View Branch
+
+An `if`/`else` on a presentation flag gives the branches different structural identities, so SwiftUI throws
+away the whole subtree — `@State`, scroll positions, in-flight loads — every time the flag flips. Wrapping
+the app's root content in `if showFullscreenNowPlaying { … .hidden() } else { … }` rebuilt every screen on
+every fullscreen open/close, which is why the player bar's artwork fell back to its placeholder on both
+
+transitions.
+
+```swift
+// ❌ BAD: toggling the flag destroys and recreates the entire content tree
+if playerService.showFullscreenNowPlaying {
+    Group { self.mainContent }.hidden().allowsHitTesting(false)
+} else {
+    Group { self.mainContent }.allowsHitTesting(true)
+}
+
+// ✅ GOOD: one identity, the flag only drives modifiers
+self.mainContent
+    .opacity(playerService.showFullscreenNowPlaying ? 0 : 1)
+    .allowsHitTesting(!playerService.showFullscreenNowPlaying)
+```
+
+A conditional *overlay* is fine — overlays do not change the identity of the content underneath.
+
+## ❌ Clearing Displayed Artwork When Its URL Changes
+
+YouTube serves one picture from many URLs: `sqp` signatures rotate per response, size tokens differ
+between the API listing and the player-bar `<img>`, and the WebView rewrites that `<img>` while it
+upgrades resolution. Treating every URL change as a new image blanks the artwork the user is already
+looking at — and because a `.task(id:)` only re-runs when its id changes, a failed replacement left
+the placeholder on screen until the next track change.
+
+```swift
+// ❌ BAD: Any URL change (even the same art, re-signed) drops back to the placeholder
+.onChange(of: url) { _, _ in
+    image = nil
+    isLoaded = false
+}
+
+// ❌ BAD: The player bar's <img> variant replaces the artwork the song is already showing
+let intendedThumbnailURL = normalizedThumbnailURL(observedDOMThumbnail) ?? song.thumbnailURL
+self.currentTrack = Song(/* ... */, thumbnailURL: intendedThumbnailURL, /* ... */)
+
+// ✅ GOOD: Artwork views take a stable identity and keep the image for that identity
+CachedAsyncImage(url: track.thumbnailURL, identity: track.videoId) { image in ... }
+
+// ✅ GOOD: The song's own artwork wins; the observed thumbnail is only a fallback
+let intendedThumbnailURL = song.thumbnailURL ?? normalizedThumbnailURL(observedDOMThumbnail)
+```
+
+Three rules follow from this: a URL change is not a content change, so only re-point `currentTrack`
+(and friends) at a new artwork URL when the previous one is missing; only pass `identity` where the
+artwork belongs to one entity for the view's whole lifetime — not in collection rows, which SwiftUI
+may recycle for a different item; and **claim the identity before awaiting the download**, because an
+update that re-reports the artwork while it is still downloading otherwise compares against the
+previous identity and clears the image. That last one is a race: it only bites when the second update
+lands before the download finishes, so the artwork vanished intermittently instead of always.
+
+Artwork loads also need a retry. A view's `.task(id:)` runs only when its id changes, so one failed
+fetch used to strand the placeholder until the next track change — nothing else would re-trigger it.
+
 ## Pre-Submit Checklists
 
 ### Performance

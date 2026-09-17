@@ -123,7 +123,11 @@ struct FullscreenNowPlayingView: View {
     private var backgroundLayer: some View {
         ZStack {
             if let thumbnailURL = self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL {
-                CachedAsyncImage(url: thumbnailURL) { image in
+                CachedAsyncImage(
+                    url: thumbnailURL,
+                    fallbackURL: self.playerService.currentTrack?.thumbnailURL,
+                    identity: self.playerService.currentTrack?.videoId
+                ) { image in
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: { Rectangle().fill(.black) }
                 .blur(radius: 68).scaleEffect(1.18)
@@ -163,7 +167,11 @@ struct FullscreenNowPlayingView: View {
         ZStack {
             // The YouTube Music still album art is always the base layer; the
             // animated canvas crossfades in above it once ready.
-            CachedAsyncImage(url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(
+                url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
+                fallbackURL: self.playerService.currentTrack?.thumbnailURL,
+                identity: self.playerService.currentTrack?.videoId
+            ) { image in
                 image.resizable().aspectRatio(contentMode: .fit)
             } placeholder: {
                 ZStack { RoundedRectangle(cornerRadius: 22).fill(.white.opacity(0.08)); CassetteIcon(size: 76).foregroundStyle(.white.opacity(0.7)) }

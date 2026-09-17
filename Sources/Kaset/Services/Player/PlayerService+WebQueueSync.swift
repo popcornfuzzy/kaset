@@ -158,8 +158,15 @@ extension PlayerService {
             && firstQueueSong.videoId == observedVideoId
     }
 
+    /// Keeps the queue song's metadata visible instead of YouTube's observed row.
+    ///
+    /// The observed `thumbnailUrl` comes from the player bar's `<img src>`, which is the *same*
+    /// artwork served from a differently signed/sized URL and is rewritten by YouTube while it
+    /// upgrades the image. Adopting it would churn `currentTrack`'s URL and make the now-playing
+    /// artwork reload the picture it is already showing (visible flicker), so the queue song's own
+    /// thumbnail wins whenever it has one.
     private func keepQueueSongVisible(_ song: Song, thumbnailUrl: String) {
-        let intendedThumbnailURL = self.normalizedThumbnailURL(thumbnailUrl) ?? song.thumbnailURL
+        let intendedThumbnailURL = song.thumbnailURL ?? self.normalizedThumbnailURL(thumbnailUrl)
         self.currentTrack = Song(
             id: song.id,
             title: song.title,

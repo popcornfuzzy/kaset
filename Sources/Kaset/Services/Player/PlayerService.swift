@@ -525,14 +525,19 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             self.resetTrackStatus()
         }
 
-        // Create a minimal Song object for now
+        // Create a minimal Song object for now. Keep any artwork we already have for this video:
+        // callers such as `playWithMix` set `currentTrack` from the queue first, and repeat-one
+        // replays the song that is playing — dropping the thumbnail there blanked the now-playing
+        // artwork until `fetchSongMetadata` happened to answer.
+        let knownThumbnailURL = (self.currentTrack?.videoId == videoId ? self.currentTrack?.thumbnailURL : nil)
+            ?? self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL
         self.currentTrack = Song(
             id: videoId,
             title: "Loading...",
             artists: [],
             album: nil,
             duration: nil,
-            thumbnailURL: nil,
+            thumbnailURL: knownThumbnailURL,
             videoId: videoId
         )
 

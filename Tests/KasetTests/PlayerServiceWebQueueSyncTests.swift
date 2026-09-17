@@ -340,6 +340,63 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.isKasetInitiatedPlayback == false)
     }
 
+    @Test("Web metadata reconcile keeps the artwork URL the queue song is already showing")
+    func webMetadataReconcileKeepsQueueArtworkURL() async {
+        // YouTube serves one picture from many URLs: the player bar's `<img>` is the same art
+        // with a different size/signature token. Adopting it re-points `currentTrack` at a new
+        // URL for the song that is already playing, which made the now-playing artwork reload
+        // itself (the flicker after the art first appears).
+        let queueArtwork = URL(string: "https://lh3.googleusercontent.com/queue-artwork=w544-h544-l90-rj?sqp=queue-signature")!
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: queueArtwork,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updateTrackMetadata(
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: "https://lh3.googleusercontent.com/queue-artwork=w60-h60-l90-rj?sqp=webview-signature",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == queueArtwork.absoluteString)
+    }
+
+    @Test("Web metadata thumbnail fills in a queue song that has no artwork")
+    func webMetadataThumbnailFillsMissingQueueArtwork() async {
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updateTrackMetadata(
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/webview-thumb.jpg")
+    }
+
     @Test("Artist identity ignores localized conjunctions and separator formatting")
     func artistIdentityIgnoresLocalizedConjunctionsAndSeparators() {
         #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A and Artist B"))

@@ -248,7 +248,11 @@ extension PlayerService {
                     artists: artists,
                     album: songData.album ?? self.currentTrack?.album,
                     duration: songData.duration ?? self.currentTrack?.duration,
-                    thumbnailURL: songData.thumbnailURL ?? self.currentTrack?.thumbnailURL,
+                    // Keep the artwork that is already on screen: `getSong` returns the same picture
+                    // under a rotated signature/size URL, so replacing it would reload the image for
+                    // the song that is already playing (visible flicker in the now-playing artwork)
+                    // and would hand the artwork view a URL this song never displayed before.
+                    thumbnailURL: self.currentTrack?.thumbnailURL ?? songData.thumbnailURL,
                     videoId: videoId,
                     musicVideoType: songData.musicVideoType,
                     likeStatus: resolvedLikeStatus,

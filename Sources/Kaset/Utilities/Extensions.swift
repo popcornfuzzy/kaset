@@ -60,8 +60,13 @@ extension URL {
         self.highQualityThumbnailCandidates.first
     }
 
-    /// Returns ordered high-quality thumbnail URL candidates.
-    /// The first candidate is the preferred HQ variant.
+    /// Returns ordered thumbnail URL candidates, best quality first and the exact URL last.
+    ///
+    /// The first candidate is the preferred HQ variant; the tail is a fallback chain, because the
+    /// promoted sizes do not exist for every video: `maxresdefault.jpg` and large `=wN-hN` requests
+    /// are missing for a share of them (YouTube answers those with HTTP 404, and `ImageCache` rejects
+    /// that body instead of rendering the placeholder it contains). Callers that render artwork
+    /// should walk the whole chain.
     var highQualityThumbnailCandidates: [URL] {
         guard host?.contains("ytimg.com") == true || host?.contains("googleusercontent.com") == true else {
             return [self]
@@ -113,12 +118,37 @@ extension URL {
             }
         }
 
-        // Keep previous behavior as a deterministic fallback candidate.
+        // 4) Keep previous behavior as a deterministic fallback candidate.
         appendCandidate(originalString.replacingOccurrences(of: "w60-h60", with: "w226-h226"))
         appendCandidate(originalString.replacingOccurrences(of: "w120-h120", with: "w226-h226"))
 
-        if candidates.isEmpty {
-            appendCandidate(originalString)
+        // 5) End with the exact URL. Every promoted variant can be unavailable, but this URL is the
+        // one the API/WebView actually served, so it is the last resort before the artwork is blank.
+        appendCandidate(originalString)
+
+        // 6) Degrade to variants that exist more often. Placed after the original so the preferred size
+        // stays first: a URL that was already promoted to the largest variant must still be able to
+        // fall back to a smaller one (`hqdefault.jpg` always exists).
+        if host?.contains("ytimg.com") == true {
+            if originalString.contains("/maxresdefault.jpg") {
+                appendCandidate(originalString.replacingOccurrences(of: "/maxresdefault.jpg", with: "/sddefault.jpg"))
+                appendCandidate(originalString.replacingOccurrences(of: "/maxresdefault.jpg", with: "/hqdefault.jpg"))
+            } else if originalString.contains("/sddefault.jpg") {
+                appendCandidate(originalString.replacingOccurrences(of: "/sddefault.jpg", with: "/hqdefault.jpg"))
+            }
+        }
+
+        // Same idea for size tokens: the largest variants are the ones most often missing.
+        let sizeDownsizes = [
+            "w544-h544": ["w320-h320", "w226-h226"],
+            "w320-h320": ["w226-h226"],
+        ]
+
+        for (token, replacements) in sizeDownsizes {
+            guard originalString.contains(token) else { continue }
+            for replacement in replacements {
+                appendCandidate(originalString.replacingOccurrences(of: token, with: replacement))
+            }
         }
 
         return candidates

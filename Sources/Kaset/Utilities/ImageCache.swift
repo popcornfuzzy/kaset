@@ -14,22 +14,49 @@ actor ImageCache {
     /// Maximum disk cache size in bytes (200MB).
     private static let maxDiskCacheSize: Int64 = 200 * 1024 * 1024
 
-    private let memoryCache = NSCache<NSURL, NSImage>()
+    /// Maximum number of remembered unavailable URLs (see ``unavailableURLs``).
+    private static let maxRememberedUnavailableURLs = 512
+
+    /// Disk cache folder name. Versioned because the caching contract changed: older versions stored
+    /// the body of YouTube's HTTP 404 as artwork (see ``isSuccessfulImageResponse(_:)``), and those
+    /// poisoned entries would be served from disk before any network request was made.
+    private static let diskCacheDirectoryName = "com.kaset.imagecache.v2"
+
+    /// `NSCache` is thread-safe, and the synchronous ``cachedImage(for:)`` accessor needs to reach it
+    /// off the actor, so it is held as `nonisolated(unsafe)` on purpose.
+    nonisolated(unsafe) private let memoryCache = NSCache<NSURL, NSImage>()
     private var inFlight: [URL: Task<NSImage?, Never>] = [:]
+    /// Artwork URLs that answered with a permanent failure (for example a thumbnail size YouTube does
+    /// not have for this video). Remembered so the candidate chain does not re-request them on every
+    /// render; transient failures are deliberately not remembered.
+    private var unavailableURLs: Set<URL> = []
     private let fileManager = FileManager.default
+    private let session: URLSession
     private let diskCacheURL: URL
 
-    private init() {
+    /// - Parameters:
+    ///   - session: Session used to download images. Injectable so tests can serve canned responses.
+    ///   - diskCacheDirectoryName: Disk cache folder. Injectable so tests do not touch the real cache.
+    ///   - monitorsMemoryPressure: Whether to install the memory-pressure observer. Only the shared
+    ///     cache needs it — a test instance must not replace the shared observer.
+    init(
+        session: URLSession = .shared,
+        diskCacheDirectoryName: String = ImageCache.diskCacheDirectoryName,
+        monitorsMemoryPressure: Bool = true
+    ) {
         self.memoryCache.countLimit = 200
         self.memoryCache.totalCostLimit = 50 * 1024 * 1024 // 50MB
+        self.session = session
 
         // Set up disk cache directory
         let cacheDir = self.fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        self.diskCacheURL = cacheDir.appendingPathComponent("com.kaset.imagecache", isDirectory: true)
+        self.diskCacheURL = cacheDir.appendingPathComponent(diskCacheDirectoryName, isDirectory: true)
         try? self.fileManager.createDirectory(at: self.diskCacheURL, withIntermediateDirectories: true)
 
         // Set up memory pressure monitoring
-        Self.setupMemoryPressureMonitoring(cache: self)
+        if monitorsMemoryPressure {
+            Self.setupMemoryPressureMonitoring(cache: self)
+        }
 
         // Evict disk cache if needed on startup.
         // Perform file system I/O off the main actor.
@@ -74,6 +101,11 @@ actor ImageCache {
             return diskImage
         }
 
+        // Skip artwork this process already learned is unavailable.
+        if self.unavailableURLs.contains(url) {
+            return nil
+        }
+
         // Check if already fetching
         if let existing = inFlight[url] {
             return await existing.value
@@ -82,7 +114,17 @@ actor ImageCache {
         // Fetch from network
         let task = Task<NSImage?, Never> {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await self.session.data(from: url)
+                guard Self.isSuccessfulImageResponse(response) else {
+                    if let statusCode = (response as? HTTPURLResponse)?.statusCode {
+                        self.rememberUnavailableIfPermanent(url: url, statusCode: statusCode)
+                        // Host and path only: the query carries the URL signature, which stays private.
+                        DiagnosticsLogger.ui.error(
+                            "Artwork request rejected with HTTP \(statusCode, privacy: .public) for \(url.host() ?? "unknown", privacy: .public)\(url.path(), privacy: .public)"
+                        )
+                    }
+                    return nil
+                }
                 guard let image = Self.createImage(from: data, targetSize: targetSize) else { return nil }
                 let cost = targetSize != nil ? Int(image.size.width * image.size.height * 4) : data.count
                 self.memoryCache.setObject(image, forKey: url as NSURL, cost: cost)
@@ -97,6 +139,42 @@ actor ImageCache {
         let result = await task.value
         self.inFlight.removeValue(forKey: url)
         return result
+    }
+
+    /// Returns artwork for `url` if it is already in the memory cache, without awaiting the actor.
+    ///
+    /// Artwork views are created and destroyed constantly (every fullscreen open/close, every screen
+    /// switch), and each new view started from its placeholder while it "reloaded" a picture the app
+    /// already had in memory — the now-playing art blinked on every transition. Seeding a view's first
+    /// frame synchronously avoids that.
+    nonisolated func cachedImage(for url: URL) -> NSImage? {
+        self.memoryCache.object(forKey: url as NSURL)
+    }
+
+    /// Whether a response may be treated as artwork.
+    ///
+    /// `URLSession`'s `data(from:)` hands back the body of HTTP error statuses too, and YouTube answers
+    /// a thumbnail size it does not have for a video with **HTTP 404 whose body is still a valid
+    /// 120x90 JPEG** (the same placeholder for every video). Decoding that body presented the
+    /// placeholder as the album art — the artwork looked like it had vanished — and because the bogus
+    /// image was written to the disk cache it survived relaunches instead of recovering. Non-HTTP
+    /// responses (for example `file:` URLs) carry no status and are accepted.
+    static func isSuccessfulImageResponse(_ response: URLResponse) -> Bool {
+        guard let httpResponse = response as? HTTPURLResponse else { return true }
+        return (200 ..< 300).contains(httpResponse.statusCode)
+    }
+
+    /// Remembers a URL as unavailable when the failure cannot resolve itself on retry.
+    private func rememberUnavailableIfPermanent(url: URL, statusCode: Int) {
+        // Only "this variant does not exist" is permanent: retrying those would re-request a URL that
+        // YouTube will keep answering with 404 on every artwork view creation. 401/403 can be a rotated
+        // signature or rate limiting, and 408/429/5xx are transient by definition, so they stay
+        // retryable — a stale artwork URL must be able to recover inside the same session.
+        guard statusCode == 404 || statusCode == 410 else { return }
+        if self.unavailableURLs.count >= Self.maxRememberedUnavailableURLs {
+            self.unavailableURLs.removeAll()
+        }
+        self.unavailableURLs.insert(url)
     }
 
     /// Prefetches images with controlled concurrency to avoid network congestion.
@@ -180,6 +258,7 @@ actor ImageCache {
     /// Clears both memory and disk caches.
     func clearAllCaches() {
         self.clearMemoryCache()
+        self.unavailableURLs.removeAll()
         try? self.fileManager.removeItem(at: self.diskCacheURL)
         try? self.fileManager.createDirectory(at: self.diskCacheURL, withIntermediateDirectories: true)
     }

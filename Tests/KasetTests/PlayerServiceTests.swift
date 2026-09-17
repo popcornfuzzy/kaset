@@ -124,6 +124,50 @@ struct PlayerServiceTests {
         #expect(self.playerService.currentTrack?.thumbnailURL == nil)
     }
 
+    @Test("Playing the video that is already visible keeps its artwork")
+    func playVideoIdKeepsVisibleArtwork() async {
+        let artworkURL = URL(string: "https://example.com/visible-artwork.jpg")!
+        let song = Song(
+            id: "replay-video",
+            title: "Replay Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            duration: 180,
+            thumbnailURL: artworkURL,
+            videoId: "replay-video"
+        )
+        await self.playerService.playQueue([song], startingAt: 0)
+        #expect(self.playerService.currentTrack?.thumbnailURL == artworkURL)
+
+        // `play(videoId:)` seeds a placeholder track. Dropping the thumbnail here blanked the
+        // now-playing artwork until the metadata fetch answered (or never, when it failed).
+        await self.playerService.play(videoId: song.videoId)
+
+        #expect(self.playerService.currentTrack?.title == "Loading...")
+        #expect(self.playerService.currentTrack?.thumbnailURL == artworkURL)
+    }
+
+    @Test("Playing a queued video seeds its artwork from the queue")
+    func playVideoIdSeedsArtworkFromQueue() async {
+        let queuedArtworkURL = URL(string: "https://example.com/queued-artwork.jpg")!
+        let songs = [
+            Song(id: "first-video", title: "First Song", artists: [], duration: 180, thumbnailURL: nil, videoId: "first-video"),
+            Song(
+                id: "second-video",
+                title: "Second Song",
+                artists: [],
+                duration: 200,
+                thumbnailURL: queuedArtworkURL,
+                videoId: "second-video"
+            ),
+        ]
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        await self.playerService.play(videoId: "second-video")
+
+        #expect(self.playerService.currentTrack?.videoId == "second-video")
+        #expect(self.playerService.currentTrack?.thumbnailURL == queuedArtworkURL)
+    }
+
     @Test("Update ad playback state")
     func updateAdPlaybackState() {
         #expect(self.playerService.isAdPlaying == false)

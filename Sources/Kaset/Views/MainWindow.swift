@@ -112,32 +112,22 @@ struct MainWindow: View {
         @Bindable var player = self.playerService
 
         ZStack(alignment: .bottomTrailing) {
-            if self.playerService.showFullscreenNowPlaying {
-                Group {
-                    if self.authService.state.isInitializing {
-                        self.initializingView
-                    } else if self.authService.state.isLoggedIn {
-                        self.mainContent
-                    } else {
-                        OnboardingView()
-                    }
+            // Flag-driven modifiers on a single `Group`, never an `if/else` on the fullscreen flag: two
+            // branches have different structural identities, so every fullscreen open/close tore down
+            // and rebuilt the whole screen tree — resetting the `PlayerBar`'s artwork (and scroll
+            // positions) and making the now-playing art fall back to its placeholder on both
+            // transitions. One identity keeps the state of every screen underneath alive.
+            Group {
+                if self.authService.state.isInitializing {
+                    // Show loading while checking login status to avoid onboarding flash
+                    self.initializingView
+                } else if self.authService.state.isLoggedIn {
+                    self.mainContent
+                } else {
+                    OnboardingView()
                 }
-                .hidden()
-                .allowsHitTesting(false)
-            } else {
-                Group {
-                    if self.authService.state.isInitializing {
-                        // Show loading while checking login status to avoid onboarding flash
-                        self.initializingView
-                    } else if self.authService.state.isLoggedIn {
-                        self.mainContent
-                    } else {
-                        OnboardingView()
-                    }
-                }
-                .allowsHitTesting(true)
-                .animation(.easeInOut(duration: 0.2), value: self.playerService.showFullscreenNowPlaying)
             }
+            .modifier(FullscreenObscureModifier(isObscured: self.playerService.showFullscreenNowPlaying))
 
             // Persistent WebView - always present once a video has been requested
             // Uses a SINGLETON WebView instance that persists for the app lifetime
@@ -353,6 +343,22 @@ struct MainWindow: View {
     /// TEMPORARY: honors the PerfHUD "WebLayer" switch.
     private var showsWebLayer: Bool {
         !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
+    }
+
+    /// Hides the root content behind the fullscreen now-playing overlay, which covers the whole window.
+    ///
+    /// The flag only drives modifiers — it must never select a different view branch, because switching
+    /// branches changes the content's structural identity and rebuilds every screen underneath on each
+    /// fullscreen transition (which reset the now-playing artwork in the `PlayerBar`).
+    private struct FullscreenObscureModifier: ViewModifier {
+        let isObscured: Bool
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(self.isObscured ? 0 : 1)
+                .allowsHitTesting(!self.isObscured)
+                .animation(.easeInOut(duration: 0.2), value: self.isObscured)
+        }
     }
 
     private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {

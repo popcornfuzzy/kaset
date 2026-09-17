@@ -411,6 +411,44 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrack?.likeStatus == .like)
     }
 
+    @Test("fetchSongMetadata keeps the artwork URL already on screen")
+    func fetchSongMetadataKeepsDisplayedArtwork() async {
+        // The API returns the same picture under a rotated size/signature URL. Replacing the
+        // displayed artwork here forced the now-playing art to reload mid-song, and if that
+        // reload failed the artwork stayed blank until the next track change.
+        let song = TestFixtures.makeSong(id: "artwork-stability-video")
+        self.playerService.currentTrack = song
+        self.mockClient.songResponses[song.videoId] = Song(
+            id: song.videoId,
+            title: song.title,
+            artists: song.artists,
+            duration: song.duration,
+            thumbnailURL: URL(string: "https://example.com/thumb.jpg?sqp=fetched"),
+            videoId: song.videoId
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: song.videoId)
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/thumb.jpg")
+    }
+
+    @Test("fetchSongMetadata fills in artwork when the current track has none")
+    func fetchSongMetadataFillsMissingArtwork() async {
+        let videoId = "artwork-missing-video"
+        self.playerService.currentTrack = Song(id: videoId, title: "No Artwork", artists: [], videoId: videoId)
+        self.mockClient.songResponses[videoId] = Song(
+            id: videoId,
+            title: "No Artwork",
+            artists: [],
+            thumbnailURL: URL(string: "https://example.com/fetched-art.jpg"),
+            videoId: videoId
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: videoId)
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/fetched-art.jpg")
+    }
+
     // MARK: - Track Change Tests
 
     @Test("Queue advance releases the previous track's like state")

@@ -216,7 +216,8 @@ struct PlayerBar: View {
             // Thumbnail
             CachedAsyncImage(
                 url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
-                fallbackURL: self.playerService.currentTrack?.thumbnailURL
+                fallbackURL: self.playerService.currentTrack?.thumbnailURL,
+                identity: self.playerService.currentTrack?.videoId
             ) { image in
                 image
                     .resizable()
