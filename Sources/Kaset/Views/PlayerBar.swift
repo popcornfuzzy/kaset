@@ -68,7 +68,12 @@ struct PlayerBar: View {
             }
         }
         .background {
-            // Keyboard shortcuts for media controls
+            // Keyboard shortcuts for media controls.
+            //
+            // Deliberately re-enabled while the fullscreen overlay hides and disables this bar: these key
+            // equivalents are the window's media controls, and the overlay disables the whole subtree it
+            // covers (which is what resigns focus so no hidden control can be activated). `allowsHitTesting`
+            // keeps these invisible buttons unclickable while they are covered.
             Group {
                 // Space: Play/Pause
                 Button("") {
@@ -107,6 +112,7 @@ struct PlayerBar: View {
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .opacity(0)
             }
+            .disabled(false)
         }
         .onChange(of: self.playerService.progress) { _, newValue in
             // Sync local seek value when not actively seeking

@@ -90,8 +90,13 @@ actor ImageCache {
     ///   - targetSize: Optional target size for downsampling. If provided, the image will be
     ///                 downsampled to fit this size, significantly reducing memory usage.
     func image(for url: URL, targetSize: CGSize? = nil) async -> NSImage? {
-        // Check memory cache
-        if let cached = memoryCache.object(forKey: url as NSURL) {
+        // Check memory cache. A decode made for a smaller slot is treated as a miss: returning it would
+        // make the biggest artwork surface in the app (the fullscreen card) render from the same 80px
+        // decode a 40pt list row asked for, which is exactly how "the high quality version" goes missing.
+        // The disk copy holds the original bytes, so the re-decode costs no network request.
+        if let cached = memoryCache.object(forKey: url as NSURL),
+           Self.isSufficientResolution(cached, for: targetSize)
+        {
             return cached
         }
 
@@ -149,6 +154,19 @@ actor ImageCache {
     /// frame synchronously avoids that.
     nonisolated func cachedImage(for url: URL) -> NSImage? {
         self.memoryCache.object(forKey: url as NSURL)
+    }
+
+    /// Whether a cached decode is at least as large as the caller asked for.
+    ///
+    /// The memory cache is keyed by URL alone (see ``cachedImage(for:)``), so the entry can have been
+    /// downsampled for a much smaller slot than the caller renders into. ``createImage(from:targetSize:)``
+    /// caps a decode at twice the requested size for Retina, so a caller may accept anything at least as
+    /// large as its own target.
+    static func isSufficientResolution(_ image: NSImage, for targetSize: CGSize?) -> Bool {
+        guard let targetSize else { return true }
+        let required = max(targetSize.width, targetSize.height)
+        guard required > 0 else { return true }
+        return max(image.size.width, image.size.height) >= required
     }
 
     /// Whether a response may be treated as artwork.

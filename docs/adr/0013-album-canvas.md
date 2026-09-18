@@ -49,6 +49,8 @@ The fullscreen `artworkCard` is a `ZStack`:
 
 The canvas view reports `readyToPlay`/`failure` via callbacks; the host crossfades opacity 0 → 1 with a 0.6s ease-in-out only when the first frame can render, skipping animation when Reduce Motion is on. On player-item failure the canvas stays hidden and the still image remains. Exiting fullscreen tears the player down (view deallocation); reopening the same track replays instantly from cache.
 
+The canvas is gated on `playerService.showFullscreenNowPlaying` rather than on the view existing, and the lookup's `.task(id:)` keys on `presentation + videoId`. Fullscreen is a presentation owned by `MainWindow`, not a view lifetime: the host may keep this view mounted across opens (it already keeps the content behind the overlay alive), so no canvas state — the ready/failed flags, the lookup — may depend on being created fresh. Because lookups are cache-backed, re-running one for an unchanged track costs no network request.
+
 ### Caching
 
 - **Lookup cache** (`CanvasCache`): one JSON file per `videoId` under `~/Library/Application Support/Kaset/CanvasCache` plus an in-memory layer. Found results expire after 24h; cached misses expire after 6h so unavailable tracks are retried reasonably.

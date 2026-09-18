@@ -10,6 +10,13 @@ struct FullscreenNowPlayingView: View {
 
     let client: any YTMusicClientProtocol
 
+    private enum Layout {
+        /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
+        /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
+        /// artwork surface in the app — render slightly upscaled from its own downloaded data.
+        static let artworkMaxDimension: CGFloat = 380
+    }
+
     @State private var lastLoadedVideoId: String?
     @State private var loadTask: Task<Void, Never>?
     @State private var isLoadingFallback = false
@@ -67,13 +74,21 @@ struct FullscreenNowPlayingView: View {
         .onExitCommand {
             self.closeFullscreenNowPlaying()
         }
+        // Every feature below is scoped to one *presentation* and is (re)initialized from the flag
+        // transition, never from this view instance being new. `MainWindow` keeps the content alive
+        // behind the overlay, so the presentation is a state machine owned by `showFullscreenNowPlaying`
+        // and nothing here may depend on being destroyed and rebuilt between opens.
         .onAppear {
-            self.seekValue = self.normalizedProgress
-            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
-            self.lyricsTimeMs = self.playerService.currentTimeMs
-            self.installEscapeKeyMonitorIfNeeded()
-            self.canvasReady = false
-            self.canvasFailed = false
+            if self.playerService.showFullscreenNowPlaying {
+                self.startPresentation()
+            }
+        }
+        .onChange(of: self.playerService.showFullscreenNowPlaying) { _, isPresented in
+            if isPresented {
+                self.startPresentation()
+            } else {
+                self.endPresentation()
+            }
         }
         .onChange(of: self.playerService.progress) { _, _ in
             if !self.isSeeking { self.seekValue = self.normalizedProgress }
@@ -82,22 +97,20 @@ struct FullscreenNowPlayingView: View {
             self.lyricsTimeMs = newTimeMs
         }
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
-            self.loadTask?.cancel()
-            if let videoId = newVideoId, videoId != self.lastLoadedVideoId {
-                self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
-            }
+            self.startLyricsLoad(for: newVideoId)
         }
         .onChange(of: self.playerService.currentTrack?.title) { _, _ in
-            guard let videoId = self.playerService.currentTrack?.videoId else { return }
-            guard videoId != self.lastLoadedVideoId else { return }
-            self.loadTask?.cancel()
-            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+            guard let videoId = self.playerService.currentTrack?.videoId,
+                  videoId != self.lastLoadedVideoId
+            else { return }
+            self.startLyricsLoad(for: videoId)
         }
         .onChange(of: self.playerService.duration) { _, newDuration in
-            guard let videoId = self.playerService.currentTrack?.videoId, newDuration > 0 else { return }
-            guard videoId != self.lastLoadedVideoId else { return }
-            self.loadTask?.cancel()
-            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+            guard newDuration > 0,
+                  let videoId = self.playerService.currentTrack?.videoId,
+                  videoId != self.lastLoadedVideoId
+            else { return }
+            self.startLyricsLoad(for: videoId)
         }
         .onChange(of: self.syncedLyricsService.currentLyrics) { _, newLyrics in
             self.updateLyricsPolling(for: newLyrics)
@@ -106,17 +119,11 @@ struct FullscreenNowPlayingView: View {
             self.canvasReady = false
             self.canvasFailed = false
         }
-        .task {
-            if let videoId = self.playerService.currentTrack?.videoId {
-                await self.loadLyricsWhenReady(for: videoId)
-            }
-        }
         .task(id: self.canvasTaskID) {
             await self.loadCanvasWhenReady()
         }
         .onDisappear {
-            self.removeEscapeKeyMonitor()
-            SingletonPlayerWebView.shared.stopLyricsPoll()
+            self.endPresentation()
         }
     }
 
@@ -126,7 +133,10 @@ struct FullscreenNowPlayingView: View {
                 CachedAsyncImage(
                     url: thumbnailURL,
                     fallbackURL: self.playerService.currentTrack?.thumbnailURL,
-                    identity: self.playerService.currentTrack?.videoId
+                    identity: self.playerService.currentTrack?.videoId,
+                    // Same decode target as the artwork card: the two views share one fetch per URL, so
+                    // matching targets keeps that shared decode at the size the card needs.
+                    targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
                 ) { image in
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: { Rectangle().fill(.black) }
@@ -142,7 +152,7 @@ struct FullscreenNowPlayingView: View {
 
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
         let columnSpacing = max(10, min(16, availableHeight * 0.018))
-        let artworkMaxHeight = min(max(200, availableHeight * 0.46), 380)
+        let artworkMaxHeight = min(max(200, availableHeight * 0.46), Layout.artworkMaxDimension)
         let contentWidth = min(width, 440)
         let mediaWidth = min(contentWidth, artworkMaxHeight)
         return VStack(alignment: .center, spacing: columnSpacing) {
@@ -170,7 +180,8 @@ struct FullscreenNowPlayingView: View {
             CachedAsyncImage(
                 url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
                 fallbackURL: self.playerService.currentTrack?.thumbnailURL,
-                identity: self.playerService.currentTrack?.videoId
+                identity: self.playerService.currentTrack?.videoId,
+                targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
             ) { image in
                 image.resizable().aspectRatio(contentMode: .fit)
             } placeholder: {
@@ -274,13 +285,64 @@ struct FullscreenNowPlayingView: View {
     private func formatTime(_ time: TimeInterval) -> String { guard time.isFinite else { return "0:00" }; let totalSeconds = max(Int(time), 0); return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60) }
     private func updateLyricsPolling(for result: LyricResult) { if case .synced = result { SingletonPlayerWebView.shared.startLyricsPoll() } else { SingletonPlayerWebView.shared.stopLyricsPoll() } }
     private func closeFullscreenNowPlaying() { withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false } }
+
+    /// Sets up everything scoped to one fullscreen presentation: the local seek/lyrics mirrors, the
+    /// canvas crossfade state, the Escape key monitor, the shared lyrics poll, and the lyric lookup for
+    /// the track that is on screen.
+    ///
+    /// Driven by the presentation change rather than by view creation, so no fullscreen feature depends
+    /// on this view being destroyed and rebuilt between opens.
+    @MainActor
+    private func startPresentation() {
+        // A previous presentation may have ended mid-drag; the slider has to follow playback again.
+        self.isSeeking = false
+        self.seekValue = self.normalizedProgress
+        self.lyricsTimeMs = self.playerService.currentTimeMs
+        // A fresh canvas player reports readiness again; a canvas that failed last time gets retried.
+        self.canvasReady = false
+        self.canvasFailed = false
+        self.installEscapeKeyMonitorIfNeeded()
+        self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+        self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
+    }
+
+    /// Tears the presentation down and hands the shared lyrics poll over when the sidebar lyrics panel
+    /// takes it (exiting fullscreen through the lyrics shortcut opens that panel in the same update).
+    ///
+    /// Called from the presentation change *and* from `onDisappear`, so it must be idempotent.
+    @MainActor
+    private func endPresentation() {
+        self.loadTask?.cancel()
+        self.loadTask = nil
+        self.removeEscapeKeyMonitor()
+        if LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
+            isSidebarLyricsVisible: self.playerService.showLyrics,
+            hasSyncedLyrics: self.syncedLyricsService.hasSyncedLyrics(
+                for: self.playerService.currentTrack?.videoId
+            )
+        ) {
+            SingletonPlayerWebView.shared.stopLyricsPoll()
+        }
+    }
+
+    /// Starts (or restarts) the lyric lookup for a track, cancelling any lookup still waiting for the
+    /// previous track's metadata so a stale result can never land in the panel.
+    @MainActor
+    private func startLyricsLoad(for videoId: String?) {
+        self.loadTask?.cancel()
+        self.loadTask = nil
+        guard let videoId, videoId != self.lastLoadedVideoId else { return }
+        self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+    }
+
     private func installEscapeKeyMonitorIfNeeded() { guard self.escapeKeyMonitor == nil else { return }; self.escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in if event.keyCode == 53 { self.closeFullscreenNowPlaying(); return nil }; return event } }
     private func removeEscapeKeyMonitor() { guard let monitor = self.escapeKeyMonitor else { return }; NSEvent.removeMonitor(monitor); self.escapeKeyMonitor = nil }
 
     /// Canvas is shown only for the current non-podcast track when the feature
     /// is enabled and the video did not fail to load.
     private var shouldShowCanvas: Bool {
-        guard SettingsManager.shared.animatedCanvasEnabled,
+        guard self.playerService.showFullscreenNowPlaying,
+              SettingsManager.shared.animatedCanvasEnabled,
               !self.canvasFailed,
               let track = self.playerService.currentTrack,
               !self.playerService.isCurrentTrackPodcast
@@ -292,17 +354,21 @@ struct FullscreenNowPlayingView: View {
         !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    /// Restarts the canvas lookup whenever the fullscreen view opens or the
-    /// track changes (`.task(id:)` cancels the previous lookup).
+    /// Restarts the canvas lookup whenever the fullscreen view is presented or the track changes
+    /// (`.task(id:)` cancels the previous lookup). The presentation flag is part of the key so the
+    /// lookup does not depend on this view being created; the lookup is cache-backed, so re-running it
+    /// for an unchanged track costs no network request.
     private var canvasTaskID: String {
-        self.playerService.currentTrack?.videoId ?? "none"
+        "\(self.playerService.showFullscreenNowPlaying)|\(self.playerService.currentTrack?.videoId ?? "none")"
     }
 
     @MainActor
     private func loadCanvasWhenReady() async {
+        guard self.playerService.showFullscreenNowPlaying else { return }
         guard let videoId = self.playerService.currentTrack?.videoId else { return }
         for _ in 0 ..< 40 {
             guard !Task.isCancelled,
+                  self.playerService.showFullscreenNowPlaying,
                   self.playerService.currentTrack?.videoId == videoId
             else { return }
             if let track = self.playerService.currentTrack,

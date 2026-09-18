@@ -116,7 +116,9 @@ struct MainWindow: View {
             // branches have different structural identities, so every fullscreen open/close tore down
             // and rebuilt the whole screen tree — resetting the `PlayerBar`'s artwork (and scroll
             // positions) and making the now-playing art fall back to its placeholder on both
-            // transitions. One identity keeps the state of every screen underneath alive.
+            // transitions. One identity keeps the state of every screen underneath alive, which in turn
+            // is why the obscured subtree must be disabled (see `FullscreenObscureModifier`) and why the
+            // fullscreen view itself is presentation-driven rather than rebuild-driven.
             Group {
                 if self.authService.state.isInitializing {
                     // Show loading while checking login status to avoid onboarding flash
@@ -357,6 +359,13 @@ struct MainWindow: View {
             content
                 .opacity(self.isObscured ? 0 : 1)
                 .allowsHitTesting(!self.isObscured)
+                // Hidden content has to be *inert*, not merely invisible. Because the content tree now
+                // survives the overlay, keyboard focus survives with it: a text field that still holds
+                // focus would keep receiving keystrokes behind the fullscreen view, and the player bar's
+                // hidden Space/arrow shortcuts would compete with the app's Playback menu commands.
+                // Disabling the subtree resigns that focus and blocks keyboard activation; nothing in the
+                // content reads `.isEnabled` for behavior, and the disabled appearance is invisible here.
+                .disabled(self.isObscured)
                 .animation(.easeInOut(duration: 0.2), value: self.isObscured)
         }
     }

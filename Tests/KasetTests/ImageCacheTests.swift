@@ -102,6 +102,43 @@ struct ImageCacheTests {
         #expect(requests.count == 2, "a 5xx must be retried, not remembered as missing")
     }
 
+    @Test("A decode made for a smaller slot is not reused as a larger one")
+    func redecodesForLargerTargets() async {
+        defer { Self.cleanup() }
+        let requests = RequestCounter()
+        // A 200x200 still. A decode is capped at twice the requested target, so the small request yields an
+        // 80px image while a larger one can still reach the source's 200px.
+        Self.mockJPEGResponse(statusCode: 200, counter: requests, pixelSize: 200)
+
+        let cache = Self.makeCache()
+        let url = Self.uniqueURL(prefix: "resolution")
+
+        let small = await cache.image(for: url, targetSize: CGSize(width: 40, height: 40))
+        #expect(small?.size.width == 80)
+
+        // The fullscreen artwork card asks for a far larger decode of the same URL. Serving the row's
+        // 80px decode is exactly how the high quality still goes missing from the biggest surface.
+        let large = await cache.image(for: url, targetSize: CGSize(width: 380, height: 380))
+        #expect(large?.size.width == 200)
+
+        // Re-decoded from the cached original bytes, not downloaded again.
+        #expect(requests.count == 1)
+    }
+
+    @Test("A cached decode only counts for targets it is large enough for")
+    func validatesCachedResolution() {
+        let fullSize = NSImage(size: NSSize(width: 544, height: 544))
+        #expect(ImageCache.isSufficientResolution(fullSize, for: CGSize(width: 380, height: 380)))
+        #expect(ImageCache.isSufficientResolution(fullSize, for: CGSize(width: 760, height: 760)) == false)
+
+        let rowSize = NSImage(size: NSSize(width: 80, height: 80))
+        #expect(ImageCache.isSufficientResolution(rowSize, for: CGSize(width: 40, height: 40)))
+        #expect(ImageCache.isSufficientResolution(rowSize, for: CGSize(width: 380, height: 380)) == false)
+
+        // No target means no requirement.
+        #expect(ImageCache.isSufficientResolution(rowSize, for: nil))
+    }
+
     @Test("Only 2xx responses count as artwork")
     func validatesStatusCodes() throws {
         #expect(ImageCache.isSuccessfulImageResponse(try Self.httpResponse(statusCode: 200)))
@@ -130,8 +167,8 @@ struct ImageCacheTests {
         )
     }
 
-    private static func mockJPEGResponse(statusCode: Int, counter: RequestCounter? = nil) {
-        let jpeg = Self.jpegData()
+    private static func mockJPEGResponse(statusCode: Int, counter: RequestCounter? = nil, pixelSize: Int = 4) {
+        let jpeg = Self.jpegData(pixelSize: pixelSize)
         MockURLProtocol.requestHandler = { request in
             counter?.increment()
             let response = HTTPURLResponse(
@@ -158,11 +195,11 @@ struct ImageCacheTests {
     }
 
     /// JPEG payload standing in for a real thumbnail / YouTube's 404 placeholder body.
-    private static func jpegData() -> Data {
+    private static func jpegData(pixelSize: Int = 4) -> Data {
         guard let context = CGContext(
             data: nil,
-            width: 4,
-            height: 4,
+            width: pixelSize,
+            height: pixelSize,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(),
@@ -171,7 +208,7 @@ struct ImageCacheTests {
             return Data()
         }
         context.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        context.fill(CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize))
 
         guard let image = context.makeImage() else { return Data() }
         let data = NSMutableData()

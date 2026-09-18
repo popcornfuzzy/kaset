@@ -116,6 +116,57 @@ struct ExtensionsTests {
         #expect(highQuality?.absoluteString == "https://i.ytimg.com/vi/abc/w400-h400-l90-rj")
     }
 
+    @Test("Promotes an sddefault still to the large named variants first")
+    func promotesSddefaultStill() throws {
+        // `i.ytimg.com` serves its large stills only by name, and the API answers `sddefault.jpg`
+        // (640x480) for a large share of tracks. Without this promotion the preferred candidate *was*
+        // the 640x480 still, so the fullscreen artwork (up to 380pt / 760px on Retina) drew it upscaled
+        // while a `maxresdefault.jpg` (1280x720) existed for the same video.
+        let url = try #require(URL(string: "https://i.ytimg.com/vi/abc/sddefault.jpg"))
+
+        #expect(url.highQualityThumbnailURL?.absoluteString.hasSuffix("/maxresdefault.jpg") == true)
+        #expect(url.highQualityThumbnailCandidates.map(\.absoluteString) == [
+            "https://i.ytimg.com/vi/abc/maxresdefault.jpg",
+            "https://i.ytimg.com/vi/abc/hq720.jpg",
+            "https://i.ytimg.com/vi/abc/sddefault.jpg",
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+        ])
+    }
+
+    @Test("Promotes mqdefault and hqdefault stills, keeping the original as a fallback")
+    func promotesOtherNamedStills() throws {
+        let mqdefault = try #require(URL(string: "https://i.ytimg.com/vi/abc/mqdefault.jpg"))
+        #expect(mqdefault.highQualityThumbnailCandidates.map(\.absoluteString) == [
+            "https://i.ytimg.com/vi/abc/maxresdefault.jpg",
+            "https://i.ytimg.com/vi/abc/hq720.jpg",
+            "https://i.ytimg.com/vi/abc/sddefault.jpg",
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+            "https://i.ytimg.com/vi/abc/mqdefault.jpg",
+        ])
+
+        let hqdefault = try #require(URL(string: "https://i.ytimg.com/vi/abc/hqdefault.jpg"))
+        #expect(hqdefault.highQualityThumbnailCandidates.map(\.absoluteString) == [
+            "https://i.ytimg.com/vi/abc/maxresdefault.jpg",
+            "https://i.ytimg.com/vi/abc/hq720.jpg",
+            "https://i.ytimg.com/vi/abc/sddefault.jpg",
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+        ])
+    }
+
+    @Test("Keeps an hq720 still first and degrades to the smaller named variants")
+    func keepsHq720StillFirst() throws {
+        // `hq720.jpg` is the shape most of the API's track thumbnails already use (1280x720), so it must
+        // stay the preferred candidate — only the fallback tail changes.
+        let url = try #require(URL(string: "https://i.ytimg.com/vi/abc/hq720.jpg"))
+
+        #expect(url.highQualityThumbnailURL?.absoluteString.hasSuffix("/hq720.jpg") == true)
+        #expect(url.highQualityThumbnailCandidates.map(\.absoluteString) == [
+            "https://i.ytimg.com/vi/abc/hq720.jpg",
+            "https://i.ytimg.com/vi/abc/sddefault.jpg",
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg",
+        ])
+    }
+
     // MARK: - String Truncated Tests
 
     @Test("Returns full string when shorter than limit")

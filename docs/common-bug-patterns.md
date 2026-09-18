@@ -251,6 +251,50 @@ lands before the download finishes, so the artwork vanished intermittently inste
 Artwork loads also need a retry. A view's `.task(id:)` runs only when its id changes, so one failed
 fetch used to strand the placeholder until the next track change — nothing else would re-trigger it.
 
+Two more rules come out of the same "one picture, many URLs" property, and both show up as *the
+artwork is not sharp* rather than as missing art. **Ask for the still by its largest name**:
+`i.ytimg.com` serves `default.jpg` / `mqdefault.jpg` / `hqdefault.jpg` / `sddefault.jpg` (120x90 up to
+640x480) and its 1280x720 stills exist only as `maxresdefault.jpg` / `hq720.jpg`, while the API answers
+a large share of tracks with `sddefault.jpg`. Without promoting that name the preferred candidate *is*
+the 640x480 still, so the largest artwork surface in the app (fullscreen, 380pt ⇒ 760px on Retina)
+draws it upscaled. And **treat a cached decode as size-specific**: `ImageCache`'s memory cache holds one
+image per URL, so whoever decodes a URL first fixes its resolution for every other view —
+`isSufficientResolution` counts a decode made for a smaller slot as a miss and re-decodes from the
+cached original bytes instead, which costs no extra request.
+
+## ❌ Features That Depend on a View Being Rebuilt
+
+Once a presentation stops tearing down the views behind it, everything that used to be re-initialized
+by "a new view instance" has to be re-initialized explicitly — and everything that used to become
+non-interactive by being destroyed now has to be made non-interactive on purpose. The fullscreen
+now-playing overlay is the reference case: `MainWindow` keeps the content alive behind it, and the
+overlay itself is driven by `showFullscreenNowPlaying` rather than by its own lifetime, so that it
+behaves identically whether or not SwiftUI recreates it.
+
+```swift
+// ❌ BAD: only set up when the view happens to be created, teardown only in onDisappear
+.onAppear { self.seekValue = self.normalizedProgress; self.installEscapeKeyMonitorIfNeeded() }
+.onDisappear { self.removeEscapeKeyMonitor() }
+
+// ✅ GOOD: the flag is the state machine; onAppear and onDisappear just forward into it
+.onAppear { if self.playerService.showFullscreenNowPlaying { self.startPresentation() } }
+.onChange(of: self.playerService.showFullscreenNowPlaying) { _, isPresented in
+    isPresented ? self.startPresentation() : self.endPresentation()
+}
+.onDisappear { self.endPresentation() }   // idempotent, so both paths may run
+```
+
+The same reasoning applies to hidden content. `opacity(0)` hides a subtree but leaves it *live*, so
+the obscured content must also be inert — `.disabled(isObscured)` resigns keyboard focus and blocks
+keyboard activation, which otherwise lets a focused text field behind the overlay consume keystrokes
+and lets the player bar's hidden Space/arrow shortcuts race the app's Playback menu commands.
+
+Two smaller rules come out of the same transition: canvas and lyric loads key their `.task(id:)` on
+`presentation + track`, not on the track alone, so reopening the overlay re-runs them; and shared
+subsystems with one global flag need an explicit hand-off. The WebView's high-frequency lyric poll is
+one flag consumed by two views, so the sidebar panel and the fullscreen lyrics pass it over instead of
+stopping it (`LyricsPollHandoff`, covered by `LyricsPollHandoffTests`).
+
 ## Pre-Submit Checklists
 
 ### Performance
