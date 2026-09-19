@@ -1,54 +1,33 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import Kaset
 
-// MARK: - PodcastVideoSlotModelTests
+// MARK: - PodcastVideoPreferencesTests
 
 @Suite(.tags(.service))
 @MainActor
-struct PodcastVideoSlotModelTests {
-    @Test("the reported slot frame is kept up to date")
-    func recordsSlotFrame() {
-        let model = PodcastVideoSlotModel()
-        #expect(model.hasSlot == false)
-
-        model.updateSlotFrame(CGRect(x: 40, y: 120, width: 520, height: 292))
-
-        #expect(model.frame == CGRect(x: 40, y: 120, width: 520, height: 292))
-        #expect(model.hasSlot)
-    }
-
-    @Test("sub-pixel layout churn is ignored")
-    func ignoresSubPixelChanges() {
-        let model = PodcastVideoSlotModel()
-        model.updateSlotFrame(CGRect(x: 40, y: 120, width: 520, height: 292))
-
-        model.updateSlotFrame(CGRect(x: 40.2, y: 120.1, width: 520.3, height: 292.2))
-
-        #expect(model.frame == CGRect(x: 40, y: 120, width: 520, height: 292))
-    }
-
-    @Test("clearing drops the slot")
-    func clearingDropsSlot() {
-        let model = PodcastVideoSlotModel()
-        model.updateSlotFrame(CGRect(x: 0, y: 0, width: 400, height: 225))
-
-        model.clearSlot()
-
-        #expect(model.frame == .zero)
-        #expect(model.hasSlot == false)
-    }
-
+struct PodcastVideoPreferencesTests {
     @Test("the video can be switched off and on again")
     func videoEnabledToggle() {
-        let model = PodcastVideoSlotModel()
-        #expect(model.isVideoEnabled)
+        let preferences = PodcastVideoPreferences()
+        #expect(preferences.isVideoEnabled)
 
-        model.isVideoEnabled = false
-        #expect(model.isVideoEnabled == false)
+        preferences.isVideoEnabled = false
+        #expect(preferences.isVideoEnabled == false)
 
-        model.isVideoEnabled = true
-        #expect(model.isVideoEnabled)
+        preferences.isVideoEnabled = true
+        #expect(preferences.isVideoEnabled)
+    }
+
+    @Test("an undeclared slot stays empty instead of resolving to a stale bounds")
+    func slotAnchorStartsEmpty() {
+        #expect(PodcastVideoSlotAnchor.defaultValue == nil)
+
+        var value: Anchor<CGRect>?
+        PodcastVideoSlotAnchor.reduce(value: &value) { nil }
+
+        #expect(value == nil)
     }
 }
 

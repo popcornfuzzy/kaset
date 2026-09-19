@@ -14,6 +14,8 @@
 //    browse <browseId> [params]    - Explore a browse endpoint
 //    action <endpoint> <body>      - Explore an action endpoint (body as JSON)
 //    continuation <token> [ep]     - Explore a continuation (ep: browse or next)
+//    transcript <videoId>          - Explore the transcript (caption) flow for a video
+//    chapters <videoId>            - Explore where a video's chapters live in the payloads
 //    list                          - List all known endpoints
 //    auth                          - Check authentication status
 //    help                          - Show this help message
@@ -21,6 +23,11 @@
 //  Options:
 //    -v, --verbose                 - Show full raw JSON response (not truncated)
 //    -o, --output <file>           - Save raw JSON response to a file
+//
+//  Environment:
+//    YOUTUBE_WEB_API_KEY           - Innertube key for the optional www.youtube.com probes.
+//                                    Public, but never written into this file: secret scanners
+//                                    flag the literal. The Music host needs no such opt-in.
 //
 //  Examples:
 //    ./Tools/api-explorer.swift browse FEmusic_home
@@ -40,8 +47,18 @@ import Foundation
 
 let apiKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
 let clientVersion = "1.20231204.01.00"
-/// Public YouTube web client identity, used when an endpoint rejects the music client.
-let youtubeWebAPIKey = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+/// Innertube key for the `www.youtube.com` clients, read from the environment instead of being
+/// written into this file.
+///
+/// It is not a secret — the same key ships inside every YouTube web page — but it is shaped like a
+/// Google API credential, so repository secret scanners raise an alert for the literal and keep
+/// raising it on every commit that touches the line. Provide it when a probe needs the web host:
+///
+///     YOUTUBE_WEB_API_KEY=AIza… swift run api-explorer chapters <videoId>
+///
+/// The `music.youtube.com` probes never need it: they use `apiKey` above, and they answer for
+/// everything the app requests.
+let youtubeWebAPIKey = ProcessInfo.processInfo.environment["YOUTUBE_WEB_API_KEY"] ?? ""
 let youtubeWebClientVersion = "2.20250310.01.00"
 let baseURL = "https://music.youtube.com/youtubei/v1"
 let origin = "https://music.youtube.com"
@@ -1274,7 +1291,8 @@ func exploreCaptionTracks(videoId: String, verbose: Bool = false) async {
         ("www.youtube.com / WEB", "https://www.youtube.com", "WEB", youtubeWebClientVersion, youtubeWebAPIKey),
     ]
 
-    for attempt in attempts {
+    // The `www.youtube.com` rows carry no key unless one was exported, so they are skipped here.
+    for attempt in attempts where !attempt.key.isEmpty {
         print()
         print("📡 player → \(attempt.label)")
 
@@ -1307,6 +1325,7 @@ func exploreCaptionTracks(videoId: String, verbose: Bool = false) async {
             }
 
             print("✅ HTTP 200 — \(tracks.count) caption track(s)")
+            printChapterCandidates(from: data, label: attempt.label)
             for track in tracks.prefix(6) {
                 let language = track["languageCode"] as? String ?? "?"
                 let kind = track["kind"] as? String ?? "manual"
@@ -1327,6 +1346,241 @@ func exploreCaptionTracks(videoId: String, verbose: Bool = false) async {
 
     print()
     print("❌ No caption tracks available either")
+}
+
+/// Explores where a video's chapters live in the YouTube payloads.
+///
+/// Chapters are not a first-class Music API concept: the watch player embeds them as player
+/// bar markers, and other shapes hide them inside engagement panels. Rather than guessing the
+/// path, this walks every payload it can get and reports each chapter-shaped key it finds.
+func exploreChapters(_ videoId: String, verbose: Bool = false) async {
+    print("🔖 Exploring chapters for: \(videoId)")
+
+    let attempts: [(label: String, host: String, clientName: String, clientVersionAttempt: String, key: String)] = [
+        ("music.youtube.com / ANDROID", "https://music.youtube.com", "ANDROID", "20.10.38", apiKey),
+        ("music.youtube.com / WEB_REMIX", "https://music.youtube.com", "WEB_REMIX", clientVersion, apiKey),
+        ("www.youtube.com / ANDROID", "https://www.youtube.com", "ANDROID", "20.10.38", youtubeWebAPIKey),
+        ("www.youtube.com / WEB", "https://www.youtube.com", "WEB", youtubeWebClientVersion, youtubeWebAPIKey),
+    ]
+
+    // The `www.youtube.com` rows carry no key unless one was exported, so they are skipped here.
+    for attempt in attempts where !attempt.key.isEmpty {
+        print()
+        print("📡 player → \(attempt.label)")
+
+        do {
+            let (data, statusCode) = try await makeHostRequest(
+                host: attempt.host,
+                endpoint: "player",
+                body: [
+                    "videoId": videoId,
+                    "contentCheckOk": true,
+                    "racyCheckOk": true,
+                ],
+                clientName: attempt.clientName,
+                clientVersionValue: attempt.clientVersionAttempt,
+                key: attempt.key
+            )
+
+            guard statusCode == 200 else {
+                print("⚠️  HTTP \(statusCode)")
+                continue
+            }
+
+            printChapterCandidates(from: data, label: attempt.label)
+            printChapterMarkers(from: data, verbose: verbose)
+            printDescriptionCandidates(from: data, verbose: verbose)
+            print("   top-level keys: \(data.keys.sorted().joined(separator: ", "))")
+
+            if verbose {
+                let pretty = (try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "<unprintable>"
+                print(pretty)
+            }
+        } catch {
+            print("❌ Error: \(error.localizedDescription)")
+        }
+    }
+
+    print()
+    print("──────── next ────────")
+
+    do {
+        let (data, statusCode) = try await makeHostRequest(
+            host: "https://music.youtube.com",
+            endpoint: "next",
+            body: ["videoId": videoId],
+            clientName: "WEB_REMIX",
+            clientVersionValue: clientVersion,
+            key: apiKey
+        )
+
+        if statusCode == 200 {
+            printChapterCandidates(from: data, label: "next / WEB_REMIX")
+            printChapterMarkers(from: data, verbose: verbose)
+            printDescriptionCandidates(from: data, verbose: verbose)
+            print("\nℹ️  Top-level keys: \(data.keys.sorted().joined(separator: ", "))")
+        } else {
+            print("⚠️  next → HTTP \(statusCode)")
+        }
+    } catch {
+        print("❌ next error: \(error.localizedDescription)")
+    }
+}
+
+/// Recursively reports every payload path whose key looks like chapter or marker data.
+func chapterCandidatePaths(in value: Any, path: String = "") -> [(path: String, summary: String)] {
+    var results: [(path: String, summary: String)] = []
+
+    if let dictionary = value as? [String: Any] {
+        for (key, child) in dictionary {
+            let childPath = path.isEmpty ? key : "\(path).\(key)"
+            let lowercased = key.lowercased()
+            if lowercased.contains("chapter") || lowercased.contains("marker") {
+                results.append((childPath, summarizeJSONValue(child)))
+            }
+            results.append(contentsOf: chapterCandidatePaths(in: child, path: childPath))
+        }
+    } else if let array = value as? [Any] {
+        for (index, child) in array.enumerated() where index < 40 {
+            results.append(contentsOf: chapterCandidatePaths(in: child, path: "\(path)[\(index)]"))
+        }
+    }
+
+    return results
+}
+
+/// One-line description of a payload node, for the path report.
+func summarizeJSONValue(_ value: Any) -> String {
+    if let dictionary = value as? [String: Any] {
+        let keys = dictionary.keys.sorted()
+        let shown = keys.prefix(8).joined(separator: ", ")
+        return "{ \(shown)\(keys.count > 8 ? ", …" : "") }"
+    }
+    if let array = value as? [Any] {
+        return "[\(array.count)]"
+    }
+    return String(String(describing: value).prefix(120))
+}
+
+/// Prints the paths that carry chapter-shaped keys, or says so when there are none.
+func printChapterCandidates(from data: [String: Any], label: String) {
+    let candidates = chapterCandidatePaths(in: data)
+    guard !candidates.isEmpty else {
+        print("   no chapter/marker keys in \(label)")
+        return
+    }
+
+    print("   chapter-shaped keys (\(candidates.count)):")
+    for candidate in candidates {
+        print("   • \(candidate.path) \(candidate.summary)")
+    }
+}
+
+/// Reports whether a description is available and how many timestamped lines it has.
+///
+/// When a creator does not use YouTube's own chapter editor, chapters are still derived by
+/// YouTube from timestamped description lines — the same rule is usable here.
+func printDescriptionCandidates(from data: [String: Any], verbose: Bool = false) {
+    var descriptions: [(path: String, text: String)] = []
+
+    if let details = data["videoDetails"] as? [String: Any],
+       let description = details["shortDescription"] as? String
+    {
+        descriptions.append(("videoDetails.shortDescription", description))
+    }
+
+    for candidate in descriptionPaths(in: data) {
+        descriptions.append(candidate)
+    }
+
+    guard !descriptions.isEmpty else {
+        print("   no description found")
+        return
+    }
+
+    for description in descriptions {
+        let timestamped = timestampedLines(in: description.text)
+        print("   description at \(description.path): \(description.text.count) chars, \(timestamped.count) timestamp line(s)")
+
+        if verbose {
+            for line in timestamped.prefix(30) {
+                print("      • \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+    }
+}
+
+/// Finds string values that look like video descriptions elsewhere in a payload.
+func descriptionPaths(in value: Any, path: String = "") -> [(path: String, text: String)] {
+    var results: [(path: String, text: String)] = []
+
+    if let dictionary = value as? [String: Any] {
+        for (key, child) in dictionary {
+            let childPath = path.isEmpty ? key : "\(path).\(key)"
+            let lowercased = key.lowercased()
+            if lowercased.contains("description"), let text = child as? String, text.count > 40 {
+                results.append((childPath, text))
+            }
+            results.append(contentsOf: descriptionPaths(in: child, path: childPath))
+        }
+    } else if let array = value as? [Any] {
+        for (index, child) in array.enumerated() where index < 40 {
+            results.append(contentsOf: descriptionPaths(in: child, path: "\(path)[\(index)]"))
+        }
+    }
+
+    return results
+}
+
+/// Lines that start with a chapter-style timestamp, e.g. `0:00 Intro` or `01:02:03 Q&A`.
+func timestampedLines(in text: String) -> [String] {
+    text.split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+        .filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.first?.isNumber == true else { return false }
+            let head = trimmed.prefix(while: { $0.isNumber || $0 == ":" })
+            let parts = head.split(separator: ":")
+            guard (2 ... 3).contains(parts.count), parts.allSatisfy({ !$0.isEmpty }) else { return false }
+            let rest = trimmed.dropFirst(head.count).trimmingCharacters(in: .whitespaces)
+            return !rest.isEmpty
+        }
+}
+
+/// Decodes a `markersMap` player bar structure when one is present.
+func printChapterMarkers(from data: [String: Any], verbose: Bool = false) {
+    guard let overlays = data["playerOverlays"] as? [String: Any],
+          let overlay = overlays["playerOverlayRenderer"] as? [String: Any],
+          let decoratedBar = overlay["decoratedPlayerBarRenderer"] as? [String: Any],
+          let innerBar = decoratedBar["decoratedPlayerBarRenderer"] as? [String: Any],
+          let playerBar = innerBar["playerBar"] as? [String: Any],
+          let multiMarkers = playerBar["multiMarkersPlayerBarRenderer"] as? [String: Any],
+          let markersMap = multiMarkers["markersMap"] as? [[String: Any]]
+    else {
+        return
+    }
+
+    print("   ✅ chapter markers found")
+
+    for entry in markersMap {
+        let key = entry["key"] as? String ?? "?"
+        guard let value = entry["value"] as? [String: Any] else { continue }
+
+        if let chapters = value["chapters"] as? [[String: Any]] {
+            print("   [\(key)] \(chapters.count) chapter(s):")
+            for chapter in chapters {
+                guard let renderer = chapter["chapterRenderer"] as? [String: Any] else { continue }
+                let title = (renderer["title"] as? [String: Any])?["simpleText"] as? String ?? "?"
+                let start = renderer["timeRangeStartMillis"] as? Int ?? -1
+                print("      • \(start) ms — \(title)")
+            }
+        }
+
+        if verbose {
+            print("   [\(key)] value keys: \(value.keys.sorted().joined(separator: ", "))")
+        }
+    }
 }
 
 /// Fetches a timed-text track as JSON3 and prints its segment structure.
@@ -1654,6 +1908,8 @@ func showHelp() {
       browse <browseId> [params]     Explore a browse endpoint
       action <endpoint> <body>       Explore an action endpoint (body as JSON)
       continuation <token> [ep]      Explore a continuation (ep: 'browse' or 'next')
+      transcript <videoId>           Explore the transcript (caption) flow for a video
+      chapters <videoId>             Explore where a video's chapters live in the payloads
       list                           List all known endpoints
       auth                           Check authentication status
       accounts                       Discover available accounts (via authuser)
@@ -1796,6 +2052,14 @@ func runMain() async {
             return
         }
         await exploreTranscript(filteredArgs[1], verbose: verbose, outputFile: outputFile)
+
+    case "chapters":
+        guard filteredArgs.count >= 2 else {
+            print("❌ Usage: chapters <videoId>")
+            print("   Example: chapters -yy3aBtYd2c")
+            return
+        }
+        await exploreChapters(filteredArgs[1], verbose: verbose)
 
     case "list":
         listEndpoints()

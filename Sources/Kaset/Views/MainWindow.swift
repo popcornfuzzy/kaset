@@ -52,9 +52,9 @@ struct MainWindow: View {
     @State private var whatsNewToPresent: PresentedWhatsNew?
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
 
-    /// Video slot the fullscreen podcast experience reports, so the shared player WebView can be
-    /// placed inside it. Owned here because this view owns the WebView layer.
-    @State private var podcastVideoSlotModel = PodcastVideoSlotModel()
+    /// Video state the fullscreen podcast experience shares with the layer below.
+    /// Owned here because this view owns the WebView layer.
+    @State private var podcastVideoPreferences = PodcastVideoPreferences()
 
     // MARK: - Cached ViewModels (persist across tab switches)
 
@@ -136,13 +136,11 @@ struct MainWindow: View {
             }
             .modifier(FullscreenObscureModifier(isObscured: self.playerService.showFullscreenNowPlaying))
 
-            // The podcast experience sits *below* the WebView layer: it reports where the video
+            // The podcast experience sits *below* the WebView layer: it declares where the video
             // belongs and the shared layer is placed into that slot, which is how the episode video
             // appears on the left without the transcript view ever owning playback.
-            // The layer is stacked above it explicitly (`zIndex` below), because the fullscreen view
-            // paints over the whole window and would otherwise hide the video it just measured.
             if showsPodcastFullscreen {
-                FullscreenPodcastView(slotModel: self.podcastVideoSlotModel)
+                FullscreenPodcastView(videoPreferences: self.podcastVideoPreferences)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(9)
             }
@@ -150,17 +148,24 @@ struct MainWindow: View {
             // Persistent WebView - always present once a video has been requested
             // Uses a SINGLETON WebView instance that persists for the app lifetime
             // The mini player can be resized by dragging any edge.
-            if let videoId = playerService.pendingPlayVideoId, self.showsWebLayer {
-                if showsPodcastFullscreen {
-                    self.podcastVideoLayer(videoId: videoId)
-                } else {
-                    self.miniPlayerLayer(videoId: videoId)
+            if let videoId = playerService.pendingPlayVideoId, self.showsWebLayer, !showsPodcastFullscreen {
+                self.miniPlayerLayer(videoId: videoId)
+            }
+        }
+        // The episode video is drawn in an overlay rather than as a stack child: the fullscreen
+        // podcast view covers the whole window, so the layer has to stack *above* it, and resolving
+        // the slot's anchor here — against the same container the layer is placed in — is what keeps
+        // the video exactly on its slot.
+        .overlayPreferenceValue(PodcastVideoSlotAnchor.self) { anchor in
+            GeometryReader { proxy in
+                if showsPodcastFullscreen,
+                   self.showsWebLayer,
+                   let videoId = playerService.pendingPlayVideoId
+                {
+                    self.podcastVideoLayer(videoId: videoId, slot: anchor.map { proxy[$0] } ?? .zero)
                 }
             }
         }
-        // The fullscreen podcast view measures its video slot in this space, and the layer below
-        // is positioned in it — both must resolve against the same origin.
-        .coordinateSpace(.named(PodcastVideoSlotModel.coordinateSpaceName))
         .sheet(isPresented: self.$showLoginSheet) {
             LoginSheet()
         }
@@ -377,33 +382,34 @@ struct MainWindow: View {
         .animation(.easeInOut(duration: 0.18), value: self.shouldShowNoVideoHint)
     }
 
-    /// The episode video surface, placed into the slot the fullscreen podcast view measured.
+    /// The episode video surface, placed on the slot the fullscreen podcast view declared.
     ///
-    /// The layer is kept in the hierarchy (at 1×1) whenever the video is off or unavailable, so the
-    /// WebView never leaves the window and playback continues while the transcript is read.
+    /// The presentation stays *expanded* for the whole podcast session, even while the video is
+    /// hidden and even before the slot is known: that is what keeps the `<video>` element extracted
+    /// into the page's video container. Handing it back to YouTube and re-extracting it on every
+    /// toggle is what made switching the video off blank the slot and switching it back on never
+    /// bring the picture back. Only the layer's opacity follows the toggle, so the round trip is
+    /// instant, and the container's percentage sizing follows the layer's frame when the slot
+    /// resizes.
     @ViewBuilder
-    private func podcastVideoLayer(videoId: String) -> some View {
-        let slotFrame = self.podcastVideoSlotModel.frame
-        let showsVideo = self.podcastVideoSlotModel.isVideoEnabled
-            && self.podcastVideoSlotModel.hasSlot
-            && self.playerService.hasVideoSurface
+    private func podcastVideoLayer(videoId: String, slot: CGRect) -> some View {
+        let hasSlot = slot.width >= 1 && slot.height >= 1
+        let hasVideo = self.playerService.hasVideoSurface
+        let placesVideo = hasSlot && hasVideo
+        let showsVideo = placesVideo && self.podcastVideoPreferences.isVideoEnabled
 
         PersistentPlayerView(
             videoId: videoId,
-            isExpanded: showsVideo,
-            prefersVideo: showsVideo,
-            viewportSize: showsVideo ? slotFrame.size : CGSize(width: 1, height: 1)
+            isExpanded: true,
+            prefersVideo: hasVideo,
+            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1)
         )
-        .frame(width: showsVideo ? slotFrame.width : 1, height: showsVideo ? slotFrame.height : 1)
+        .frame(width: placesVideo ? slot.width : 1, height: placesVideo ? slot.height : 1)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .position(x: showsVideo ? slotFrame.midX : -100, y: showsVideo ? slotFrame.midY : -100)
+        .position(x: placesVideo ? slot.midX : -100, y: placesVideo ? slot.midY : -100)
         .opacity(showsVideo ? 1 : 0)
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.22), value: showsVideo)
-        // The fullscreen podcast view is opaque across the whole window and is stacked at 9, so the
-        // video layer has to sit above it — otherwise the video renders behind the view that asked
-        // for it and the "Video deaktivieren" toggle looks like it does nothing.
-        .zIndex(20)
     }
 
     /// Hides the root content behind the fullscreen now-playing overlay, which covers the whole window.

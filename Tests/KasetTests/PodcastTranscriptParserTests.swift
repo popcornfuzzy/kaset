@@ -180,7 +180,88 @@ struct PodcastTranscriptParserTests {
         #expect(PodcastTranscript.unavailable.currentLineIndex(atMilliseconds: 0) == nil)
     }
 
+    // MARK: - Chapters
+
+    @Test("timestamped description lines become chapters")
+    func parsesDescriptionChapters() {
+        let chapters = PodcastTranscriptParser.parseChapters(fromDescription: Self.chapteredDescription)
+
+        #expect(chapters.count == 4)
+        #expect(chapters[0].title == "Intro")
+        #expect(chapters[0].startTimeMs == 0)
+        #expect(chapters[1].title == "Spending Your 5-9 Wrong")
+        #expect(chapters[1].startTimeMs == 79_000)
+        #expect(chapters[3].title == "Finale")
+        #expect(chapters[3].startTimeMs == 3_723_000)
+    }
+
+    @Test("chapters are read from the player response description")
+    func parsesChaptersFromPlayerResponse() {
+        let chapters = PodcastTranscriptParser.parseChapters(from: [
+            "videoDetails": [
+                "shortDescription": Self.chapteredDescription,
+                "lengthSeconds": "4000",
+            ],
+        ])
+
+        #expect(chapters.count == 4)
+        #expect(PodcastTranscriptParser.parseChapters(from: [:]).isEmpty)
+        #expect(PodcastTranscriptParser.parseChapters(from: ["videoDetails": [:]]).isEmpty)
+    }
+
+    @Test("a description without three chapters is not chaptered")
+    func rejectsShortChapterLists() {
+        let twoChapters = "00:00 Intro\n01:19 Second Part"
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: twoChapters).isEmpty)
+
+        // Heavily timestamped prose is likewise not a chapter list.
+        let timestampsInProse = "Some thoughts from 0:00 to 1:00 about a topic."
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: timestampsInProse).isEmpty)
+    }
+
+    @Test("chapters must start at zero, ascend and stay ten seconds apart")
+    func appliesYouTubeChapterRules() {
+        let lateStart = "00:10 Intro\n01:19 Second\n04:12 Third"
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: lateStart).isEmpty)
+
+        let tooClose = "00:00 Intro\n00:05 Second\n00:10 Third"
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: tooClose).isEmpty)
+
+        let outOfOrder = "00:00 Intro\n01:00 Second\n00:30 Third"
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: outOfOrder).isEmpty)
+    }
+
+    @Test("a chapter past the end of the episode invalidates the set")
+    func rejectsChaptersBeyondDuration() {
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: Self.chapteredDescription, durationSeconds: 1800).isEmpty)
+        #expect(PodcastTranscriptParser.parseChapters(fromDescription: Self.chapteredDescription, durationSeconds: 4000).count == 4)
+    }
+
+    @Test("only lines that start with a timestamp and a heading are chapters")
+    func parsesTimestampedLines() {
+        #expect(PodcastTranscriptParser.timestampedLine("00:00 Intro")?.startMs == 0)
+        #expect(PodcastTranscriptParser.timestampedLine("01:19 Second Part")?.startMs == 79_000)
+        #expect(PodcastTranscriptParser.timestampedLine("1:02:03 Q&A")?.startMs == 3_723_000)
+
+        #expect(PodcastTranscriptParser.timestampedLine("12:34") == nil)
+        #expect(PodcastTranscriptParser.timestampedLine("See 12:34 for details") == nil)
+        #expect(PodcastTranscriptParser.timestampedLine("00:00:00") == nil)
+        #expect(PodcastTranscriptParser.timestampedLine("Plain text") == nil)
+        #expect(PodcastTranscriptParser.timestampedLine("00:75 Too many seconds") == nil)
+    }
+
     // MARK: - Fixtures
+
+    private static let chapteredDescription = """
+    Welcome back to the show!
+
+    00:00 Intro
+    01:19 Spending Your 5-9 Wrong
+    04:12 Shift #1: Change Your First Habit After Work
+    1:02:03 Finale
+
+    Follow us for more.
+    """
 
     private static let playerResponse: [String: Any] = [
         "captions": [
@@ -230,4 +311,95 @@ struct PodcastTranscriptParserTests {
         }
         """.utf8
     )
+}
+
+// MARK: - PodcastTranscriptSectionTests
+
+@Suite(.tags(.service))
+struct PodcastTranscriptSectionTests {
+    @Test("a chapter owns the paragraphs until the next chapter starts")
+    func chaptersOwnTheirParagraphs() {
+        let sections = PodcastTranscriptSection.sections(
+            chapters: [PodcastChapter(title: "Intro", startTimeMs: 0), PodcastChapter(title: "Second", startTimeMs: 100_000)],
+            lines: [
+                .init(timeInMs: 0, durationMs: 5000, text: "First"),
+                .init(timeInMs: 30_000, durationMs: 5000, text: "Second"),
+                .init(timeInMs: 100_000, durationMs: 5000, text: "Third"),
+                .init(timeInMs: 200_000, durationMs: 5000, text: "Fourth"),
+            ]
+        )
+
+        #expect(sections.count == 2)
+        #expect(sections[0].chapter?.title == "Intro")
+        #expect(sections[0].id == 0)
+        #expect(sections[0].rows.count == 2)
+        #expect(sections[1].chapter?.title == "Second")
+        #expect(sections[1].id == 100_000)
+        #expect(sections[1].rows.count == 2)
+        // Row identity stays the paragraph's own id, which is what the transcript scrolls to.
+        #expect(sections[0].rows[0].id == sections[0].rows[0].line.id)
+        #expect(sections[1].rows[0].lineIndex == 2)
+    }
+
+    @Test("without chapters every paragraph sits in one section")
+    func withoutChaptersThereIsOneSection() {
+        let lines: [PodcastTranscriptLine] = [
+            .init(timeInMs: 0, durationMs: 5000, text: "First"),
+            .init(timeInMs: 5000, durationMs: 5000, text: "Second"),
+        ]
+
+        let sections = PodcastTranscriptSection.sections(chapters: [], lines: lines)
+
+        #expect(sections.count == 1)
+        #expect(sections[0].chapter == nil)
+        #expect(sections[0].rows.map(\.lineIndex) == [0, 1])
+    }
+
+    @Test("paragraphs ahead of the first chapter keep their own section")
+    func leadingParagraphsAreKept() {
+        let sections = PodcastTranscriptSection.sections(
+            chapters: [
+                PodcastChapter(title: "Intro", startTimeMs: 60_000),
+                PodcastChapter(title: "Second", startTimeMs: 120_000),
+            ],
+            lines: [
+                .init(timeInMs: 0, durationMs: 5000, text: "Cold open"),
+                .init(timeInMs: 60_000, durationMs: 5000, text: "Intro text"),
+                .init(timeInMs: 120_000, durationMs: 5000, text: "Second text"),
+            ]
+        )
+
+        #expect(sections.count == 3)
+        #expect(sections[0].chapter == nil)
+        #expect(sections[0].rows.map(\.lineIndex) == [0])
+        #expect(sections[1].rows.map(\.lineIndex) == [1])
+        #expect(sections[2].rows.map(\.lineIndex) == [2])
+    }
+
+    @Test("a chapter without paragraphs still gets a section")
+    func emptyChaptersAreKept() {
+        let sections = PodcastTranscriptSection.sections(
+            chapters: [
+                PodcastChapter(title: "Intro", startTimeMs: 0),
+                PodcastChapter(title: "Silence", startTimeMs: 10_000),
+                PodcastChapter(title: "Outro", startTimeMs: 20_000),
+            ],
+            lines: [.init(timeInMs: 0, durationMs: 5000, text: "Only one")]
+        )
+
+        #expect(sections.count == 3)
+        #expect(sections[1].rows.isEmpty)
+        #expect(sections[1].chapter?.title == "Silence")
+    }
+
+    @Test("a chapter knows whether a timestamp falls inside it")
+    func chapterContainsTimestamps() {
+        let chapter = PodcastChapter(title: "Intro", startTimeMs: 1000)
+
+        #expect(chapter.contains(999, nextChapterStartMs: 5000) == false)
+        #expect(chapter.contains(1000, nextChapterStartMs: 5000))
+        #expect(chapter.contains(4999, nextChapterStartMs: 5000))
+        #expect(chapter.contains(5000, nextChapterStartMs: 5000) == false)
+        #expect(chapter.contains(9999, nextChapterStartMs: nil))
+    }
 }

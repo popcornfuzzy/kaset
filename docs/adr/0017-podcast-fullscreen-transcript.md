@@ -37,18 +37,38 @@ fullscreen is open swaps the experiences and the flag keeps working unchanged.
 The episode keeps `showFullscreenNowPlaying` as its single fullscreen state, so the existing
 entry points (player-bar button, keyboard shortcut) need no podcast-specific paths.
 
-### Video surface: measured slot, not a second owner
+### Video surface: anchor-declared slot, not a second owner
 
-`FullscreenPodcastView` does **not** host the WebView. It lays out a video slot and reports its frame
-(`onGeometryChange`, in a named coordinate space) to a small `PodcastVideoSlotModel` owned by
-`MainWindow`, which places the shared `PersistentPlayerView` layer into that frame with absolute
-positioning. This keeps the WebView in one container for the whole app lifetime: nothing is
+`FullscreenPodcastView` does **not** host the WebView. It marks the video slot with an
+`anchorPreference` (`PodcastVideoSlotAnchor`), and `MainWindow` resolves that anchor in an
+`overlayPreferenceValue` `GeometryReader` and places the shared `PersistentPlayerView` layer on the
+resolved rect. This keeps the WebView in one container for the whole app lifetime: nothing is
 re-parented, and audio never depends on which view is on screen.
 
-When the slot is unavailable — the episode has no video, or the user turned the video off — the layer
-stays mounted at 1×1 with `isExpanded: false`, which restores YouTube's normal page layout while
-playback continues. The same mini-player DOM presentation script then extracts the video into the
-slot and hides the page chrome when it is shown, exactly as for the floating mini player.
+Two details in that plumbing are deliberate:
+
+- **An anchor, not a reported frame.** Preferences are collected on *every* layout pass, so the slot
+  is known in the first frame; a reported frame that arrives through a geometry-change callback or a
+  named coordinate space has to be kept in sync between two views and can silently never arrive,
+  which left the layer at 1×1 while the slot was on screen. Resolving the anchor against the very
+  container the layer is drawn in also makes the placement immune to safe-area differences between
+  the two views.
+- **The presentation stays expanded.** The layer is drawn above the fullscreen view (an overlay is
+  above the view it is attached to, so no `zIndex` juggling) and stays expanded at the slot's size for
+  the whole session, including while the video is hidden; only its opacity follows the video toggle.
+  Handing the `<video>` element back to YouTube and re-extracting it on every toggle is what made
+  switching the video off blank the slot and switching it back on never restore the picture.
+
+The same mini-player DOM presentation script extracts the video into the slot and hides the page
+chrome, exactly as for the floating mini player. Because the layer keeps its presentation, the toggle
+is instant and playback is unaffected.
+
+### Episode artwork
+
+The slot shows the episode artwork whenever the video is hidden, and the episode icon next to the
+show name uses the same picture. Both fall back to the episode's generated YouTube still
+(`i.ytimg.com/vi/<videoId>/hqdefault.jpg`) when the API's thumbnail is absent or its signed query has
+expired — the still is requested without a signature, so it is the one picture that always resolves.
 
 ### Transcript source
 
@@ -84,6 +104,21 @@ gains a persisted `playbackRate` applied through the WebView; the page-side enfo
 re-asserts the rate whenever YouTube recreates the video element (track change, ad transition), which
 is the same mechanism that already protects volume.
 
+### Chapters
+
+The transcript is grouped under the episode's chapters, and a chapter heading seeks to its start.
+Chapters come from the timestamped lines creators put in the episode description
+(`videoDetails.shortDescription`), which is the same input YouTube turns into chapters on the watch
+page — the music clients return no separate chapter or marker structure, so the description is the
+only chapter source available. The description arrives in the *same* `player` response the transcript
+already fetches, so chapters cost no extra request.
+
+Detection mirrors YouTube's own rules, so a description full of incidental timestamps yields no
+headings: the first timestamp must be `0:00`, at least three chapters must exist, they must ascend,
+each must be at least ten seconds after the previous one, and none may start past the episode's
+length. A failing description simply leaves the transcript ungrouped — chapters are additive, never
+required.
+
 ### Sleep timer
 
 A local, view-scoped sleep timer (5–60 minutes) pauses playback when it expires. It is deliberately
@@ -98,6 +133,8 @@ not persisted: it belongs to one listening session.
 - The transcript is timed, so it doubles as a seek surface, and paragraph highlighting follows
   playback the way the synced-lyrics view already does.
 - The transcript request reuses the existing client, session, caching and error plumbing.
+- Chapters ride along with the transcript request and its cache, and their headings are sticky while
+  their paragraphs scroll, so the current chapter stays readable.
 
 ### Negative
 
@@ -105,6 +142,8 @@ not persisted: it belongs to one listening session.
   YouTube can change or gate (PoToken) at any time; the feature degrades to "no transcript".
 - **Language coverage** — a transcript exists only where YouTube has captions, and auto-generated
   text has no punctuation or speaker labels.
+- **Chapter coverage** — an episode is chaptered only when its creator timestamped the description,
+  so many episodes show a flat transcript.
 - **A second client identity** lives in `YTMusicClient` next to `WEB_REMIX`, which has to be kept in
   mind when the API generation changes.
 
@@ -112,5 +151,7 @@ not persisted: it belongs to one listening session.
 
 - Transcript fetching ignores the account context (cookies/brand account), so it is unaffected by
   account switching.
-- The video slot's geometry crosses the view boundary through one observable model; the fullscreen
-  view owns layout, `MainWindow` owns the layer.
+- The video slot crosses the view boundary as an anchor preference plus one small observable
+  preferences object; the fullscreen view owns layout, `MainWindow` owns the layer.
+- The layer is deliberately kept expanded while the video is hidden, so the page-side video element
+  stays extracted and the toggle is a pure opacity change rather than a DOM round trip.

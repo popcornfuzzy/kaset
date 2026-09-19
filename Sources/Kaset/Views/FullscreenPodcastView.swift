@@ -1,50 +1,33 @@
 import AppKit
 import SwiftUI
 
-// MARK: - PodcastVideoSlotModel
+// MARK: - PodcastVideoSlotAnchor
 
-/// Coordinates the episode video surface between ``FullscreenPodcastView`` (which lays the slot
-/// out) and `MainWindow` (which owns the singleton player WebView).
+/// Carries the episode video slot's bounds up to `MainWindow`, which owns the singleton WebView.
 ///
-/// The WebView can only live in one place, so the fullscreen view never hosts it directly:
-/// it reports where the video belongs and `MainWindow` places the shared layer there. That keeps
-/// playback untouched when the fullscreen experience opens and closes.
+/// The slot is passed as an *anchor* rather than a measured frame: `MainWindow` resolves it against
+/// the very container it draws the layer in, so the video lands on the slot in the first layout pass
+/// and no coordinate space has to be kept in sync between the two views.
+struct PodcastVideoSlotAnchor: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+// MARK: - PodcastVideoPreferences
+
+/// State the fullscreen podcast view and `MainWindow` share about the episode video.
+///
+/// The WebView can only live in one place, so the fullscreen view never hosts it directly: it
+/// declares where the video belongs (see ``PodcastVideoSlotAnchor``) and `MainWindow` places the
+/// shared layer there, which keeps playback untouched as the experience opens and closes.
 @MainActor
 @Observable
-final class PodcastVideoSlotModel {
-    /// Named coordinate space the slot frame is reported in (declared by `MainWindow`).
-    nonisolated static let coordinateSpaceName = "kasetPodcastVideoSlot"
-
-    /// Frame of the video slot, or `.zero` while the layout offers no slot.
-    private(set) var frame: CGRect = .zero
-
-    /// Whether the user wants the episode video shown ("Video deaktivieren" toggle).
+final class PodcastVideoPreferences {
+    /// Whether the user wants the episode video shown (the "Turn Off Video" toggle).
     var isVideoEnabled = true
-
-    /// Whether a usable slot is currently laid out.
-    var hasSlot: Bool {
-        self.frame.width >= 1 && self.frame.height >= 1
-    }
-
-    /// Records the slot frame, ignoring sub-pixel churn from repeated layout passes.
-    func updateSlotFrame(_ newFrame: CGRect) {
-        let current = self.frame
-        guard abs(newFrame.minX - current.minX) > 0.5
-            || abs(newFrame.minY - current.minY) > 0.5
-            || abs(newFrame.width - current.width) > 0.5
-            || abs(newFrame.height - current.height) > 0.5
-        else {
-            return
-        }
-
-        self.frame = newFrame
-    }
-
-    /// Drops the slot when the video is not on screen (disabled or no room laid out).
-    func clearSlot() {
-        guard self.frame != .zero else { return }
-        self.frame = .zero
-    }
 }
 
 // MARK: - FullscreenPodcastView
@@ -59,8 +42,8 @@ struct FullscreenPodcastView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(PodcastTranscriptService.self) private var transcriptService
 
-    /// Shared slot the video surface is placed into by `MainWindow`.
-    let slotModel: PodcastVideoSlotModel
+    /// Video preferences shared with `MainWindow`, which owns the player WebView layer.
+    let videoPreferences: PodcastVideoPreferences
 
     private enum Layout {
         /// Share of the width the transcript column takes while it is visible.
@@ -172,7 +155,7 @@ struct FullscreenPodcastView: View {
         self.transcriptTimeMs = self.playerService.currentTimeMs
         self.volumeValue = self.playerService.volume
         self.showsTranscript = true
-        self.slotModel.isVideoEnabled = true
+        self.videoPreferences.isVideoEnabled = true
         self.installEscapeKeyMonitorIfNeeded()
         // The transcript highlights the paragraph being spoken, so it needs the same
         // high-resolution playback clock the synced lyrics use.
@@ -187,7 +170,6 @@ struct FullscreenPodcastView: View {
         self.removeEscapeKeyMonitor()
         self.sleepTimerEnd = nil
         self.sleepTimerRemaining = nil
-        self.slotModel.clearSlot()
         self.transcriptService.reset()
         // The transcript only needs the shared high-frequency clock while it is on screen. The
         // sidebar lyrics panel can take it over in the same update (the lyrics shortcut opens it
@@ -376,17 +358,20 @@ struct FullscreenPodcastView: View {
         .frame(maxHeight: max(320, availableHeight - 120), alignment: .center)
     }
 
-    /// The episode's video slot, measured so `MainWindow` can place the player WebView inside it.
+    /// The episode's video slot: the still artwork, plus the anchor `MainWindow` places the WebView
+    /// layer on. The video is drawn over this view, never inside it.
     private func mediaVisual(width: CGFloat) -> some View {
         let slotHeight = width / Layout.videoAspectRatio
 
         return CachedAsyncImage(
-            url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
-            fallbackURL: self.playerService.currentTrack?.thumbnailURL,
+            url: self.artworkURL?.highQualityThumbnailURL ?? self.videoStillURL,
+            // The still is deliberately the fallback for *both* cases: it carries no signature, and
+            // an expired `sqp`/`rs` signature on the API's URL fails every variant of that URL.
+            fallbackURL: self.videoStillURL,
             identity: self.playerService.currentTrack?.videoId,
             targetSize: CGSize(width: width, height: slotHeight)
         ) { image in
-            image.resizable().aspectRatio(contentMode: .fit)
+            image.resizable().aspectRatio(contentMode: .fill)
         } placeholder: {
             ZStack {
                 Rectangle().fill(.black)
@@ -400,40 +385,30 @@ struct FullscreenPodcastView: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(.white.opacity(0.08), lineWidth: 1)
         }
-        .onGeometryChange(for: CGRect.self) { proxy in
-            proxy.frame(in: .named(PodcastVideoSlotModel.coordinateSpaceName))
-        } action: { newFrame in
-            self.reportSlotFrame(newFrame)
-        }
-        // `onGeometryChange` reports every move, but the *first* frame has to be reliable or the
-        // shared WebView layer stays at 1×1 while the slot is on screen and the video toggle looks
-        // inert: this reader reports as soon as the slot has been laid out.
-        .background {
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { self.reportSlotFrame(self.slotFrame(from: proxy)) }
-                    .onChange(of: proxy.size) { _, _ in
-                        self.reportSlotFrame(self.slotFrame(from: proxy))
-                    }
-            }
-        }
+        .anchorPreference(key: PodcastVideoSlotAnchor.self, value: .bounds) { $0 }
     }
 
-    private func slotFrame(from proxy: GeometryProxy) -> CGRect {
-        proxy.frame(in: .named(PodcastVideoSlotModel.coordinateSpaceName))
+    /// Artwork reported for the episode, if the API served one for this playback item.
+    private var artworkURL: URL? {
+        self.playerService.currentTrack?.thumbnailURL
     }
 
-    /// Publishes the slot to `MainWindow`, ignoring frames that carry no usable slot (such as the
-    /// zero geometry reported before the first layout) so the video never blinks out mid-animation.
-    private func reportSlotFrame(_ frame: CGRect) {
-        guard frame.width >= 1, frame.height >= 1 else { return }
-        self.slotModel.updateSlotFrame(frame)
+    /// Generated still for the episode's YouTube video, used when the API's artwork is missing.
+    ///
+    /// Episodes played from a queue or a restored session can arrive without a thumbnail, and the
+    /// still is requested without the API's signed query, whose signature expires: it is the one
+    /// picture that always resolves, so neither the slot nor the small episode icon stays on its
+    /// placeholder.
+    private var videoStillURL: URL? {
+        guard let videoId = self.playerService.currentTrack?.videoId, !videoId.isEmpty else { return nil }
+        return URL(string: "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg")
     }
 
     private var episodeMeta: some View {
         HStack(alignment: .top, spacing: 12) {
             CachedAsyncImage(
-                url: self.playerService.currentTrack?.thumbnailURL,
+                url: self.artworkURL ?? self.videoStillURL,
+                fallbackURL: self.videoStillURL,
                 identity: self.playerService.currentTrack?.videoId,
                 targetSize: CGSize(width: Layout.artworkSize * 2, height: Layout.artworkSize * 2)
             ) { image in
@@ -534,13 +509,13 @@ struct FullscreenPodcastView: View {
                 Button {
                     HapticService.toggle()
                     withAnimation(AppAnimation.standard) {
-                        self.slotModel.isVideoEnabled.toggle()
+                        self.videoPreferences.isVideoEnabled.toggle()
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: self.slotModel.isVideoEnabled ? "video.slash" : "video")
+                        Image(systemName: self.videoPreferences.isVideoEnabled ? "video.slash" : "video")
                             .font(.system(size: 11, weight: .medium))
-                        Text(self.slotModel.isVideoEnabled ? String(localized: "Turn Off Video") : String(localized: "Turn On Video"))
+                        Text(self.videoPreferences.isVideoEnabled ? String(localized: "Turn Off Video") : String(localized: "Turn On Video"))
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundStyle(.white.opacity(0.85))
@@ -701,6 +676,7 @@ struct FullscreenPodcastView: View {
                 } else if self.transcriptService.transcript.isAvailable {
                     PodcastTranscriptTextView(
                         lines: self.transcriptService.transcript.lines,
+                        chapters: self.transcriptService.transcript.chapters,
                         currentTimeMs: self.transcriptTimeMs,
                         fontSize: Layout.transcriptFontSize,
                         onSeek: { timeMs in
@@ -839,6 +815,7 @@ struct FullscreenPodcastView: View {
 @available(macOS 26.0, *)
 private struct PodcastTranscriptTextView: View {
     let lines: [PodcastTranscriptLine]
+    let chapters: [PodcastChapter]
     let currentTimeMs: Int
     let fontSize: CGFloat
     let onSeek: (Int) -> Void
@@ -853,37 +830,25 @@ private struct PodcastTranscriptTextView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
+                LazyVStack(
+                    alignment: .leading,
+                    spacing: 22,
+                    // Chapter headings stay put while their paragraphs scroll: the section being
+                    // listened to keeps its title on screen, like a transcript picker.
+                    pinnedViews: self.hasChapters ? [.sectionHeaders] : []
+                ) {
                     Spacer().frame(height: 40)
 
-                    ForEach(Array(self.lines.enumerated()), id: \.element.id) { index, line in
-                        let isCurrent = index == self.currentLineIndex
-                        let isSpoken = self.isSpoken(index)
-                        let isHovered = self.hoveredLineId == line.id
-
-                        // Emphasis rides on opacity and a scale transform, never on the font itself: changing
-                        // the weight (or animating between weights) re-flows the paragraph, so words jump
-                        // between wrap points while the spoken paragraph moves. A scale effect redraws the
-                        // same layout — the technique the fullscreen synced lyrics use.
-                        Text(line.text)
-                            .font(.system(size: self.fontSize, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .lineSpacing(8)
-                            .opacity(self.opacity(isCurrent: isCurrent, isSpoken: isSpoken, isHovered: isHovered))
-                            .scaleEffect(self.scale(isCurrent: isCurrent, isSpoken: isSpoken, isHovered: isHovered), anchor: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .onHover { isHovered in
-                                self.hoveredLineId = isHovered ? line.id : nil
+                    ForEach(self.sections) { section in
+                        Section {
+                            ForEach(section.rows) { row in
+                                self.paragraphRow(row)
                             }
-                            .onTapGesture {
-                                self.currentLineIndex = index
-                                self.currentLineId = line.id
-                                self.onSeek(line.timeInMs)
+                        } header: {
+                            if let chapter = section.chapter {
+                                self.chapterHeader(chapter, isCurrent: chapter.startTimeMs == self.currentChapterStartMs)
                             }
-                            .animation(.easeInOut(duration: 0.35), value: self.currentLineIndex)
-                            .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
-                            .id(line.id)
+                        }
                     }
 
                     Spacer().frame(height: 120)
@@ -922,6 +887,98 @@ private struct PodcastTranscriptTextView: View {
                 self.hoveredLineId = nil
             }
         }
+    }
+
+    /// Transcript rows grouped under the episode's chapters.
+    private var sections: [PodcastTranscriptSection] {
+        PodcastTranscriptSection.sections(chapters: self.chapters, lines: self.lines)
+    }
+
+    private var hasChapters: Bool {
+        !self.chapters.isEmpty
+    }
+
+    /// Start time of the chapter being listened to, used to mark the current heading.
+    private var currentChapterStartMs: Int? {
+        self.chapters.last(where: { $0.startTimeMs <= self.currentTimeMs })?.startTimeMs
+    }
+
+    /// One transcript paragraph, with the emphasis of the paragraph being spoken.
+    private func paragraphRow(_ row: PodcastTranscriptRow) -> some View {
+        let isCurrent = row.lineIndex == self.currentLineIndex
+        let isSpoken = self.isSpoken(row.lineIndex)
+        let isHovered = self.hoveredLineId == row.id
+
+        // Emphasis rides on opacity and a scale transform, never on the font itself: changing
+        // the weight (or animating between weights) re-flows the paragraph, so words jump
+        // between wrap points while the spoken paragraph moves. A scale effect redraws the
+        // same layout — the technique the fullscreen synced lyrics use.
+        return Text(row.line.text)
+            .font(.system(size: self.fontSize, weight: .semibold))
+            .foregroundStyle(.white)
+            .lineSpacing(8)
+            .opacity(self.opacity(isCurrent: isCurrent, isSpoken: isSpoken, isHovered: isHovered))
+            .scaleEffect(self.scale(isCurrent: isCurrent, isSpoken: isSpoken, isHovered: isHovered), anchor: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { isHovered in
+                self.hoveredLineId = isHovered ? row.id : nil
+            }
+            .onTapGesture {
+                self.currentLineIndex = row.lineIndex
+                self.currentLineId = row.id
+                self.onSeek(row.line.timeInMs)
+            }
+            .animation(.easeInOut(duration: 0.35), value: self.currentLineIndex)
+            .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
+            .id(row.id)
+    }
+
+    /// A chapter heading that seeks to the start of its section when clicked.
+    private func chapterHeader(_ chapter: PodcastChapter, isCurrent: Bool) -> some View {
+        Button {
+            HapticService.toggle()
+            self.onSeek(chapter.startTimeMs)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "bookmark.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(isCurrent ? 0.85 : 0.45))
+
+                Text(chapter.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(isCurrent ? 0.95 : 0.6))
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(self.chapterTime(chapter.startTimeMs))
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(isCurrent ? 0.7 : 0.4))
+            }
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Pinned headings sit over the paragraphs scrolling underneath, so they need a scrim.
+        .background(.black.opacity(0.35))
+        .animation(.easeInOut(duration: 0.3), value: isCurrent)
+        .help(String(localized: "Play from Chapter"))
+        .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.chapterHeader)
+        .accessibilityLabel(chapter.title)
+    }
+
+    private func chapterTime(_ timeMs: Int) -> String {
+        let totalSeconds = max(0, timeMs / 1000)
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private func isSpoken(_ index: Int) -> Bool {

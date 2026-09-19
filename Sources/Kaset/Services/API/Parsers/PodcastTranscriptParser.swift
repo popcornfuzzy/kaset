@@ -28,6 +28,14 @@ enum PodcastTranscriptParser {
         let text: String
     }
 
+    /// The rules YouTube itself applies before treating a description as chaptered.
+    private enum Chapters {
+        /// Fewer timestamped lines than this and the description is treated as plain prose.
+        static let minimumCount = 3
+        /// A chapter shorter than this invalidates the whole set.
+        static let minimumDurationMs = 10_000
+    }
+
     /// Paragraph shaping rules for merged cues.
     private enum Paragraph {
         /// A silence longer than this starts a new paragraph.
@@ -103,6 +111,95 @@ enum PodcastTranscriptParser {
         )
         let separator = withoutFormat.contains("?") ? "&" : "?"
         return URL(string: "\(withoutFormat)\(separator)fmt=\(format)")
+    }
+
+    // MARK: - Chapters
+
+    /// Extracts the episode's chapters from a `player` response.
+    ///
+    /// The mobile client identity returns `videoDetails.shortDescription`, which is where the
+    /// creator's chapter timestamps live — the music clients omit the description entirely.
+    static func parseChapters(from playerResponse: [String: Any]) -> [PodcastChapter] {
+        let details = playerResponse["videoDetails"] as? [String: Any]
+        return self.parseChapters(
+            fromDescription: details?["shortDescription"] as? String,
+            durationSeconds: Self.integerValue(details?["lengthSeconds"])
+        )
+    }
+
+    /// Parses the timestamped lines of an episode description into chapters.
+    ///
+    /// YouTube only treats a description as chaptered when the timestamps start at `0:00`, are in
+    /// ascending order, number at least three and are each at least ten seconds apart. The same
+    /// rules are applied here so the headings shown in the transcript are the chapters YouTube
+    /// itself would use, and a description full of incidental timestamps yields nothing.
+    static func parseChapters(fromDescription description: String?, durationSeconds: Int? = nil) -> [PodcastChapter] {
+        guard let description else { return [] }
+
+        let timestampedLines = description
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { self.timestampedLine(String($0)) }
+
+        guard timestampedLines.count >= Chapters.minimumCount, timestampedLines[0].startMs == 0 else {
+            return []
+        }
+
+        var chapters: [PodcastChapter] = []
+        var previousStartMs: Int?
+
+        for line in timestampedLines {
+            if let previousStartMs {
+                guard line.startMs > previousStartMs,
+                      line.startMs - previousStartMs >= Chapters.minimumDurationMs
+                else {
+                    return []
+                }
+            }
+
+            if let durationSeconds, durationSeconds > 0, line.startMs > durationSeconds * 1000 {
+                return []
+            }
+
+            previousStartMs = line.startMs
+            chapters.append(PodcastChapter(title: line.title, startTimeMs: line.startMs))
+        }
+
+        return chapters
+    }
+
+    /// Splits a `M:SS Title` / `MM:SS Title` / `H:MM:SS Title` line into its timestamp and heading.
+    ///
+    /// Returns `nil` for anything that is not a timestamped chapter line, including timestamps
+    /// without a heading.
+    static func timestampedLine(_ line: String) -> (startMs: Int, title: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.first?.isNumber == true else { return nil }
+
+        let digits = trimmed.prefix { $0.isNumber || $0 == ":" }
+        let parts = digits.split(separator: ":", omittingEmptySubsequences: false)
+        guard (2 ... 3).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        else {
+            return nil
+        }
+
+        let seconds = Int(parts[parts.count - 1]) ?? 0
+        let minutes = Int(parts[parts.count - 2]) ?? 0
+        let hours = parts.count == 3 ? Int(parts[0]) ?? 0 : 0
+        guard seconds < 60, minutes < 60 else { return nil }
+
+        let title = trimmed.dropFirst(digits.count).trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return nil }
+
+        return (hours * 3_600_000 + minutes * 60_000 + seconds * 1_000, title)
+    }
+
+    /// Reads a player response value that may arrive as an `Int`, a `Double` or a string.
+    private static func integerValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let double = value as? Double { return Int(double) }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 
     // MARK: - Timed text
@@ -194,6 +291,7 @@ enum PodcastTranscriptParser {
 
         return PodcastTranscript(
             lines: lines,
+            chapters: self.parseChapters(from: playerResponse),
             languageCode: track.languageCode,
             isAutoGenerated: track.isAutoGenerated
         )

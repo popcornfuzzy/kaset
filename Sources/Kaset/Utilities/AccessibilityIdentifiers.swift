@@ -154,6 +154,7 @@ enum AccessibilityID {
         static let closeButton = "fullscreenPodcast.close"
         static let transcriptToggle = "fullscreenPodcast.transcriptToggle"
         static let transcript = "fullscreenPodcast.transcript"
+        static let chapterHeader = "fullscreenPodcast.chapterHeader"
     }
 
     enum MainWindow {
