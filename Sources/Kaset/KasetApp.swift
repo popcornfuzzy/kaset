@@ -37,6 +37,7 @@ struct KasetApp: App {
     @State private var accountService: AccountService?
     @State private var scrobblingCoordinator: ScrobblingCoordinator
     @State private var syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
+    @State private var podcastTranscriptService: PodcastTranscriptService
     @State private var canvasService = CanvasService()
     @State private var castService = CastService()
 
@@ -82,6 +83,7 @@ struct KasetApp: App {
 
         _authService = State(initialValue: auth)
         _webKitManager = State(initialValue: webkit)
+        _podcastTranscriptService = State(initialValue: PodcastTranscriptService(client: client))
         _playerService = State(initialValue: player)
         _sharedClient = State(initialValue: client)
         _notificationService = State(initialValue: NotificationService(playerService: player))
@@ -122,6 +124,7 @@ struct KasetApp: App {
                     .environment(self.accountService)
                     .environment(self.scrobblingCoordinator)
                     .environment(self.syncedLyricsService)
+                    .environment(self.podcastTranscriptService)
                     .environment(self.canvasService)
                     .environment(self.castService)
                     .environment(\.searchFocusTrigger, self.$searchFocusTrigger)
@@ -163,6 +166,7 @@ struct KasetApp: App {
                 .environment(self.updaterService)
                 .environment(self.scrobblingCoordinator)
                 .environment(self.syncedLyricsService)
+                .environment(self.podcastTranscriptService)
                 .environment(self.canvasService)
         }
         .commands {

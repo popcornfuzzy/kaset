@@ -805,10 +805,16 @@ final class SingletonPlayerWebView {
             // Apply the current volume when page finishes loading
             // This is critical because YouTube may set its own default volume
             let savedVolume = self.playerService.volume
+            let savedRate = self.playerService.playbackRate
             let applyVolumeScript = """
                 (function() {
                     // Set target volume for enforcement
                     window.__kasetTargetVolume = \(savedVolume);
+                    // Podcast playback speed survives page loads for the same reason volume does:
+                    // a fresh page (track change, reload) starts at the platform default.
+                    window.__kasetTargetPlaybackRate = \(savedRate);
+                    const rateVideo = document.querySelector('video');
+                    if (rateVideo) { rateVideo.playbackRate = \(savedRate); }
                     window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");
                     // Set flag to prevent enforcement from reverting our change
                     window.__kasetIsSettingVolume = true;

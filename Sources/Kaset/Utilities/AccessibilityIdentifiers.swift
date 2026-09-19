@@ -22,6 +22,7 @@ enum AccessibilityID {
         static func playlistItem(_ playlistId: String) -> String {
             "sidebar.playlist.\(playlistId)"
         }
+
         static let historyItem = "sidebar.history"
     }
 
@@ -147,6 +148,13 @@ enum AccessibilityID {
     }
 
     // MARK: - Main Window
+
+    enum FullscreenPodcast {
+        static let container = "fullscreenPodcast"
+        static let closeButton = "fullscreenPodcast.close"
+        static let transcriptToggle = "fullscreenPodcast.transcriptToggle"
+        static let transcript = "fullscreenPodcast.transcript"
+    }
 
     enum MainWindow {
         static let container = "mainWindow"

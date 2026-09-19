@@ -73,6 +73,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Current volume (0.0 - 1.0).
     private(set) var volume: Double = 1.0
 
+    /// Current playback rate (1.0 = normal speed). Podcasts are the main consumer:
+    /// the fullscreen podcast experience offers 0.75x – 2x speed control.
+    private(set) var playbackRate: Double = 1.0
+
+    /// Lowest playback rate the UI offers.
+    static let minimumPlaybackRate = 0.75
+
+    /// Highest playback rate the UI offers.
+    static let maximumPlaybackRate = 2.0
+
     /// Volume before muting, for unmute restoration.
     private var volumeBeforeMute: Double = 1.0
 
@@ -183,6 +193,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Kept for metadata compatibility with the web observer.
     var currentTrackHasVideo: Bool = false
 
+    /// Whether a video surface is worth showing for the current playback item: either the
+    /// metadata says a video exists, or the WebView player has already reported video dimensions.
+    var hasVideoSurface: Bool {
+        self.currentTrackHasVideo || self.miniPlayerVideoAspectRatio != nil
+    }
+
     /// Whether the Web player currently reports ad playback.
     private(set) var isAdPlaying: Bool = false
 
@@ -216,6 +232,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// UserDefaults key for persisting volume.
     static let volumeKey = "playerVolume"
+    /// UserDefaults key for persisting the playback rate.
+    static let playbackRateKey = "playerPlaybackRate"
     /// UserDefaults key for persisting volume before mute.
     static let volumeBeforeMuteKey = "playerVolumeBeforeMute"
     /// UserDefaults key for persisting shuffle state.
@@ -236,6 +254,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             self.volume = max(0, min(1, savedVolume))
             self.logger.info("Restored saved volume: \(self.volume)")
         }
+        // Restore the podcast/listening speed so it survives app restarts.
+        if UserDefaults.standard.object(forKey: Self.playbackRateKey) != nil {
+            let savedRate = UserDefaults.standard.double(forKey: Self.playbackRateKey)
+            if savedRate >= Self.minimumPlaybackRate, savedRate <= Self.maximumPlaybackRate {
+                self.playbackRate = savedRate
+                self.logger.info("Restored saved playback rate: \(savedRate)")
+            }
+        }
+
         // Restore volumeBeforeMute for proper unmute behavior
         if UserDefaults.standard.object(forKey: Self.volumeBeforeMuteKey) != nil {
             let savedVolumeBeforeMute = UserDefaults.standard.double(
@@ -299,6 +326,21 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether the currently active track is a podcast episode.
     var isCurrentTrackPodcast: Bool {
         self.currentPlaybackIsPodcast || self.isPodcastTrack(self.currentTrack)
+    }
+
+    /// Whether the fullscreen presentation should be the podcast listening experience
+    /// (video + transcript) rather than the music one (artwork + lyrics).
+    var isFullscreenPodcastPresented: Bool {
+        self.showFullscreenNowPlaying && self.isCurrentTrackPodcast
+    }
+
+    /// Sets the playback rate, persists it, and applies it to the WebView player.
+    func setPlaybackRate(_ rate: Double) {
+        let clampedRate = min(max(rate, Self.minimumPlaybackRate), Self.maximumPlaybackRate)
+        self.playbackRate = clampedRate
+        UserDefaults.standard.set(clampedRate, forKey: Self.playbackRateKey)
+        SingletonPlayerWebView.shared.setPlaybackRate(clampedRate)
+        self.logger.info("Playback rate set to \(clampedRate)x")
     }
 
     /// Toggles user-controlled mini player visibility from the player bar.

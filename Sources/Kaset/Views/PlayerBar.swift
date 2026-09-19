@@ -597,7 +597,16 @@ struct PlayerBar: View {
             .buttonStyle(.pressable)
             .glassEffectID("fullscreenNowPlaying", in: self.playerNamespace)
             .accessibilityIdentifier(AccessibilityID.PlayerBar.videoButton)
-            .accessibilityLabel(String(localized: "Fullscreen Now Playing"))
+            .accessibilityLabel(
+                self.playerService.isCurrentTrackPodcast
+                    ? String(localized: "Fullscreen Podcast")
+                    : String(localized: "Fullscreen Now Playing")
+            )
+            .help(
+                self.playerService.isCurrentTrackPodcast
+                    ? String(localized: "Fullscreen Podcast")
+                    : String(localized: "Fullscreen Now Playing")
+            )
             .accessibilityValue(self.playerService.showFullscreenNowPlaying ? String(localized: "On") : String(localized: "Off"))
         }
     }

@@ -52,6 +52,10 @@ struct MainWindow: View {
     @State private var whatsNewToPresent: PresentedWhatsNew?
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
 
+    /// Video slot the fullscreen podcast experience reports, so the shared player WebView can be
+    /// placed inside it. Owned here because this view owns the WebView layer.
+    @State private var podcastVideoSlotModel = PodcastVideoSlotModel()
+
     // MARK: - Cached ViewModels (persist across tab switches)
 
     @State private var homeViewModel: HomeViewModel?
@@ -110,6 +114,7 @@ struct MainWindow: View {
 
     var body: some View {
         @Bindable var player = self.playerService
+        let showsPodcastFullscreen = self.playerService.isFullscreenPodcastPresented
 
         ZStack(alignment: .bottomTrailing) {
             // Flag-driven modifiers on a single `Group`, never an `if/else` on the fullscreen flag: two
@@ -131,74 +136,31 @@ struct MainWindow: View {
             }
             .modifier(FullscreenObscureModifier(isObscured: self.playerService.showFullscreenNowPlaying))
 
+            // The podcast experience sits *below* the WebView layer: it reports where the video
+            // belongs and the shared layer is placed into that slot, which is how the episode video
+            // appears on the left without the transcript view ever owning playback.
+            // The layer is stacked above it explicitly (`zIndex` below), because the fullscreen view
+            // paints over the whole window and would otherwise hide the video it just measured.
+            if showsPodcastFullscreen {
+                FullscreenPodcastView(slotModel: self.podcastVideoSlotModel)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(9)
+            }
+
             // Persistent WebView - always present once a video has been requested
             // Uses a SINGLETON WebView instance that persists for the app lifetime
             // The mini player can be resized by dragging any edge.
             if let videoId = playerService.pendingPlayVideoId, self.showsWebLayer {
-                let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
-                let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
-                let shouldPreferVideo = self.playerService.currentTrackHasVideo
-                    || self.playerService.miniPlayerVideoAspectRatio != nil
-
-                PersistentPlayerView(
-                    videoId: videoId,
-                    isExpanded: isMiniPlayerVisible,
-                    prefersVideo: shouldPreferVideo,
-                    viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
-                )
-                .frame(
-                    width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
-                    height: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? miniPlayerHeight : 1)
-                )
-                .background(Color.black)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .opacity(isMiniPlayerVisible ? 0.95 : 0)
-                .overlay {
-                    if isMiniPlayerVisible {
-                        self.miniPlayerResizeOverlay
-                    }
+                if showsPodcastFullscreen {
+                    self.podcastVideoLayer(videoId: videoId)
+                } else {
+                    self.miniPlayerLayer(videoId: videoId)
                 }
-                .overlay(alignment: .topTrailing) {
-                    if isMiniPlayerVisible {
-                        Button {
-                            self.playerService.confirmPlaybackStarted()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.white.opacity(0.8))
-                                .shadow(radius: 1)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(String(localized: "Close"))
-                        .padding(3)
-                    }
-                }
-                .overlay(alignment: .bottomLeading) {
-                    if isMiniPlayerVisible, self.shouldShowNoVideoHint {
-                        Text(String(localized: "No video available for this track"))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.22), in: Capsule())
-                            .padding(.leading, 8)
-                            .padding(.bottom, 8)
-                            .allowsHitTesting(false)
-                            .transition(.opacity)
-                    }
-                }
-                .shadow(
-                    color: isMiniPlayerVisible ? .black.opacity(0.2) : .clear,
-                    radius: 6,
-                    y: 3
-                )
-                .padding(.trailing, isMiniPlayerVisible ? 12 : 0)
-                .padding(.bottom, isMiniPlayerVisible ? 76 : 0)
-                .allowsHitTesting(isMiniPlayerVisible)
-                .animation(.easeInOut(duration: 0.2), value: isMiniPlayerVisible)
-                .animation(.easeInOut(duration: 0.18), value: self.shouldShowNoVideoHint)
             }
         }
+        // The fullscreen podcast view measures its video slot in this space, and the layer below
+        // is positioned in it — both must resolve against the same origin.
+        .coordinateSpace(.named(PodcastVideoSlotModel.coordinateSpaceName))
         .sheet(isPresented: self.$showLoginSheet) {
             LoginSheet()
         }
@@ -241,7 +203,8 @@ struct MainWindow: View {
             }
         }
         .overlay {
-            if self.playerService.showFullscreenNowPlaying {
+            // Podcast episodes get the listening experience above; songs keep artwork + lyrics.
+            if self.playerService.showFullscreenNowPlaying, !self.playerService.isCurrentTrackPodcast {
                 FullscreenNowPlayingView(client: self.client)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                     .zIndex(10)
@@ -345,6 +308,102 @@ struct MainWindow: View {
     /// TEMPORARY: honors the PerfHUD "WebLayer" switch.
     private var showsWebLayer: Bool {
         !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
+    }
+
+    // MARK: - Player WebView Layer
+
+    /// The floating mini player, resizable by dragging any edge.
+    @ViewBuilder
+    private func miniPlayerLayer(videoId: String) -> some View {
+        let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
+        let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
+
+        PersistentPlayerView(
+            videoId: videoId,
+            isExpanded: isMiniPlayerVisible,
+            prefersVideo: self.playerService.hasVideoSurface,
+            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
+        )
+        .frame(
+            width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
+            height: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? miniPlayerHeight : 1)
+        )
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .opacity(isMiniPlayerVisible ? 0.95 : 0)
+        .overlay {
+            if isMiniPlayerVisible {
+                self.miniPlayerResizeOverlay
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isMiniPlayerVisible {
+                Button {
+                    self.playerService.confirmPlaybackStarted()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .shadow(radius: 1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Close"))
+                .padding(3)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if isMiniPlayerVisible, self.shouldShowNoVideoHint {
+                Text(String(localized: "No video available for this track"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.22), in: Capsule())
+                    .padding(.leading, 8)
+                    .padding(.bottom, 8)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .shadow(
+            color: isMiniPlayerVisible ? .black.opacity(0.2) : .clear,
+            radius: 6,
+            y: 3
+        )
+        .padding(.trailing, isMiniPlayerVisible ? 12 : 0)
+        .padding(.bottom, isMiniPlayerVisible ? 76 : 0)
+        .allowsHitTesting(isMiniPlayerVisible)
+        .animation(.easeInOut(duration: 0.2), value: isMiniPlayerVisible)
+        .animation(.easeInOut(duration: 0.18), value: self.shouldShowNoVideoHint)
+    }
+
+    /// The episode video surface, placed into the slot the fullscreen podcast view measured.
+    ///
+    /// The layer is kept in the hierarchy (at 1×1) whenever the video is off or unavailable, so the
+    /// WebView never leaves the window and playback continues while the transcript is read.
+    @ViewBuilder
+    private func podcastVideoLayer(videoId: String) -> some View {
+        let slotFrame = self.podcastVideoSlotModel.frame
+        let showsVideo = self.podcastVideoSlotModel.isVideoEnabled
+            && self.podcastVideoSlotModel.hasSlot
+            && self.playerService.hasVideoSurface
+
+        PersistentPlayerView(
+            videoId: videoId,
+            isExpanded: showsVideo,
+            prefersVideo: showsVideo,
+            viewportSize: showsVideo ? slotFrame.size : CGSize(width: 1, height: 1)
+        )
+        .frame(width: showsVideo ? slotFrame.width : 1, height: showsVideo ? slotFrame.height : 1)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .position(x: showsVideo ? slotFrame.midX : -100, y: showsVideo ? slotFrame.midY : -100)
+        .opacity(showsVideo ? 1 : 0)
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.22), value: showsVideo)
+        // The fullscreen podcast view is opaque across the whole window and is stacked at 9, so the
+        // video layer has to sit above it — otherwise the video renders behind the view that asked
+        // for it and the "Video deaktivieren" toggle looks like it does nothing.
+        .zIndex(20)
     }
 
     /// Hides the root content behind the fullscreen now-playing overlay, which covers the whole window.

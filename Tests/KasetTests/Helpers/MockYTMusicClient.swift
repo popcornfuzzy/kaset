@@ -63,6 +63,10 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     var artistSongsResponse: [Song] = []
     var moodCategoryResponse: HomeResponse = .init(sections: [])
     var lyricsResponses: [String: Lyrics] = [:]
+    var podcastTranscripts: [String: PodcastTranscript] = [:]
+    var podcastTranscriptDelay: Duration?
+    /// Per-episode latency, so tests can make one episode's transcript arrive after another's.
+    var podcastTranscriptDelays: [String: Duration] = [:]
     var radioQueueSongs: [String: [Song]] = [:]
     var mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
     var mixQueueContinuationResults: [RadioQueueResult] = []
@@ -198,6 +202,8 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     private(set) var unsubscribeFromArtistIds: [String] = []
     private(set) var getLyricsCalled = false
     private(set) var getLyricsVideoIds: [String] = []
+    private(set) var getPodcastTranscriptCalled = false
+    private(set) var getPodcastTranscriptVideoIds: [String] = []
     private(set) var getRadioQueueCalled = false
     private(set) var getRadioQueueVideoIds: [String] = []
     private(set) var getMixQueueCalled = false
@@ -827,6 +833,16 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         return self.lyricsResponses[videoId] ?? .unavailable
     }
 
+    func getPodcastTranscript(videoId: String, preferredLanguageCode _: String?) async throws -> PodcastTranscript {
+        self.getPodcastTranscriptCalled = true
+        self.getPodcastTranscriptVideoIds.append(videoId)
+        if let delay = self.podcastTranscriptDelays[videoId] ?? self.podcastTranscriptDelay {
+            try? await Task.sleep(for: delay)
+        }
+        if let error = shouldThrowError { throw error }
+        return self.podcastTranscripts[videoId] ?? .unavailable
+    }
+
     func getSong(videoId: String) async throws -> Song {
         self.getSongCalled = true
         self.getSongVideoIds.append(videoId)
@@ -957,6 +973,10 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         self.getSongDelay = nil
         self.getLyricsCalled = false
         self.getLyricsVideoIds = []
+        self.getPodcastTranscriptCalled = false
+        self.getPodcastTranscriptVideoIds = []
+        self.podcastTranscriptDelay = nil
+        self.podcastTranscriptDelays = [:]
         self.getRadioQueueCalled = false
         self.getRadioQueueVideoIds = []
         self.getMixQueueCalled = false
