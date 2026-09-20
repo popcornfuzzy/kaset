@@ -7,8 +7,8 @@ Kaset provides keyboard control for playback and navigation while preserving sta
 | Shortcut | Action                              |
 | -------- | ----------------------------------- |
 | `Space`  | Play / Pause                        |
-| `⌘→`     | Next track                          |
-| `⌘←`     | Previous track                      |
+| `⌘→`     | Next track (forward 30s for a podcast episode) |
+| `⌘←`     | Previous track (back 15s for a podcast episode) |
 | `⌘↑`     | Volume up                           |
 | `⌘↓`     | Volume down                         |
 | `⌘S`     | Toggle shuffle                      |

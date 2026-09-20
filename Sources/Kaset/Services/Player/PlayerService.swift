@@ -116,6 +116,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// This avoids relying on transient web metadata that may omit podcast markers.
     private(set) var currentPlaybackIsPodcast: Bool = false
 
+    /// The video this classification belongs to.
+    ///
+    /// Reconciling against the WebView re-derives `currentTrack` with `unknown` as the artist, and
+    /// the byline never carries the `podcast` marker. Without remembering which item was
+    /// classified, the flag could drop mid-episode and flip the transport controls and the
+    /// fullscreen presentation back to their music variants.
+    private var podcastClassificationVideoId: String?
+
     /// Observed video aspect ratio (width / height) from the active HTML video element.
     /// `nil` means the UI should use its fallback ratio until dimensions become available.
     private(set) var miniPlayerVideoAspectRatio: Double?
@@ -381,17 +389,37 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     }
 
     func updateCurrentPlaybackKind(using song: Song?) {
-        self.currentPlaybackIsPodcast = self.isPodcastTrack(song)
+        if self.isPodcastTrack(song) {
+            self.currentPlaybackIsPodcast = true
+            self.podcastClassificationVideoId = song?.videoId
+            return
+        }
+
+        // Never downgrade while the reported item is still the one classified as a podcast: its
+        // metadata may simply have lost the marker. A different item — or no identity at all —
+        // means playback really moved on.
+        if let videoId = song?.videoId, videoId == self.podcastClassificationVideoId { return }
+        self.currentPlaybackIsPodcast = false
+        self.podcastClassificationVideoId = nil
     }
 
     private func applyMiniPlayerPolicyForPlayback(videoId: String, isPodcast: Bool) {
         self.cancelMiniPlayerFallback()
         self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
         self.miniPlayerEnabledByUser = false
-        self.currentPlaybackIsPodcast = isPodcast
+
+        // Callers that only know a video ID — `play(videoId:)`, queue-drift correction, autoplay —
+        // pass `isPodcast: false`. Replaying the item we already classified must keep that
+        // classification, or restarting an episode mid-playback would flip the transport controls
+        // and the fullscreen presentation back to their music variants.
+        let classifiedVideoId = self.podcastClassificationVideoId
+        let isPodcastPlayback = isPodcast || (classifiedVideoId != nil && videoId == classifiedVideoId)
+
+        self.currentPlaybackIsPodcast = isPodcastPlayback
+        self.podcastClassificationVideoId = isPodcastPlayback ? videoId : nil
         self.miniPlayerVideoAspectRatio = nil
 
-        if isPodcast {
+        if isPodcastPlayback {
             self.showMiniPlayer = true
             self.logger.info("Mini player auto-opened for podcast playback")
             return
@@ -1093,6 +1121,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.shouldSuppressAutoplayAfterQueueEnd = false
         self.currentEpisode = nil
         self.currentTrack = nil
+        self.updateCurrentPlaybackKind(using: nil)
         self.progress = 0
         self.duration = 0
     }

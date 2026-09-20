@@ -82,17 +82,25 @@ struct PlayerBar: View {
                 .keyboardShortcut(.space, modifiers: [])
                 .opacity(0)
 
-                // Command + Right Arrow: Next track
+                // Command + Right Arrow: Next track, or forward 30s for a podcast episode
                 Button("") {
-                    Task { await self.playerService.next() }
+                    if self.playerService.isCurrentTrackPodcast {
+                        Task { await self.seek(by: 30) }
+                    } else {
+                        Task { await self.playerService.next() }
+                    }
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
                 .disabled(self.playerService.currentEpisode != nil)
                 .opacity(0)
 
-                // Command + Left Arrow: Previous track
+                // Command + Left Arrow: Previous track, or back 15s for a podcast episode
                 Button("") {
-                    Task { await self.playerService.previous() }
+                    if self.playerService.isCurrentTrackPodcast {
+                        Task { await self.seek(by: -15) }
+                    } else {
+                        Task { await self.playerService.previous() }
+                    }
                 }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
                 .disabled(self.playerService.currentEpisode != nil)
@@ -332,20 +340,29 @@ struct PlayerBar: View {
             .accessibilityLabel(String(localized: "Shuffle"))
             .accessibilityValue(self.playerService.shuffleEnabled ? String(localized: "On") : String(localized: "Off"))
 
-            // Previous
-            Button {
-                HapticService.playback()
-                Task {
-                    await self.playerService.previous()
+            // Previous track, or back 15 seconds while a podcast episode is playing.
+            //
+            // `isCurrentTrackPodcast` — not `currentEpisode` — is the signal here: a podcast played
+            // from a show page is a queued `Song` with the "podcast" artist marker and leaves
+            // `currentEpisode` nil. `currentEpisode` is set only for standalone artist-page episodes
+            // (live streams), which have no duration and therefore keep the track controls disabled.
+            if self.playerService.isCurrentTrackPodcast {
+                self.skipButton(seconds: -15, systemImage: "gobackward.15")
+            } else {
+                Button {
+                    HapticService.playback()
+                    Task {
+                        await self.playerService.previous()
+                    }
+                } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.primary)
                 }
-            } label: {
-                Image(systemName: "backward.fill")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.primary)
+                .buttonStyle(.pressable)
+                .disabled(self.playerService.currentEpisode != nil)
+                .accessibilityLabel(String(localized: "Previous track"))
             }
-            .buttonStyle(.pressable)
-            .disabled(self.playerService.currentEpisode != nil)
-            .accessibilityLabel(String(localized: "Previous track"))
 
             // Play/Pause
             Button {
@@ -363,20 +380,24 @@ struct PlayerBar: View {
             .glassEffectID("playPause", in: self.playerNamespace)
             .accessibilityLabel(self.playerService.isPlaying ? String(localized: "Pause") : String(localized: "Play"))
 
-            // Next
-            Button {
-                HapticService.playback()
-                Task {
-                    await self.playerService.next()
+            // Next track, or forward 30 seconds while a podcast episode is playing.
+            if self.playerService.isCurrentTrackPodcast {
+                self.skipButton(seconds: 30, systemImage: "goforward.30")
+            } else {
+                Button {
+                    HapticService.playback()
+                    Task {
+                        await self.playerService.next()
+                    }
+                } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.primary)
                 }
-            } label: {
-                Image(systemName: "forward.fill")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.primary)
+                .buttonStyle(.pressable)
+                .disabled(self.playerService.currentEpisode != nil)
+                .accessibilityLabel(String(localized: "Next track"))
             }
-            .buttonStyle(.pressable)
-            .disabled(self.playerService.currentEpisode != nil)
-            .accessibilityLabel(String(localized: "Next track"))
 
             // Repeat
             Button {
@@ -392,6 +413,35 @@ struct PlayerBar: View {
             .accessibilityLabel(String(localized: "Repeat"))
             .accessibilityValue(self.repeatAccessibilityValue)
         }
+    }
+
+    /// A rewind/forward button used in place of the previous/next controls while a podcast
+    /// episode is playing, mirroring the transport row of the fullscreen podcast view.
+    private func skipButton(seconds: Int, systemImage: String) -> some View {
+        Button {
+            HapticService.playback()
+            Task {
+                await self.seek(by: seconds)
+            }
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.primary)
+        }
+        .buttonStyle(.pressable)
+        .disabled(self.playerService.duration <= 0)
+        .accessibilityLabel(
+            seconds < 0
+                ? String(localized: "Back 15 Seconds")
+                : String(localized: "Forward 30 Seconds")
+        )
+    }
+
+    /// Seeks relative to the current position, clamped to the episode's bounds.
+    private func seek(by seconds: Int) async {
+        guard self.playerService.duration > 0 else { return }
+        let target = max(0, min(self.playerService.duration, self.playerService.progress + Double(seconds)))
+        await self.playerService.seek(to: target)
     }
 
     private var repeatIcon: String {

@@ -124,6 +124,22 @@ required.
 A local, view-scoped sleep timer (5–60 minutes) pauses playback when it expires. It is deliberately
 not persisted: it belongs to one listening session.
 
+### "Is this a podcast?" is `isCurrentTrackPodcast`, and it is sticky per video
+
+The podcast surfaces — this experience, and the player bar's rewind/forward controls — gate on
+`PlayerService.isCurrentTrackPodcast`, deliberately **not** on `currentEpisode`. The two answer
+different questions:
+
+- A podcast episode played from a show page is a queued `Song` carrying the `podcast` artist marker,
+  and `currentEpisode` stays `nil`.
+- `currentEpisode` is set only for standalone artist-page episodes (live streams), which are not
+  podcasts and have no duration to seek within.
+
+`currentPlaybackIsPodcast` is sticky *per video*: it is set when playback starts, and reconciliation
+against the WebView (whose byline never carries the marker, and which re-derives tracks with
+`unknown` as the artist) can no longer downgrade it while the same video is playing. It is cleared
+only when a different video is reported or the pending item is gone.
+
 ## Consequences
 
 ### Positive
