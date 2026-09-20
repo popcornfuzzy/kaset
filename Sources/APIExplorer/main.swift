@@ -14,6 +14,8 @@
 //    browse <browseId> [params]    - Explore a browse endpoint
 //    action <endpoint> <body>      - Explore an action endpoint (body as JSON)
 //    continuation <token> [ep]     - Explore a continuation (ep: browse or next)
+//    transcript <videoId>          - Explore the transcript (caption) flow for a video
+//    chapters <videoId>            - Explore where a video's chapters live in the payloads
 //    list                          - List all known endpoints
 //    auth                          - Check authentication status
 //    help                          - Show this help message
@@ -21,6 +23,11 @@
 //  Options:
 //    -v, --verbose                 - Show full raw JSON response (not truncated)
 //    -o, --output <file>           - Save raw JSON response to a file
+//
+//  Environment:
+//    YOUTUBE_WEB_API_KEY           - Innertube key for the optional www.youtube.com probes.
+//                                    Public, but never written into this file: secret scanners
+//                                    flag the literal. The Music host needs no such opt-in.
 //
 //  Examples:
 //    ./Tools/api-explorer.swift browse FEmusic_home
@@ -40,6 +47,19 @@ import Foundation
 
 let apiKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
 let clientVersion = "1.20231204.01.00"
+/// Innertube key for the `www.youtube.com` clients, read from the environment instead of being
+/// written into this file.
+///
+/// It is not a secret — the same key ships inside every YouTube web page — but it is shaped like a
+/// Google API credential, so repository secret scanners raise an alert for the literal and keep
+/// raising it on every commit that touches the line. Provide it when a probe needs the web host:
+///
+///     YOUTUBE_WEB_API_KEY=AIza… swift run api-explorer chapters <videoId>
+///
+/// The `music.youtube.com` probes never need it: they use `apiKey` above, and they answer for
+/// everything the app requests.
+let youtubeWebAPIKey = ProcessInfo.processInfo.environment["YOUTUBE_WEB_API_KEY"] ?? ""
+let youtubeWebClientVersion = "2.20250310.01.00"
 let baseURL = "https://music.youtube.com/youtubei/v1"
 let origin = "https://music.youtube.com"
 
@@ -1055,6 +1075,670 @@ func discoverBrandAccounts(verbose: Bool) async {
     }
 }
 
+// MARK: - Transcript Exploration
+
+/// Transcript metadata scraped from a YouTube watch page.
+private struct WatchPageTranscriptInfo {
+    /// `getTranscriptEndpoint.params` — the protobuf blob `get_transcript` expects.
+    var transcriptParams: String?
+    /// Timed-text caption track URLs found in the page's player response.
+    var captionURLs: [String]
+    /// Visitor data advertised by the page; some youtubei endpoints reject requests without it.
+    var visitorData: String?
+}
+
+/// Returns the first capture group of `pattern` in `text`, if any.
+private func firstRegexMatch(in text: String, pattern: String) -> String? {
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+        return nil
+    }
+    let range = NSRange(text.startIndex..., in: text)
+    guard let match = regex.firstMatch(in: text, range: range),
+          match.numberOfRanges > 1,
+          let matchRange = Range(match.range(at: 1), in: text)
+    else {
+        return nil
+    }
+    return String(text[matchRange])
+}
+
+/// Returns every first capture group of `pattern` in `text`.
+private func allRegexMatches(in text: String, pattern: String) -> [String] {
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+        return []
+    }
+    let range = NSRange(text.startIndex..., in: text)
+    return regex.matches(in: text, range: range).compactMap { match in
+        guard match.numberOfRanges > 1, let matchRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[matchRange])
+    }
+}
+
+/// Fetches a YouTube watch page and extracts the transcript request parameters.
+///
+/// The watch page embeds `getTranscriptEndpoint.params`, the protobuf blob the
+/// `get_transcript` endpoint requires. This is the only documented way to learn it
+/// without reverse-engineering the protobuf schema by hand.
+private func fetchWatchPageTranscriptInfo(videoId: String) async throws -> WatchPageTranscriptInfo {
+    guard let url = URL(string: "https://www.youtube.com/watch?v=\(videoId)") else {
+        throw NSError(domain: "APIExplorer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid video ID"])
+    }
+
+    var request = URLRequest(url: url)
+    request.setValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        forHTTPHeaderField: "User-Agent"
+    )
+    request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+
+    let (data, _) = try await URLSession.shared.data(for: request)
+    let html = String(decoding: data, as: UTF8.self)
+
+    // The watch page embeds this value URL-encoded; `get_transcript` expects the
+    // decoded base64 (padding included).
+    let rawParams = firstRegexMatch(in: html, pattern: "\"getTranscriptEndpoint\":\\{\"params\":\"([^\"]+)\"")
+
+    return WatchPageTranscriptInfo(
+        transcriptParams: rawParams?.removingPercentEncoding ?? rawParams,
+        captionURLs: allRegexMatches(in: html, pattern: "\"baseUrl\":\"([^\"]+timedtext[^\"]*)\""),
+        visitorData: firstRegexMatch(in: html, pattern: "\"visitorData\":\"([^\"]+)\"")
+    )
+}
+
+/// Performs a POST against an arbitrary `youtubei/v1` host with an explicit client
+/// identity, used to find which client accepts a given request body.
+private func makeHostRequest(
+    host: String,
+    endpoint: String,
+    body: [String: Any],
+    clientName: String,
+    clientVersionValue: String,
+    key: String,
+    visitorData: String? = nil
+) async throws -> (data: [String: Any], statusCode: Int) {
+    guard let url = URL(string: "\(host)/youtubei/v1/\(endpoint)?key=\(key)&prettyPrint=false") else {
+        throw NSError(domain: "APIExplorer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        forHTTPHeaderField: "User-Agent"
+    )
+    request.setValue(host, forHTTPHeaderField: "Origin")
+    request.setValue("\(host)/", forHTTPHeaderField: "Referer")
+    if let visitorData {
+        request.setValue(visitorData, forHTTPHeaderField: "X-Goog-Visitor-Id")
+    }
+
+    var clientContext: [String: Any] = [
+        "clientName": clientName,
+        "clientVersion": clientVersionValue,
+        "hl": "en",
+        "gl": "US",
+    ]
+    if let visitorData {
+        clientContext["visitorData"] = visitorData
+    }
+
+    var fullBody = body
+    fullBody["context"] = [
+        "client": clientContext,
+        "user": ["lockedSafetyMode": false],
+    ]
+    request.httpBody = try JSONSerialization.data(withJSONObject: fullBody)
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse,
+          let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        throw NSError(domain: "APIExplorer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+    }
+
+    return (json, httpResponse.statusCode)
+}
+
+/// Explores the transcript flow for a video: learns the request parameters from the
+/// watch page, calls `get_transcript`, and prints the resulting cue structure.
+func exploreTranscript(_ videoId: String, verbose: Bool = false, outputFile: String? = nil) async {
+    print("📝 Exploring transcript for: \(videoId)")
+    print()
+
+    let info: WatchPageTranscriptInfo
+    do {
+        info = try await fetchWatchPageTranscriptInfo(videoId: videoId)
+    } catch {
+        print("❌ Failed to fetch watch page: \(error.localizedDescription)")
+        return
+    }
+
+    guard let params = info.transcriptParams else {
+        print("❌ No getTranscriptEndpoint.params found on the watch page (no transcript for this video)")
+        if !info.captionURLs.isEmpty {
+            print("   But \(info.captionURLs.count) timed-text caption track(s) were found.")
+        }
+        return
+    }
+
+    print("✅ Found getTranscriptEndpoint.params")
+    print("   params: \(params)")
+
+    if let decoded = Data(base64Encoded: params) {
+        let hex = decoded.map { String(format: "%02x", $0) }.joined(separator: " ")
+        let ascii = decoded.map { byte -> String in
+            (0x20 ... 0x7E).contains(byte) ? String(UnicodeScalar(byte)) : "."
+        }.joined()
+        print("   decoded (\(decoded.count) bytes): \(hex)")
+        print("   ascii: \"\(ascii)\"")
+    }
+
+    print()
+    print("   visitorData: \(info.visitorData?.prefix(24) ?? "none")...")
+    print()
+    print("ℹ️  get_transcript is known to reject these params with HTTP 400 (precondition check")
+    print("   failed) for the music, web and mobile clients, so it is only probed once below.")
+
+    do {
+        let (data, statusCode) = try await makeHostRequest(
+            host: "https://music.youtube.com",
+            endpoint: "get_transcript",
+            body: ["params": params],
+            clientName: "WEB_REMIX",
+            clientVersionValue: clientVersion,
+            key: apiKey,
+            visitorData: info.visitorData
+        )
+
+        if statusCode == 200 {
+            print()
+            print("✅ get_transcript answered HTTP 200 — the endpoint accepts the watch page params again")
+            printTranscriptCues(data)
+
+            if let outputFile,
+               let prettyData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted)
+            {
+                try? prettyData.write(to: URL(fileURLWithPath: outputFile))
+                print("\n💾 Saved to: \(outputFile)")
+            }
+
+            return
+        }
+
+        let message = (data["error"] as? [String: Any])?["message"] as? String ?? "unknown error"
+        print()
+        print("⚠️  get_transcript → HTTP \(statusCode): \(message)")
+    } catch {
+        print("❌ get_transcript error: \(error.localizedDescription)")
+    }
+
+    print()
+    print("↩️  Using the player endpoint's caption tracks instead...")
+    await exploreCaptionTracks(videoId: videoId, verbose: verbose)
+}
+
+/// Explores the caption tracks returned by the `player` endpoint and fetches one
+/// timed-text track, which is the fallback source for transcript text and timings.
+func exploreCaptionTracks(videoId: String, verbose: Bool = false) async {
+    let attempts: [(label: String, host: String, clientName: String, clientVersionAttempt: String, key: String)] = [
+        ("music.youtube.com / ANDROID", "https://music.youtube.com", "ANDROID", "20.10.38", apiKey),
+        ("www.youtube.com / ANDROID", "https://www.youtube.com", "ANDROID", "20.10.38", youtubeWebAPIKey),
+        ("music.youtube.com / IOS", "https://music.youtube.com", "IOS", "20.10.4", apiKey),
+        ("www.youtube.com / IOS", "https://www.youtube.com", "IOS", "20.10.4", youtubeWebAPIKey),
+        ("www.youtube.com / WEB", "https://www.youtube.com", "WEB", youtubeWebClientVersion, youtubeWebAPIKey),
+    ]
+
+    // The `www.youtube.com` rows carry no key unless one was exported, so they are skipped here.
+    for attempt in attempts where !attempt.key.isEmpty {
+        print()
+        print("📡 player → \(attempt.label)")
+
+        do {
+            let (data, statusCode) = try await makeHostRequest(
+                host: attempt.host,
+                endpoint: "player",
+                body: [
+                    "videoId": videoId,
+                    "contentCheckOk": true,
+                    "racyCheckOk": true,
+                ],
+                clientName: attempt.clientName,
+                clientVersionValue: attempt.clientVersionAttempt,
+                key: attempt.key
+            )
+
+            guard statusCode == 200 else {
+                print("⚠️  HTTP \(statusCode)")
+                continue
+            }
+
+            guard let captions = data["captions"] as? [String: Any],
+                  let tracklist = captions["playerCaptionsTracklistRenderer"] as? [String: Any],
+                  let tracks = tracklist["captionTracks"] as? [[String: Any]]
+            else {
+                let playability = data["playabilityStatus"] as? [String: Any]
+                print("⚠️  No caption tracks (playability: \(playability?["status"] as? String ?? "?"), reason: \(playability?["reason"] as? String ?? "-"))")
+                continue
+            }
+
+            print("✅ HTTP 200 — \(tracks.count) caption track(s)")
+            printChapterCandidates(from: data, label: attempt.label)
+            for track in tracks.prefix(6) {
+                let language = track["languageCode"] as? String ?? "?"
+                let kind = track["kind"] as? String ?? "manual"
+                let baseURL = track["baseUrl"] as? String ?? ""
+                let name = (track["name"] as? [String: Any])?["runs"] as? [[String: Any]]
+                let label = name?.first?["text"] as? String ?? language
+                print("   • \(language) [\(kind)] \(label)")
+                print("     \(baseURL.prefix(150))")
+            }
+
+            guard let firstTrack = tracks.first, let baseURL = firstTrack["baseUrl"] as? String else { continue }
+            await fetchTimedText(baseURL: baseURL, verbose: verbose)
+            return
+        } catch {
+            print("❌ Error: \(error.localizedDescription)")
+        }
+    }
+
+    print()
+    print("❌ No caption tracks available either")
+}
+
+/// Explores where a video's chapters live in the YouTube payloads.
+///
+/// Chapters are not a first-class Music API concept: the watch player embeds them as player
+/// bar markers, and other shapes hide them inside engagement panels. Rather than guessing the
+/// path, this walks every payload it can get and reports each chapter-shaped key it finds.
+func exploreChapters(_ videoId: String, verbose: Bool = false) async {
+    print("🔖 Exploring chapters for: \(videoId)")
+
+    let attempts: [(label: String, host: String, clientName: String, clientVersionAttempt: String, key: String)] = [
+        ("music.youtube.com / ANDROID", "https://music.youtube.com", "ANDROID", "20.10.38", apiKey),
+        ("music.youtube.com / WEB_REMIX", "https://music.youtube.com", "WEB_REMIX", clientVersion, apiKey),
+        ("www.youtube.com / ANDROID", "https://www.youtube.com", "ANDROID", "20.10.38", youtubeWebAPIKey),
+        ("www.youtube.com / WEB", "https://www.youtube.com", "WEB", youtubeWebClientVersion, youtubeWebAPIKey),
+    ]
+
+    // The `www.youtube.com` rows carry no key unless one was exported, so they are skipped here.
+    for attempt in attempts where !attempt.key.isEmpty {
+        print()
+        print("📡 player → \(attempt.label)")
+
+        do {
+            let (data, statusCode) = try await makeHostRequest(
+                host: attempt.host,
+                endpoint: "player",
+                body: [
+                    "videoId": videoId,
+                    "contentCheckOk": true,
+                    "racyCheckOk": true,
+                ],
+                clientName: attempt.clientName,
+                clientVersionValue: attempt.clientVersionAttempt,
+                key: attempt.key
+            )
+
+            guard statusCode == 200 else {
+                print("⚠️  HTTP \(statusCode)")
+                continue
+            }
+
+            printChapterCandidates(from: data, label: attempt.label)
+            printChapterMarkers(from: data, verbose: verbose)
+            printDescriptionCandidates(from: data, verbose: verbose)
+            print("   top-level keys: \(data.keys.sorted().joined(separator: ", "))")
+
+            if verbose {
+                let pretty = (try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "<unprintable>"
+                print(pretty)
+            }
+        } catch {
+            print("❌ Error: \(error.localizedDescription)")
+        }
+    }
+
+    print()
+    print("──────── next ────────")
+
+    do {
+        let (data, statusCode) = try await makeHostRequest(
+            host: "https://music.youtube.com",
+            endpoint: "next",
+            body: ["videoId": videoId],
+            clientName: "WEB_REMIX",
+            clientVersionValue: clientVersion,
+            key: apiKey
+        )
+
+        if statusCode == 200 {
+            printChapterCandidates(from: data, label: "next / WEB_REMIX")
+            printChapterMarkers(from: data, verbose: verbose)
+            printDescriptionCandidates(from: data, verbose: verbose)
+            print("\nℹ️  Top-level keys: \(data.keys.sorted().joined(separator: ", "))")
+        } else {
+            print("⚠️  next → HTTP \(statusCode)")
+        }
+    } catch {
+        print("❌ next error: \(error.localizedDescription)")
+    }
+}
+
+/// Recursively reports every payload path whose key looks like chapter or marker data.
+func chapterCandidatePaths(in value: Any, path: String = "") -> [(path: String, summary: String)] {
+    var results: [(path: String, summary: String)] = []
+
+    if let dictionary = value as? [String: Any] {
+        for (key, child) in dictionary {
+            let childPath = path.isEmpty ? key : "\(path).\(key)"
+            let lowercased = key.lowercased()
+            if lowercased.contains("chapter") || lowercased.contains("marker") {
+                results.append((childPath, summarizeJSONValue(child)))
+            }
+            results.append(contentsOf: chapterCandidatePaths(in: child, path: childPath))
+        }
+    } else if let array = value as? [Any] {
+        for (index, child) in array.enumerated() where index < 40 {
+            results.append(contentsOf: chapterCandidatePaths(in: child, path: "\(path)[\(index)]"))
+        }
+    }
+
+    return results
+}
+
+/// One-line description of a payload node, for the path report.
+func summarizeJSONValue(_ value: Any) -> String {
+    if let dictionary = value as? [String: Any] {
+        let keys = dictionary.keys.sorted()
+        let shown = keys.prefix(8).joined(separator: ", ")
+        return "{ \(shown)\(keys.count > 8 ? ", …" : "") }"
+    }
+    if let array = value as? [Any] {
+        return "[\(array.count)]"
+    }
+    return String(String(describing: value).prefix(120))
+}
+
+/// Prints the paths that carry chapter-shaped keys, or says so when there are none.
+func printChapterCandidates(from data: [String: Any], label: String) {
+    let candidates = chapterCandidatePaths(in: data)
+    guard !candidates.isEmpty else {
+        print("   no chapter/marker keys in \(label)")
+        return
+    }
+
+    print("   chapter-shaped keys (\(candidates.count)):")
+    for candidate in candidates {
+        print("   • \(candidate.path) \(candidate.summary)")
+    }
+}
+
+/// Reports whether a description is available and how many timestamped lines it has.
+///
+/// When a creator does not use YouTube's own chapter editor, chapters are still derived by
+/// YouTube from timestamped description lines — the same rule is usable here.
+func printDescriptionCandidates(from data: [String: Any], verbose: Bool = false) {
+    var descriptions: [(path: String, text: String)] = []
+
+    if let details = data["videoDetails"] as? [String: Any],
+       let description = details["shortDescription"] as? String
+    {
+        descriptions.append(("videoDetails.shortDescription", description))
+    }
+
+    for candidate in descriptionPaths(in: data) {
+        descriptions.append(candidate)
+    }
+
+    guard !descriptions.isEmpty else {
+        print("   no description found")
+        return
+    }
+
+    for description in descriptions {
+        let timestamped = timestampedLines(in: description.text)
+        print("   description at \(description.path): \(description.text.count) chars, \(timestamped.count) timestamp line(s)")
+
+        if verbose {
+            for line in timestamped.prefix(30) {
+                print("      • \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+    }
+}
+
+/// Finds string values that look like video descriptions elsewhere in a payload.
+func descriptionPaths(in value: Any, path: String = "") -> [(path: String, text: String)] {
+    var results: [(path: String, text: String)] = []
+
+    if let dictionary = value as? [String: Any] {
+        for (key, child) in dictionary {
+            let childPath = path.isEmpty ? key : "\(path).\(key)"
+            let lowercased = key.lowercased()
+            if lowercased.contains("description"), let text = child as? String, text.count > 40 {
+                results.append((childPath, text))
+            }
+            results.append(contentsOf: descriptionPaths(in: child, path: childPath))
+        }
+    } else if let array = value as? [Any] {
+        for (index, child) in array.enumerated() where index < 40 {
+            results.append(contentsOf: descriptionPaths(in: child, path: "\(path)[\(index)]"))
+        }
+    }
+
+    return results
+}
+
+/// Lines that start with a chapter-style timestamp, e.g. `0:00 Intro` or `01:02:03 Q&A`.
+func timestampedLines(in text: String) -> [String] {
+    text.split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+        .filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.first?.isNumber == true else { return false }
+            let head = trimmed.prefix(while: { $0.isNumber || $0 == ":" })
+            let parts = head.split(separator: ":")
+            guard (2 ... 3).contains(parts.count), parts.allSatisfy({ !$0.isEmpty }) else { return false }
+            let rest = trimmed.dropFirst(head.count).trimmingCharacters(in: .whitespaces)
+            return !rest.isEmpty
+        }
+}
+
+/// Decodes a `markersMap` player bar structure when one is present.
+func printChapterMarkers(from data: [String: Any], verbose: Bool = false) {
+    guard let overlays = data["playerOverlays"] as? [String: Any],
+          let overlay = overlays["playerOverlayRenderer"] as? [String: Any],
+          let decoratedBar = overlay["decoratedPlayerBarRenderer"] as? [String: Any],
+          let innerBar = decoratedBar["decoratedPlayerBarRenderer"] as? [String: Any],
+          let playerBar = innerBar["playerBar"] as? [String: Any],
+          let multiMarkers = playerBar["multiMarkersPlayerBarRenderer"] as? [String: Any],
+          let markersMap = multiMarkers["markersMap"] as? [[String: Any]]
+    else {
+        return
+    }
+
+    print("   ✅ chapter markers found")
+
+    for entry in markersMap {
+        let key = entry["key"] as? String ?? "?"
+        guard let value = entry["value"] as? [String: Any] else { continue }
+
+        if let chapters = value["chapters"] as? [[String: Any]] {
+            print("   [\(key)] \(chapters.count) chapter(s):")
+            for chapter in chapters {
+                guard let renderer = chapter["chapterRenderer"] as? [String: Any] else { continue }
+                let title = (renderer["title"] as? [String: Any])?["simpleText"] as? String ?? "?"
+                let start = renderer["timeRangeStartMillis"] as? Int ?? -1
+                print("      • \(start) ms — \(title)")
+            }
+        }
+
+        if verbose {
+            print("   [\(key)] value keys: \(value.keys.sorted().joined(separator: ", "))")
+        }
+    }
+}
+
+/// Fetches a timed-text track as JSON3 and prints its segment structure.
+private func fetchTimedText(baseURL: String, verbose: Bool) async {
+    // The track URL already carries a `fmt=` value; a second one is ignored, so the
+    // existing value has to be stripped before choosing the format.
+    let sanitizedBaseURL = baseURL.replacingOccurrences(
+        of: "&fmt=[^&]*",
+        with: "",
+        options: .regularExpression
+    )
+
+    for format in ["json3", "srv3"] {
+        let separator = sanitizedBaseURL.contains("?") ? "&" : "?"
+        guard let url = URL(string: "\(sanitizedBaseURL)\(separator)fmt=\(format)") else { continue }
+
+        print()
+        print("📥 Fetching timed text (fmt=\(format))...")
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                forHTTPHeaderField: "User-Agent"
+            )
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "?"
+            print("   HTTP \(statusCode), \(data.count) bytes, content-type: \(contentType)")
+
+            guard statusCode == 200 else { continue }
+
+            if let preview = String(data: data.prefix(400), encoding: .utf8) {
+                print("   preview: \(preview.replacingOccurrences(of: "\n", with: " ").prefix(300))")
+            }
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let events = json["events"] as? [[String: Any]]
+            {
+                func eventText(_ event: [String: Any]) -> String {
+                    (event["segs"] as? [[String: Any]])?.compactMap { $0["utf8"] as? String }.joined() ?? ""
+                }
+
+                // Events that only carry a line break are dropped, as the app's parser does.
+                let segments = events.filter { !eventText($0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                print("   ✅ JSON3: \(segments.count) segment(s) with text")
+                for event in segments.prefix(6) {
+                    let startMs = event["tStartMs"] as? Int ?? 0
+                    let durationMs = event["dDurationMs"] as? Int ?? 0
+                    print(String(format: "   [%7.2fs +%4.1fs] %@", Double(startMs) / 1000, Double(durationMs) / 1000, eventText(event)))
+                }
+                return
+            }
+
+            if let xml = String(data: data, encoding: .utf8) {
+                let paragraphs = allRegexMatches(in: xml, pattern: "<p t=\"([0-9]+)\"")
+                let legacyTexts = allRegexMatches(in: xml, pattern: "<text start=\"([^\"]+)\"")
+
+                if !paragraphs.isEmpty {
+                    print("   ✅ SRV3: \(paragraphs.count) paragraph(s), first at \(paragraphs.first ?? "-")ms")
+                    for (index, line) in parseSRV3Paragraphs(xml).prefix(6).enumerated() {
+                        print(String(format: "   %2d [%7.2fs +%4.1fs] %@", index, Double(line.startMs) / 1000, Double(line.durationMs) / 1000, line.text))
+                    }
+                } else {
+                    print("   ✅ SRV1: \(legacyTexts.count) text element(s), first starts at \(legacyTexts.first ?? "-")s")
+                }
+
+                if verbose {
+                    print(String(xml.prefix(600)))
+                }
+                return
+            }
+        } catch {
+            print("❌ Error: \(error.localizedDescription)")
+        }
+    }
+}
+
+/// Parses SRV3 timed-text XML (`<p t=\d+ d=\d+>`) into timed lines.
+func parseSRV3Paragraphs(_ xml: String) -> [(startMs: Int, durationMs: Int, text: String)] {
+    guard let regex = try? NSRegularExpression(
+        pattern: "<p ([^>]*)>(.*?)</p>",
+        options: [.dotMatchesLineSeparators]
+    ) else {
+        return []
+    }
+
+    let range = NSRange(xml.startIndex..., in: xml)
+    return regex.matches(in: xml, range: range).compactMap { match in
+        guard match.numberOfRanges > 2,
+              let attributeRange = Range(match.range(at: 1), in: xml),
+              let textRange = Range(match.range(at: 2), in: xml)
+        else {
+            return nil
+        }
+
+        let attributes = String(xml[attributeRange])
+        let startMs = Int(firstRegexMatch(in: attributes, pattern: "t=\"([0-9]+)\"") ?? "") ?? 0
+        let durationMs = Int(firstRegexMatch(in: attributes, pattern: "d=\"([0-9]+)\"") ?? "") ?? 0
+        let text = String(xml[textRange])
+            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;#39;", with: "'")
+            .replacingOccurrences(of: "&amp;quot;", with: "\"")
+            .replacingOccurrences(of: "&amp;amp;", with: "&")
+            .replacingOccurrences(of: "&amp;lt;", with: "<")
+            .replacingOccurrences(of: "&amp;gt;", with: ">")
+            .replacingOccurrences(of: "&amp;nbsp;", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return (startMs, durationMs, text)
+    }
+}
+
+/// Prints the transcript cue structure returned by `get_transcript`.
+private func printTranscriptCues(_ data: [String: Any]) {
+    guard let actions = data["actions"] as? [[String: Any]],
+          let content = actions.first?["updateEngagementPanelAction"] as? [String: Any],
+          let transcriptRenderer = content["content"] as? [String: Any],
+          let body = transcriptRenderer["transcriptRenderer"] as? [String: Any],
+          let transcriptBody = body["body"] as? [String: Any],
+          let transcriptBodyRenderer = transcriptBody["transcriptBodyRenderer"] as? [String: Any],
+          let cueGroups = transcriptBodyRenderer["cueGroups"] as? [[String: Any]]
+    else {
+        print("⚠️  Response does not contain the expected transcript cue structure")
+        return
+    }
+
+    var cues: [(startMs: Int, durationMs: Int, text: String)] = []
+    for group in cueGroups {
+        guard let groupRenderer = group["transcriptCueGroupRenderer"] as? [String: Any],
+              let groupCues = groupRenderer["cues"] as? [[String: Any]]
+        else { continue }
+
+        for cue in groupCues {
+            guard let cueRenderer = cue["transcriptCueRenderer"] as? [String: Any],
+                  let startMs = Int(cueRenderer["startOffsetMs"] as? String ?? "") ?? (cueRenderer["startOffsetMs"] as? Int),
+                  let cueContent = cueRenderer["cue"] as? [String: Any]
+            else { continue }
+
+            let text = cueContent["simpleText"] as? String
+                ?? (cueContent["runs"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined()
+                ?? ""
+            let durationMs = Int(cueRenderer["durationMs"] as? String ?? "") ?? (cueRenderer["durationMs"] as? Int) ?? 0
+            cues.append((startMs, durationMs, text))
+        }
+    }
+
+    print("📊 Parsed \(cues.count) transcript cue(s):")
+    for cue in cues.prefix(8) {
+        let seconds = Double(cue.startMs) / 1000
+        print(String(format: "   [%7.2fs] %@", seconds, cue.text))
+    }
+    if cues.count > 8 {
+        print("   ... \(cues.count - 8) more")
+    }
+}
+
 func listEndpoints() {
     print("""
     ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -1224,6 +1908,8 @@ func showHelp() {
       browse <browseId> [params]     Explore a browse endpoint
       action <endpoint> <body>       Explore an action endpoint (body as JSON)
       continuation <token> [ep]      Explore a continuation (ep: 'browse' or 'next')
+      transcript <videoId>           Explore the transcript (caption) flow for a video
+      chapters <videoId>             Explore where a video's chapters live in the payloads
       list                           List all known endpoints
       auth                           Check authentication status
       accounts                       Discover available accounts (via authuser)
@@ -1358,6 +2044,22 @@ func runMain() async {
         let token = filteredArgs[1]
         let endpoint = filteredArgs.count >= 3 ? filteredArgs[2] : "browse"
         await exploreContinuation(token, endpoint: endpoint, verbose: verbose, outputFile: outputFile)
+
+    case "transcript":
+        guard filteredArgs.count >= 2 else {
+            print("❌ Usage: transcript <videoId>")
+            print("   Example: transcript -yy3aBtYd2c")
+            return
+        }
+        await exploreTranscript(filteredArgs[1], verbose: verbose, outputFile: outputFile)
+
+    case "chapters":
+        guard filteredArgs.count >= 2 else {
+            print("❌ Usage: chapters <videoId>")
+            print("   Example: chapters -yy3aBtYd2c")
+            return
+        }
+        await exploreChapters(filteredArgs[1], verbose: verbose)
 
     case "list":
         listEndpoints()

@@ -245,6 +245,12 @@ protocol YTMusicClientProtocol: Sendable {
     /// Fetches lyrics for a song.
     func getLyrics(videoId: String) async throws -> Lyrics
 
+    /// Fetches the timed transcript of a podcast episode.
+    /// - Parameters:
+    ///   - videoId: The video ID of the podcast episode.
+    ///   - preferredLanguageCode: Language to prefer; defaults to the app's current language.
+    func getPodcastTranscript(videoId: String, preferredLanguageCode: String?) async throws -> PodcastTranscript
+
     /// Fetches song metadata by video ID.
     func getSong(videoId: String) async throws -> Song
 
@@ -325,6 +331,9 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// Current volume (0.0 - 1.0).
     var volume: Double { get }
 
+    /// Current playback rate (1.0 = normal speed).
+    var playbackRate: Double { get }
+
     /// Whether audio is currently muted.
     var isMuted: Bool { get }
 
@@ -377,6 +386,9 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
 
     /// Sets the volume.
     func setVolume(_ value: Double) async
+
+    /// Sets the playback rate (1.0 = normal speed).
+    func setPlaybackRate(_ rate: Double)
 
     /// Toggles mute state.
     func toggleMute() async

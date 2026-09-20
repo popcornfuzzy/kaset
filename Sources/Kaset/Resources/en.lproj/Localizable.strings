@@ -4,6 +4,8 @@
    would fail. See docs/adr/0016-strings-files-as-localization-source-of-truth.md */
 
 /* Playlist track count */
+"%lld minutes" = "%lld minutes";
+
 "%lld songs" = "%lld songs";
 
 "A native YouTube Music experience for macOS" = "A native YouTube Music experience for macOS";
@@ -24,11 +26,47 @@
 
 "Added to Library" = "Added to Library";
 
+"Back 15 Seconds" = "Back 15 Seconds";
+
+"Auto-generated" = "Auto-generated";
+
 /* Google Cast */
 
 "Cast" = "Cast";
 
 "Cast to" = "Cast to";
+
+"Fullscreen Podcast" = "Fullscreen Podcast";
+
+"Loading…" = "Loading…";
+
+"Loading transcript…" = "Loading transcript…";
+
+"Hide Transcript" = "Hide Transcript";
+
+"Forward 30 Seconds" = "Forward 30 Seconds";
+
+"Episode Options" = "Episode Options";
+
+"No transcript is available for this episode." = "No transcript is available for this episode.";
+
+"Sleep Timer" = "Sleep Timer";
+
+"Show Transcript" = "Show Transcript";
+
+"Refresh Transcript" = "Refresh Transcript";
+
+"Podcast" = "Podcast";
+
+"Playback Speed" = "Playback Speed";
+
+"Playback Position" = "Playback Position";
+
+"Play from Chapter" = "Play from Chapter";
+
+"No Transcript Available" = "No Transcript Available";
+
+"Copy Link" = "Copy Link";
 
 "Casting is unavailable." = "Casting is unavailable.";
 
@@ -475,11 +513,21 @@
 
 "Sign Out" = "Sign Out";
 
+"This episode has no captions on YouTube, so there is no transcript to show." = "This episode has no captions on YouTube, so there is no transcript to show.";
+
 "Sign in to YouTube Music" = "Sign in to YouTube Music";
+
+"Transcript" = "Transcript";
 
 "Sign in to access your YouTube Music library" = "Sign in to access your YouTube Music library";
 
 "Sign in with Google" = "Sign in with Google";
+
+"Turn On Video" = "Turn On Video";
+
+"Turn Off Video" = "Turn Off Video";
+
+"Turn Off Sleep Timer" = "Turn Off Sleep Timer";
 
 "Signed in to YouTube Music" = "Signed in to YouTube Music";
 
@@ -510,6 +558,8 @@
 "There aren't any lyrics available for this song." = "There aren't any lyrics available for this song.";
 
 "This Mac doesn't support Apple Intelligence. An Apple Silicon Mac is required." = "This Mac doesn't support Apple Intelligence. An Apple Silicon Mac is required.";
+
+"Volume" = "Volume";
 
 "Top songs" = "Top songs";
 

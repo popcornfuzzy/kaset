@@ -22,6 +22,22 @@ extension SingletonPlayerWebView {
             // window.__kasetTargetVolume is set by volume init script at document start
             let isEnforcingVolume = false; // Prevent feedback loops
 
+            // Playback-rate enforcement: track the podcast speed set by Swift.
+            // window.__kasetTargetPlaybackRate is set by the rate control script.
+            let isEnforcingRate = false; // Prevent feedback loops
+
+            // YouTube recreates the video element (and resets the rate) on track changes
+            // and ad transitions, so the target rate is re-asserted rather than set once.
+            function enforcePlaybackRateNow() {
+                const targetRate = window.__kasetTargetPlaybackRate;
+                const v = document.querySelector('video');
+                if (!v || typeof targetRate !== 'number') return;
+                if (Math.abs(v.playbackRate - targetRate) <= 0.01) return;
+                isEnforcingRate = true;
+                v.playbackRate = targetRate;
+                setTimeout(() => { isEnforcingRate = false; }, 50);
+            }
+
             // Reusable 3-way volume enforcement (video element + YouTube APIs)
             function enforceVolumeNow() {
                 const targetVol = window.__kasetTargetVolume;
@@ -87,8 +103,18 @@ extension SingletonPlayerWebView {
                     video.addEventListener('loadeddata', () => enforceVolumeNow());
                     video.addEventListener('canplay', () => enforceVolumeNow());
 
+                    // Rate enforcement: revert external rate changes (YouTube resets it on
+                    // segment changes) and re-apply the podcast speed to new video elements.
+                    video.addEventListener('ratechange', () => {
+                        if (isEnforcingRate) return;
+                        enforcePlaybackRateNow();
+                    });
+                    video.addEventListener('loadedmetadata', () => enforcePlaybackRateNow());
+                    video.addEventListener('canplay', () => enforcePlaybackRateNow());
+
                     // Apply target volume immediately when video element is first detected
                     enforceVolumeNow();
+                    enforcePlaybackRateNow();
 
                     // Startup enforcement burst: YouTube may reset volume up to ~2s after
                     // playback starts (via internal player init, quality switching, etc.).
@@ -264,6 +290,9 @@ extension SingletonPlayerWebView {
                 lastUpdateTime = now;
 
                 try {
+                    // Keep the podcast speed applied as YouTube swaps video elements.
+                    enforcePlaybackRateNow();
+
                     // Use video element's paused property for language-agnostic detection
                     // Previously checked button title/aria-label which fails for non-English locales
                     const video = document.querySelector('video');

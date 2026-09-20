@@ -73,6 +73,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Current volume (0.0 - 1.0).
     private(set) var volume: Double = 1.0
 
+    /// Current playback rate (1.0 = normal speed). Podcasts are the main consumer:
+    /// the fullscreen podcast experience offers 0.75x – 2x speed control.
+    private(set) var playbackRate: Double = 1.0
+
+    /// Lowest playback rate the UI offers.
+    static let minimumPlaybackRate = 0.75
+
+    /// Highest playback rate the UI offers.
+    static let maximumPlaybackRate = 2.0
+
     /// Volume before muting, for unmute restoration.
     private var volumeBeforeMute: Double = 1.0
 
@@ -105,6 +115,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Sticky classification for the currently active playback item.
     /// This avoids relying on transient web metadata that may omit podcast markers.
     private(set) var currentPlaybackIsPodcast: Bool = false
+
+    /// The video this classification belongs to.
+    ///
+    /// Reconciling against the WebView re-derives `currentTrack` with `unknown` as the artist, and
+    /// the byline never carries the `podcast` marker. Without remembering which item was
+    /// classified, the flag could drop mid-episode and flip the transport controls and the
+    /// fullscreen presentation back to their music variants.
+    private var podcastClassificationVideoId: String?
 
     /// Observed video aspect ratio (width / height) from the active HTML video element.
     /// `nil` means the UI should use its fallback ratio until dimensions become available.
@@ -183,6 +201,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Kept for metadata compatibility with the web observer.
     var currentTrackHasVideo: Bool = false
 
+    /// Whether a video surface is worth showing for the current playback item: either the
+    /// metadata says a video exists, or the WebView player has already reported video dimensions.
+    var hasVideoSurface: Bool {
+        self.currentTrackHasVideo || self.miniPlayerVideoAspectRatio != nil
+    }
+
     /// Whether the Web player currently reports ad playback.
     private(set) var isAdPlaying: Bool = false
 
@@ -216,6 +240,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// UserDefaults key for persisting volume.
     static let volumeKey = "playerVolume"
+    /// UserDefaults key for persisting the playback rate.
+    static let playbackRateKey = "playerPlaybackRate"
     /// UserDefaults key for persisting volume before mute.
     static let volumeBeforeMuteKey = "playerVolumeBeforeMute"
     /// UserDefaults key for persisting shuffle state.
@@ -236,6 +262,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             self.volume = max(0, min(1, savedVolume))
             self.logger.info("Restored saved volume: \(self.volume)")
         }
+        // Restore the podcast/listening speed so it survives app restarts.
+        if UserDefaults.standard.object(forKey: Self.playbackRateKey) != nil {
+            let savedRate = UserDefaults.standard.double(forKey: Self.playbackRateKey)
+            if savedRate >= Self.minimumPlaybackRate, savedRate <= Self.maximumPlaybackRate {
+                self.playbackRate = savedRate
+                self.logger.info("Restored saved playback rate: \(savedRate)")
+            }
+        }
+
         // Restore volumeBeforeMute for proper unmute behavior
         if UserDefaults.standard.object(forKey: Self.volumeBeforeMuteKey) != nil {
             let savedVolumeBeforeMute = UserDefaults.standard.double(
@@ -301,6 +336,21 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentPlaybackIsPodcast || self.isPodcastTrack(self.currentTrack)
     }
 
+    /// Whether the fullscreen presentation should be the podcast listening experience
+    /// (video + transcript) rather than the music one (artwork + lyrics).
+    var isFullscreenPodcastPresented: Bool {
+        self.showFullscreenNowPlaying && self.isCurrentTrackPodcast
+    }
+
+    /// Sets the playback rate, persists it, and applies it to the WebView player.
+    func setPlaybackRate(_ rate: Double) {
+        let clampedRate = min(max(rate, Self.minimumPlaybackRate), Self.maximumPlaybackRate)
+        self.playbackRate = clampedRate
+        UserDefaults.standard.set(clampedRate, forKey: Self.playbackRateKey)
+        SingletonPlayerWebView.shared.setPlaybackRate(clampedRate)
+        self.logger.info("Playback rate set to \(clampedRate)x")
+    }
+
     /// Toggles user-controlled mini player visibility from the player bar.
     func toggleMiniPlayerVisibilityByUser() {
         self.setMiniPlayerVisibilityByUser(enabled: !self.miniPlayerEnabledByUser)
@@ -339,17 +389,37 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     }
 
     func updateCurrentPlaybackKind(using song: Song?) {
-        self.currentPlaybackIsPodcast = self.isPodcastTrack(song)
+        if self.isPodcastTrack(song) {
+            self.currentPlaybackIsPodcast = true
+            self.podcastClassificationVideoId = song?.videoId
+            return
+        }
+
+        // Never downgrade while the reported item is still the one classified as a podcast: its
+        // metadata may simply have lost the marker. A different item — or no identity at all —
+        // means playback really moved on.
+        if let videoId = song?.videoId, videoId == self.podcastClassificationVideoId { return }
+        self.currentPlaybackIsPodcast = false
+        self.podcastClassificationVideoId = nil
     }
 
     private func applyMiniPlayerPolicyForPlayback(videoId: String, isPodcast: Bool) {
         self.cancelMiniPlayerFallback()
         self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
         self.miniPlayerEnabledByUser = false
-        self.currentPlaybackIsPodcast = isPodcast
+
+        // Callers that only know a video ID — `play(videoId:)`, queue-drift correction, autoplay —
+        // pass `isPodcast: false`. Replaying the item we already classified must keep that
+        // classification, or restarting an episode mid-playback would flip the transport controls
+        // and the fullscreen presentation back to their music variants.
+        let classifiedVideoId = self.podcastClassificationVideoId
+        let isPodcastPlayback = isPodcast || (classifiedVideoId != nil && videoId == classifiedVideoId)
+
+        self.currentPlaybackIsPodcast = isPodcastPlayback
+        self.podcastClassificationVideoId = isPodcastPlayback ? videoId : nil
         self.miniPlayerVideoAspectRatio = nil
 
-        if isPodcast {
+        if isPodcastPlayback {
             self.showMiniPlayer = true
             self.logger.info("Mini player auto-opened for podcast playback")
             return
@@ -1051,6 +1121,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.shouldSuppressAutoplayAfterQueueEnd = false
         self.currentEpisode = nil
         self.currentTrack = nil
+        self.updateCurrentPlaybackKind(using: nil)
         self.progress = 0
         self.duration = 0
     }
