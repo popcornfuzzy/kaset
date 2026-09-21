@@ -55,8 +55,27 @@ struct FullscreenPodcastView: View {
         static let artworkSize: CGFloat = 52
         /// Vertical offset of the top bar, keeping the controls clear of the window traffic lights.
         static let topBarTopPadding: CGFloat = 46
+        /// Side of the square Liquid Glass buttons that float over the video.
+        static let topBarControlSize: CGFloat = 30
+        /// Spacing between those buttons.
+        static let topBarControlSpacing: CGFloat = 12
+        /// Blend distance for the top bar's glass cluster. Deliberately smaller than
+        /// `topBarControlSpacing` so the buttons stay distinct circles instead of fusing into a pill.
+        static let topBarGlassClusterSpacing: CGFloat = 8
         static let transcriptFontSize: CGFloat = 24
     }
+
+    /// Darkening tint for the top bar's Liquid Glass controls.
+    ///
+    /// Liquid Glass picks its light or dark look from the *appearance*, not from the surface it
+    /// happens to sit on. This surface is dark by construction — `backgroundLayer` puts the episode
+    /// artwork behind a 62% black plate and a gradient that starts at 45%, so whatever is under the
+    /// top bar is at most 21% of the artwork's brightness — while the app itself follows the system
+    /// appearance. Left alone, the controls therefore rendered their light variant over a near-black
+    /// backdrop, which is what made them read as white and left the white glyphs with almost no
+    /// contrast. The tint holds the lens in the dark range the backdrop is in, and it is cheap to
+    /// tune in one place if it wants to be lighter or heavier.
+    private static let glassTint = Color.black.opacity(0.25)
 
     /// Playback rates offered by the speed control.
     private static let playbackRates: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
@@ -112,6 +131,10 @@ struct FullscreenPodcastView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .ignoresSafeArea()
+        // The experience is an immersive dark surface, so it declares dark appearance instead of
+        // following the system one. Liquid Glass, the control glyphs and the menus opened from the
+        // top bar all then agree with the backdrop they are actually drawn on.
+        .environment(\.colorScheme, .dark)
         .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.container)
         .onExitCommand {
             self.close()
@@ -258,41 +281,47 @@ struct FullscreenPodcastView: View {
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                HapticService.toggle()
-                self.close()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .frame(width: 30, height: 30)
-                    .background(.white.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(String(localized: "Close"))
-            .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.closeButton)
-
-            Button {
-                HapticService.toggle()
-                withAnimation(AppAnimation.standard) {
-                    self.showsTranscript.toggle()
+        // Liquid Glass cluster: one rendering pass for the controls that float over the video.
+        GlassEffectContainer(spacing: Layout.topBarGlassClusterSpacing) {
+            HStack(spacing: Layout.topBarControlSpacing) {
+                Button {
+                    HapticService.toggle()
+                    self.close()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .frame(width: Layout.topBarControlSize, height: Layout.topBarControlSize)
+                        .glassEffect(.regular.tint(Self.glassTint).interactive(), in: .circle)
                 }
-            } label: {
-                Image(systemName: "sidebar.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(self.showsTranscript ? .white : .white.opacity(0.55))
-                    .frame(width: 30, height: 30)
-                    .background(.white.opacity(self.showsTranscript ? 0.12 : 0.06), in: Circle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Close"))
+                .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.closeButton)
+
+                Button {
+                    HapticService.toggle()
+                    withAnimation(AppAnimation.standard) {
+                        self.showsTranscript.toggle()
+                    }
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(self.showsTranscript ? .white : .white.opacity(0.55))
+                        .frame(width: Layout.topBarControlSize, height: Layout.topBarControlSize)
+                        .glassEffect(.regular.tint(Self.glassTint).interactive(), in: .circle)
+                }
+                .buttonStyle(.plain)
+                // The glass itself stays identical in both states, so the shared backdrop keeps its
+                // depth; the dimmed glyph and the eased opacity are what read as "off".
+                .opacity(self.showsTranscript ? 1 : 0.72)
+                .help(self.showsTranscript ? String(localized: "Hide Transcript") : String(localized: "Show Transcript"))
+                .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.transcriptToggle)
+                .accessibilityLabel(self.showsTranscript ? String(localized: "Hide Transcript") : String(localized: "Show Transcript"))
+
+                Spacer(minLength: 0)
+
+                self.volumeControl
             }
-            .buttonStyle(.plain)
-            .help(self.showsTranscript ? String(localized: "Hide Transcript") : String(localized: "Show Transcript"))
-            .accessibilityIdentifier(AccessibilityID.FullscreenPodcast.transcriptToggle)
-            .accessibilityLabel(self.showsTranscript ? String(localized: "Hide Transcript") : String(localized: "Show Transcript"))
-
-            Spacer(minLength: 0)
-
-            self.volumeControl
         }
     }
 
@@ -320,7 +349,7 @@ struct FullscreenPodcastView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
-        .background(.white.opacity(0.1), in: Capsule())
+        .glassEffect(.regular.tint(Self.glassTint).interactive(), in: .capsule)
     }
 
     private var volumeIcon: String {

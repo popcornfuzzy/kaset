@@ -880,6 +880,7 @@ The app uses Apple's **Liquid Glass** design language introduced in macOS 26.
 |-----------|---------------|
 | `PlayerBar` | `.glassEffect(.regular.interactive(), in: .capsule)` |
 | `Sidebar` | Wrapped in `GlassEffectContainer` |
+| `FullscreenPodcastView` top bar | `GlassEffectContainer` + `.glassEffect(.regular.interactive(), in: .circle)` (close, transcript toggle) and `.capsule` (volume) |
 | `QueueView` / `LyricsView` | `.glassEffectTransition(.materialize)` |
 | Search field | `.glassEffect(.regular, in: .capsule)` |
 | Search suggestions | `.glassEffect(.regular, in: .rect(cornerRadius: 8))` |
