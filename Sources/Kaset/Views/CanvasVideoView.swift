@@ -42,13 +42,34 @@ final class CanvasVideoNSView: NSView {
 
     private(set) var playerURL: URL?
 
+    /// The stalling policy in force for the loaded player. Exposed so a test can
+    /// pin the invariant documented in `load(url:)`; setting this to `false`
+    /// silently freezes streaming canvases.
+    var waitsToMinimizeStalling: Bool {
+        self.player?.automaticallyWaitsToMinimizeStalling ?? true
+    }
+
+    /// Current position of the loaded player in seconds, or `nil` when nothing
+    /// is loaded. Readiness is defined as this value moving, so tests use it to
+    /// assert that a ready canvas really is playing.
+    var currentPlaybackTime: Double? {
+        guard let player = self.player else { return nil }
+        let seconds = player.currentTime().seconds
+        return seconds.isFinite ? seconds : nil
+    }
+
     private var playerLayer: AVPlayerLayer?
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var currentItemObservation: NSKeyValueObservation?
     private var looperStatusObservation: NSKeyValueObservation?
     private var itemStatusObservation: NSKeyValueObservation?
+    private var timeObserver: Any?
     private var hasReportedReady = false
+
+    /// Interval for the "has playback actually started" probe. Small enough to
+    /// feel instant, large enough to stay off the CPU budget.
+    private static let readinessProbeInterval = CMTime(seconds: 0.1, preferredTimescale: 600)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -92,7 +113,16 @@ final class CanvasVideoNSView: NSView {
         queuePlayer.isMuted = true
         queuePlayer.volume = 0
         queuePlayer.preventsDisplaySleepDuringVideoPlayback = false
-        queuePlayer.automaticallyWaitsToMinimizeStalling = false
+        // Leave this at its default. Setting it to `false` tells AVFoundation
+        // to never wait for media, and for a stream that cannot start instantly
+        // the player then settles at `rate == 0` while still reporting
+        // `.playing` — it draws the first frame and never advances the
+        // timeline. Every Apple Music canvas is a remote, video-only HLS
+        // stream, which is exactly that case: measured over 10s+ the timeline
+        // stayed at 0.00 with `false` and started playing immediately with the
+        // default. Local files are unaffected, so this only ever hurt the
+        // streaming path, but the default is correct for both.
+        queuePlayer.automaticallyWaitsToMinimizeStalling = true
         playerLayer.player = queuePlayer
         self.player = queuePlayer
 
@@ -108,7 +138,7 @@ final class CanvasVideoNSView: NSView {
             let currentItem = player.currentItem
             DispatchQueue.main.async {
                 guard let self, self.playerURL == url else { return }
-                self.observeStatus(of: currentItem, url: url)
+                self.observeFailure(of: currentItem, url: url)
             }
         }
 
@@ -124,32 +154,55 @@ final class CanvasVideoNSView: NSView {
             }
         }
 
+        // Readiness means "the timeline is actually moving", which is the only
+        // signal that proves the video is decoding and rendering. An item's
+        // `status == .readyToPlay` is not enough: HLS reports it as soon as the
+        // playlist has been read, seconds before any frame exists, so
+        // crossfading on it reveals an empty black card. This observer fires
+        // only while playback advances, so it also never reports readiness for
+        // a stalled player; it removes itself after the first tick.
+        self.timeObserver = queuePlayer.addPeriodicTimeObserver(
+            forInterval: Self.readinessProbeInterval,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self, self.playerURL == url else { return }
+                self.reportReady(url: url)
+            }
+        }
+
         queuePlayer.play()
     }
 
-    /// Observes the status of the item the looper enqueued and reports
-    /// readiness/failure through the callbacks.
-    private func observeStatus(of item: AVPlayerItem?, url: URL) {
+    /// Reports playback failure through the callback so the host can keep the
+    /// still artwork instead of showing a player that will never render.
+    private func observeFailure(of item: AVPlayerItem?, url: URL) {
         guard let item else { return }
         self.itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
             DispatchQueue.main.async {
                 guard let self, self.playerURL == url else { return }
-                switch item.status {
-                case .readyToPlay:
-                    guard !self.hasReportedReady else { return }
-                    self.hasReportedReady = true
-                    DiagnosticsLogger.ui.debug("Canvas video ready: \(url.absoluteString)")
-                    self.onReadyToPlay?()
-                case .failed:
-                    DiagnosticsLogger.ui.error(
-                        "Canvas video failed: \(url.absoluteString, privacy: .public) — \(item.error?.localizedDescription ?? "unknown error", privacy: .public)"
-                    )
-                    self.onFailure?()
-                default:
-                    break
-                }
+                DiagnosticsLogger.ui.error(
+                    "Canvas video failed: \(url.absoluteString, privacy: .public) — \(item.error?.localizedDescription ?? "unknown error", privacy: .public)"
+                )
+                self.onFailure?()
             }
         }
+    }
+
+    /// Signals readiness exactly once per loaded URL.
+    private func reportReady(url: URL) {
+        guard !self.hasReportedReady else { return }
+        self.hasReportedReady = true
+        self.removeTimeObserver()
+        DiagnosticsLogger.ui.debug("Canvas video ready: \(url.absoluteString)")
+        self.onReadyToPlay?()
+    }
+
+    private func removeTimeObserver() {
+        guard let timeObserver = self.timeObserver else { return }
+        self.player?.removeTimeObserver(timeObserver)
+        self.timeObserver = nil
     }
 
     func teardown() {
@@ -159,6 +212,7 @@ final class CanvasVideoNSView: NSView {
         self.looperStatusObservation = nil
         self.itemStatusObservation?.invalidate()
         self.itemStatusObservation = nil
+        self.removeTimeObserver()
         self.looper?.disableLooping()
         self.looper = nil
         self.playerLayer?.player = nil

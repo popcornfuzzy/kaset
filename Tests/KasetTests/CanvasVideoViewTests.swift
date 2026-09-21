@@ -13,10 +13,15 @@ import Testing
 /// `AVQueuePlayer.items().first` therefore falls back to the template item,
 /// which is never enqueued and never leaves `.unknown` — the canvas then never
 /// appears even though its video was resolved and downloaded.
+///
+/// Readiness itself is now reported when the player's timeline first moves,
+/// because an item's `status == .readyToPlay` says nothing about whether frames
+/// are being produced: streaming HLS reports it as soon as its playlist has
+/// been read.
 @Suite(.serialized, .tags(.integration))
 @MainActor
 struct CanvasVideoViewTests {
-    @Test("the canvas player reports readiness for the item the looper actually enqueued")
+    @Test("the canvas player reports readiness once playback starts")
     func reportsReadyToPlay() async throws {
         let videoURL = try Self.makeTemporaryVideo()
         defer { try? FileManager.default.removeItem(at: videoURL.deletingLastPathComponent()) }
@@ -39,6 +44,45 @@ struct CanvasVideoViewTests {
         #expect(didBecomeReady, "the canvas player never reported readiness")
         #expect(didFail == false)
         #expect(view.playerURL == videoURL)
+    }
+
+    @Test("a canvas that reported readiness is really playing")
+    func readinessMeansPlaying() async throws {
+        let videoURL = try Self.makeTemporaryVideo()
+        defer { try? FileManager.default.removeItem(at: videoURL.deletingLastPathComponent()) }
+
+        let view = CanvasVideoNSView()
+        var didBecomeReady = false
+        view.onReadyToPlay = { didBecomeReady = true }
+        view.load(url: videoURL)
+        defer { view.teardown() }
+
+        let deadline = Date().addingTimeInterval(10)
+        while !didBecomeReady, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(didBecomeReady)
+
+        let firstSample = try #require(view.currentPlaybackTime)
+        try await Task.sleep(for: .milliseconds(400))
+        let secondSample = try #require(view.currentPlaybackTime)
+        #expect(secondSample > firstSample, "readiness was reported but the timeline is not moving")
+    }
+
+    @Test("the canvas player keeps the stalling policy streaming canvases need")
+    func keepsStallingPolicy() throws {
+        let videoURL = try Self.makeTemporaryVideo()
+        defer { try? FileManager.default.removeItem(at: videoURL.deletingLastPathComponent()) }
+
+        let view = CanvasVideoNSView()
+        view.load(url: videoURL)
+        defer { view.teardown() }
+
+        // Canvas videos resolved from Apple Music are remote, video-only HLS
+        // streams. Disabling stalling minimization makes such a player settle
+        // at rate 0 while still reporting `.playing`, so it draws one frame and
+        // never advances — the canvas looks like a frozen album cover.
+        #expect(view.waitsToMinimizeStalling, "the canvas player disabled waitsToMinimizeStalling")
     }
 
     @Test("tearing down clears the loaded URL so the view can be reused")
