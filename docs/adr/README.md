@@ -52,3 +52,5 @@ What becomes easier or more difficult because of this change?
 | [0014](0014-playlist-scroll-performance.md) | Playlist Scroll Performance | Accepted |
 | [0015](0015-chromecast-audio-casting.md) | Google Cast Support via Local Audio Streaming | Accepted |
 | [0016](0016-strings-files-as-localization-source-of-truth.md) | `.lproj` String Files as the Localization Source of Truth | Accepted |
+| [0017](0017-podcast-fullscreen-transcript.md) | Fullscreen Podcast Experience with YouTube Transcript | Accepted |
+| [0018](0018-karaoke-lyrics-animation.md) | Karaoke Lyrics Animation (Word-by-Word Fill) | Accepted |

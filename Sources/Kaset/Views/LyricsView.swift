@@ -246,6 +246,11 @@ struct LyricsView: View {
                 SyncedLyricsDisplayView(
                         lyrics: synced,
                         currentTimeMs: self.playerService.currentTimeMs,
+                        isPlaying: self.playerService.isPlaying,
+                        // The fullscreen player is an overlay over this panel, so the
+                        // karaoke animation is invisible while it is up. Keep the clock
+                        // ticking, but stop paying for display-rate frames nobody sees.
+                        isCovered: self.playerService.showFullscreenNowPlaying,
                         onSeek: { timeMs in
                             Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                         }

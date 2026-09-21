@@ -263,7 +263,7 @@ struct FullscreenNowPlayingView: View {
                 } else {
                     switch self.syncedLyricsService.currentLyrics {
                     case let .synced(synced):
-                        FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.lyricsTimeMs, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
+                        FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.lyricsTimeMs, isPlaying: self.playerService.isPlaying, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
                     case let .plain(plain):
                         ScrollView { Text(plain.text).font(.system(size: 36, weight: .bold)).lineSpacing(18).foregroundStyle(.white).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12) }.scrollIndicators(.hidden).mask(self.lyricsFadeMask)
                     case .unavailable:
@@ -427,9 +427,20 @@ struct FullscreenNowPlayingView: View {
 private struct FullscreenSyncedLyricsView: View {
     let lyrics: SyncedLyrics
     let currentTimeMs: Int
+    let isPlaying: Bool
     let onSeek: (Int) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Interpolated playback clock for the karaoke wipe. Owned here so the highlight
+    /// survives line changes and re-renders.
+    @State private var clock = LyricsPlaybackClock()
+    /// Measured line layouts, kept across the sheet's re-renders.
+    @State private var layoutCache = KaraokeLayoutCache()
     @State private var currentLineId: UUID?
     @State private var currentLineIndex: Int?
+    /// Whether the player is still opening: its first paint (a whole lyric sheet) is the
+    /// most expensive frame of its life, so during that window the sheet jumps instead of
+    /// scrolling and applies the highlight without a spring.
+    @State private var isSettling = true
     @State private var userIsScrolling = false
     @State private var scrollResumeTask: Task<Void, Never>?
     @State private var resumeScrollGeneration = 0
@@ -443,9 +454,50 @@ private struct FullscreenSyncedLyricsView: View {
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
                         if self.lyrics.isPauseLine(at: index) {
-                            FullscreenPauseDotsLineView(dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: self.currentTimeMs), status: status, isHovered: self.hoveredLineId == line.id).animation(.easeInOut(duration: 0.4), value: self.currentLineIndex).animation(.easeOut(duration: 0.16), value: self.hoveredLineId).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()).onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }.onTapGesture { self.onSeek(line.timeInMs) }.id(line.id)
+                            KaraokeTimeSource(
+                                line: line,
+                                status: status,
+                                isLive: self.isLive(lineIndex: index),
+                                clock: self.clock,
+                                minimumFrameInterval: self.frameInterval(lineIndex: index)
+                            ) { displayTimeMs in
+                                FullscreenPauseDotsLineView(
+                                    dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: Int(displayTimeMs)),
+                                    status: status,
+                                    isHovered: self.hoveredLineId == line.id,
+                                    minimumFrameInterval: self.frameInterval(lineIndex: index, animatesWhilePaused: true)
+                                )
+                            }
+                            .animation(self.isSettling ? nil : AppAnimation.lyricLine, value: self.currentLineIndex)
+                            .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
+                            .onTapGesture { self.onSeek(line.timeInMs) }
+                            .id(line.id)
                         } else {
-                            FullscreenSyncedLineView(line: line, status: status, currentTimeMs: self.currentTimeMs).foregroundStyle(.white).opacity(self.opacity(for: status, lineId: line.id)).scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading).animation(.easeInOut(duration: 0.4), value: self.currentLineIndex).animation(.easeOut(duration: 0.16), value: self.hoveredLineId).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()).onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }.onTapGesture { self.onSeek(line.timeInMs) }.id(line.id)
+                            FullscreenSyncedLineView(
+                                line: line,
+                                status: status,
+                                isLive: self.isLive(lineIndex: index),
+                                clock: self.clock,
+                                layoutCache: self.layoutCache,
+                                minimumFrameInterval: self.frameInterval(lineIndex: index),
+                                emphasis: self.karaokeEmphasis
+                            )
+                            .foregroundStyle(.white)
+                            .opacity(self.opacity(for: status, lineId: line.id))
+                            .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
+                            // Distant lines recede out of focus the way Apple Music lets go
+                            // of the lines around the one being sung.
+                            .blur(radius: self.blur(for: status))
+                            .animation(self.isSettling ? nil : AppAnimation.lyricLine, value: self.currentLineIndex)
+                            .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
+                            .onTapGesture { self.onSeek(line.timeInMs) }
+                            .id(line.id)
                         }
                     }
                     Spacer().frame(height: 84)
@@ -475,30 +527,156 @@ private struct FullscreenSyncedLyricsView: View {
                     break
                 }
             }
-            .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in self.userIsScrolling = true; self.resumeScrollGeneration += 1; self.scrollResumeTask?.cancel() }.onEnded { _ in let generation = self.resumeScrollGeneration; self.scrollResumeTask = Task { try? await Task.sleep(for: .seconds(4)); guard !Task.isCancelled, generation == self.resumeScrollGeneration else { return }; self.userIsScrolling = false; if let currentLineId = self.currentLineId { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(currentLineId, anchor: .center) } } } }).onChange(of: self.currentTimeMs) { _, newTimeMs in self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling) }.onChange(of: self.lyrics) { _, _ in self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false) }.onAppear { self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false); if let currentLineId = self.currentLineId { Task { await Task.yield(); if !Task.isCancelled { proxy.scrollTo(currentLineId, anchor: .center) } } } }.onDisappear { self.scrollResumeTask?.cancel(); self.hoveredLineId = nil }
+            .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in self.userIsScrolling = true; self.resumeScrollGeneration += 1; self.scrollResumeTask?.cancel() }.onEnded { _ in let generation = self.resumeScrollGeneration; self.scrollResumeTask = Task { try? await Task.sleep(for: .seconds(4)); guard !Task.isCancelled, generation == self.resumeScrollGeneration else { return }; self.userIsScrolling = false; if let currentLineId = self.currentLineId { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(currentLineId, anchor: .center) } } } })
+            .onChange(of: self.currentTimeMs) { _, newTimeMs in
+                self.receiveClockSample(timeMs: newTimeMs, isPlaying: self.isPlaying)
+                self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling)
+            }
+            .onChange(of: self.isPlaying) { _, newIsPlaying in
+                // The poll keeps reporting the same position while paused, so freezing
+                // the clock takes the play state rather than a fresh sample.
+                self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: newIsPlaying)
+            }
+            .onChange(of: self.lyrics) { _, _ in
+                // A new track's lyrics start at zero: without this the old clock
+                // position would flash the new first line as already sung.
+                self.clock.reset()
+                self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: self.isPlaying)
+                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+                Task { await self.settleScroll(using: proxy) }
+            }
+            .onAppear {
+                self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: self.isPlaying)
+                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+            }
+            .task {
+                await self.settleScroll(using: proxy)
+            }
+            .onDisappear { self.scrollResumeTask?.cancel(); self.hoveredLineId = nil }
+        }
+    }
+    /// How often a row may redraw. The line being sung gets the full live rate; the line
+    /// after it and the line that has just finished (while it settles) lean on the same
+    /// clock at the cheaper *armed* rate, which loses nothing because the transitions on
+    /// them are Core Animation's rather than redraws of their own.
+    /// - Parameter animatesWhilePaused: the bouncing pause dot is decorative motion that
+    ///   only exists while it is moving, so it keeps its rate when playback is paused.
+    private func frameInterval(lineIndex: Int, animatesWhilePaused: Bool = false) -> Double? {
+        guard let currentLineIndex, self.isLive(lineIndex: lineIndex) else { return nil }
+        if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
+        if !self.isPlaying, !animatesWhilePaused { return KaraokeFrameBudget.paused }
+        return lineIndex == currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
+    }
+    private var karaokeEmphasis: Double { self.reduceMotion ? 0 : 1 }
+
+    private func receiveClockSample(timeMs: Int, isPlaying: Bool) { self.clock.receive(LyricsClockSample(hostTime: Date(), timeMs: timeMs, isPlaying: isPlaying)) }
+
+    /// Puts the sheet in position after it appears or is replaced, and turns the sheet's
+    /// transitions back on once it has. A jump is repeated because the lazy stack usually
+    /// has not materialized the scroll target yet, and scrolling to a row that does not
+    /// exist does nothing; jumping never animates, so repeating it is invisible.
+    private func settleScroll(using proxy: ScrollViewProxy) async {
+        self.isSettling = true
+        defer { self.isSettling = false }
+
+        for _ in 0 ..< 6 {
+            guard !Task.isCancelled, !self.userIsScrolling else { return }
+            await Task.yield()
+            if let currentLineId = self.currentLineId {
+                proxy.scrollTo(currentLineId, anchor: .center)
+            }
+            try? await Task.sleep(for: .milliseconds(80))
         }
     }
     private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus { guard let currentLineIndex else { return .upcoming }; if lineIndex < currentLineIndex { return .previous }; if lineIndex == currentLineIndex { return .current }; return .upcoming }
+    /// Whether this row draws from the live display clock: the line being sung, the line
+    /// after it (so a line is never first seen part-way through its own first word), and
+    /// the line that has just finished until the clock is past its end — see
+    /// `KaraokeFillModel.isLiveRow` for why that last one keeps its scale-down smooth.
+    private func isLive(lineIndex: Int) -> Bool {
+        let line = self.lyrics.lines.indices.contains(lineIndex) ? self.lyrics.lines[lineIndex] : nil
+        return KaraokeFillModel.isLiveRow(
+            lineIndex: lineIndex,
+            currentLineIndex: self.currentLineIndex,
+            lineEndMs: line.map { Double($0.timeInMs + max($0.duration, 0)) },
+            clockMs: self.clock.displayPositionMs
+        )
+    }
     private func scale(for status: SyncedLyrics.LineStatus, lineId: UUID) -> CGFloat { if self.hoveredLineId == lineId, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
     private func opacity(for status: SyncedLyrics.LineStatus, lineId: UUID) -> Double { if self.hoveredLineId == lineId, status != .current { return 0.78 }; return switch status { case .current: 1; case .previous: 0.35; case .upcoming: 0.55 } }
-    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) { guard let currentIdx = self.lyrics.currentLineIndex(at: timeMs) else { return }; let newId = self.lyrics.lines[currentIdx].id; self.currentLineIndex = currentIdx; guard newId != self.currentLineId else { return }; self.currentLineId = newId; guard !self.userIsScrolling else { return }; if animate { withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(newId, anchor: .center) } } else { proxy.scrollTo(newId, anchor: .center) } }
+    private func blur(for status: SyncedLyrics.LineStatus) -> CGFloat { self.reduceMotion || status == .current ? 0 : 0.6 }
+    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) {
+        // Follow slightly ahead of the line's own start so the scroll lands with the
+        // first word instead of a poll interval after it.
+        let lookahead = Int(KaraokeTiming.standard.scrollLookaheadMs)
+        guard let currentIdx = self.lyrics.currentLineIndex(at: timeMs + lookahead) else { return }
+        let newId = self.lyrics.lines[currentIdx].id
+        self.currentLineIndex = currentIdx
+        guard newId != self.currentLineId else { return }
+        self.currentLineId = newId
+        guard !self.userIsScrolling else { return }
+        // While the player is still opening, jump: an animated scroll competing with the
+        // sheet's first paint is what made opening it stutter.
+        if animate, !self.isSettling {
+            withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(newId, anchor: .center) }
+        } else {
+            proxy.scrollTo(newId, anchor: .center)
+        }
+    }
 }
 
 @available(macOS 26.0, *)
 private struct FullscreenSyncedLineView: View {
     let line: SyncedLyricLine
     let status: SyncedLyrics.LineStatus
-    let currentTimeMs: Int
+    let isLive: Bool
+    let clock: LyricsPlaybackClock
+    /// Measured line layouts, so a re-render of the sheet never measures a line again.
+    let layoutCache: KaraokeLayoutCache
+    let minimumFrameInterval: Double?
+    let emphasis: Double
+
+    private static let fontSize: CGFloat = 36
+
     var body: some View {
-        Group {
-            if let words = self.line.words, !words.isEmpty {
-                FlowKaraokeLine(words: words, currentTimeMs: self.currentTimeMs, color: .white)
+        // Measured once per line, not once per frame or per sheet re-render.
+        let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
+
+        return KaraokeTimeSource(
+            line: self.line,
+            words: layout.words,
+            status: self.status,
+            isLive: self.isLive,
+            clock: self.clock,
+            minimumFrameInterval: self.minimumFrameInterval
+        ) { displayTimeMs in
+            if self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // A short instrumental gap that is not long enough for the pause dots.
+                Text("♪")
+                    .font(.system(size: Self.fontSize, weight: .bold))
+                    .lineSpacing(18)
+                    .foregroundStyle(.white)
             } else {
-                Text(self.line.text.trimmingCharacters(in: .whitespaces).isEmpty ? "♪" : self.line.text)
+                KaraokeLyricsLineView(
+                    layout: layout,
+                    displayTimeMs: displayTimeMs,
+                    color: .white,
+                    emphasis: self.emphasis,
+                    lineSpacing: 18
+                )
             }
         }
-        .font(.system(size: 36, weight: .bold))
-        .lineSpacing(18)
+        .offset(y: self.drift)
+    }
+
+    /// Neighbouring lines sit slightly off their slot, so a line settles into place
+    /// as it becomes the line being sung.
+    private var drift: CGFloat {
+        switch self.status {
+        case .current: 0
+        case .previous: -5
+        case .upcoming: 5
+        }
     }
 }
 
@@ -507,8 +685,11 @@ private struct FullscreenPauseDotsLineView: View {
     let dotStatuses: [SyncedLyrics.PauseDotStatus]
     let status: SyncedLyrics.LineStatus
     let isHovered: Bool
+    /// The bouncing dot is the only thing here that redraws; it shares the karaoke
+    /// frame budget rather than running at the display's refresh rate.
+    var minimumFrameInterval: Double?
     var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.safeDotStatus(at: dotIndex)) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading).animation(.easeInOut(duration: 0.35), value: self.dotStatuses).animation(.easeInOut(duration: 0.35), value: self.status) }
-    @ViewBuilder private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View { let dot = Circle().fill(Color.white).frame(width: 13, height: 13).opacity(self.dotOpacity(for: dotStatus)); if dotStatus == .active { TimelineView(.animation) { timeline in let elapsed = timeline.date.timeIntervalSinceReferenceDate; let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72; dot.offset(y: -5.2 * (0.5 + 0.5 * sin(phase * 2 * .pi))) } } else { dot } }
+    @ViewBuilder private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View { let dot = Circle().fill(Color.white).frame(width: 13, height: 13).opacity(self.dotOpacity(for: dotStatus)); if dotStatus == .active { TimelineView(.animation(minimumInterval: self.minimumFrameInterval)) { timeline in let elapsed = timeline.date.timeIntervalSinceReferenceDate; let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72; dot.offset(y: -5.2 * (0.5 + 0.5 * sin(phase * 2 * .pi))) } } else { dot } }
     private func safeDotStatus(at index: Int) -> SyncedLyrics.PauseDotStatus { self.dotStatuses.indices.contains(index) ? self.dotStatuses[index] : .notSung }
     private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double { switch status { case .notSung: 0.28; case .active: 1; case .sung: 0.65 } }
     private func lineScale(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> CGFloat { if isHovered, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }

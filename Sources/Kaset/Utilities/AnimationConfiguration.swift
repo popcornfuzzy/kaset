@@ -30,6 +30,10 @@ enum AppAnimation {
     /// Snappy spring for quick snaps
     static let snappy = Animation.spring(response: 0.25, dampingFraction: 0.8)
 
+    /// A lyric line settling into (or out of) being the line being sung. Crisp
+    /// enough not to fight the fill, soft enough to read as one continuous motion.
+    static let lyricLine = Animation.spring(response: 0.42, dampingFraction: 0.86)
+
     // MARK: - Stagger Delays
 
     /// Base delay for staggered list animations

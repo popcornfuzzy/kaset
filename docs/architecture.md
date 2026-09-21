@@ -322,6 +322,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 **Integration**: Created once in `KasetApp` and injected through the SwiftUI environment for lyrics views.
 
 See [ADR-0012: Synced Lyrics Provider Architecture](adr/0012-synced-lyrics-architecture.md) for design details.
+See [ADR-0018: Karaoke Lyrics Animation](adr/0018-karaoke-lyrics-animation.md) for how the display clock, fill model, and renderer turn the 10 Hz playback samples into the word-by-word wipe.
 
 ### ShareService
 
@@ -1016,6 +1017,11 @@ Right sidebar panel displaying song lyrics:
 - Falls back to `YTMusicClient.getLyrics(videoId:)` for plain YouTube Music lyrics when synced providers return `.unavailable`
 - Starts 10 Hz WebView playback polling only while rendering `.synced` lyrics so line highlighting stays aligned without constant idle polling
 - `SyncedLyricsDisplayView` auto-centers the current line and supports tap-to-seek
+- Word-by-word karaoke wipe: `LyricsPlaybackClock` interpolates the 10 Hz samples into a display-rate position (absorbing sample jitter by changing rate, snapping on seeks, freezing on pause), `KaraokeFillModel` turns word timings into per-word fill windows, and `KaraokeLyricsLineView` draws the dim base plus a bright copy masked to each word's fill edge with a feathered glow. Only the line being sung and the line after it are redrawn per frame, so a line change is continuous; the same view renders the fullscreen lyrics
+- The wipe's frame budget is bounded on purpose: each line's words are measured once (`KaraokeLineLayout`, memoized in `KaraokeLayoutCache`) so a frame is arithmetic on known widths, a fully sung word collapses to a single layer, and rows redraw at the rate they need (`KaraokeFrameBudget` — 60 Hz for the line being sung, 30 Hz for the line after it and for a line settling out, 10 Hz while the fullscreen player covers the panel, 20 Hz while paused or under Reduce Motion)
+- A finished line stays on the display clock until the clock is past its end (`KaraokeFillModel.isLiveRow`), because the settled frame and the live frame are pixel-identical there: the switch swaps the row's subtree, and SwiftUI does not animate a subtree it replaces, which is why the line that had just been sung used to snap to its resting size instead of scaling down to it
+- Opening the sheet is a settle, not an animation: `settleScroll(using:)` reads the highlight from state (never from the playback time its task captured), repeats an unanimated jump until the lazy stack has materialized the target row, and holds `isSettling` so no scroll or emphasis spring runs through the sheet's first paint
+- Lyrics a provider timed only as a whole **appear as a line** at their own start and then stay lit, rather than brightening across the line or faking word timings; they keep the same halo, which blooms in with them and settles
 - "Explain" button triggers AI-powered `LyricsSummary` generation for either synced or plain lyrics
 - Width: 280px, animated show/hide
 
