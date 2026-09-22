@@ -3,14 +3,14 @@
     <channel>
         <title>Kaset</title>
         <item>
-            <title>main</title>
-            <pubDate>Tue, 22 Sep 2026 21:47:22 +0200</pubDate>
+            <title>0.7</title>
+            <pubDate>Tue, 22 Sep 2026 19:19:24 +0200</pubDate>
             <link>https://github.com/popcornfuzzy/kaset/releases</link>
             <sparkle:fullReleaseNotesLink>https://github.com/popcornfuzzy/kaset/releases/tag/v0.7</sparkle:fullReleaseNotesLink>
-            <sparkle:version>9</sparkle:version>
-            <sparkle:shortVersionString>main</sparkle:shortVersionString>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>0.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.7/kaset-main.dmg" length="10211715" type="application/octet-stream" sparkle:edSignature="Fkpe3lOaVFqe4Kmg32OkodyJacJWRvSR6Wzjtc3lPFtJWKao//ZBryv1JHMlUequ+NUC4Rg8Fayn59CdjQzEBQ=="/>
+            <enclosure url="https://github.com/popcornfuzzy/kaset/releases/download/v0.7/kaset-v0.7.dmg" length="10212018" type="application/octet-stream" sparkle:edSignature="VqYCmA2gbmwVwK2WOyk3zvXB5QPRuGSqasH/MIYWLGy3PKgkUSvuuH7VDAi8To0+dU5IQHCWVk2esVzTgvT0Bg=="/>
         </item>
     </channel>
 </rss>
