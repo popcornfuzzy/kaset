@@ -3,6 +3,14 @@ import Testing
 @testable import Kaset
 
 /// Tests for PlayerService+Library extension (like/dislike/library actions).
+///
+/// These actions are asynchronous end to end — `PlayerService` spawns a task, the
+/// manager runs a coalesced burst, the client is called — so the tests wait for
+/// the outcome they assert on (via `waitUntil`) instead of sleeping a fixed
+/// amount. A fixed sleep encodes an assumption about how fast the machine is, and
+/// these tests failed in CI on exactly that: the 200 ms sleep came and went before
+/// the rating request was sent. Waits that assert something *did not* happen still
+/// use a sleep, because there is no event to wait for.
 @Suite(.serialized, .tags(.service))
 @MainActor
 struct PlayerServiceLibraryTests {
@@ -43,8 +51,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
-        // Wait for the async API call
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the rating request to be sent") { self.mockClient.rateSongCalled }
 
         #expect(self.mockClient.rateSongCalled == true)
         #expect(self.mockClient.rateSongVideoIds.first == "player-rating-video")
@@ -60,7 +67,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the unlike request to settle") { self.mockClient.rateSongRatings.first == .indifferent }
 
         #expect(self.mockClient.rateSongRatings.first == .indifferent)
     }
@@ -74,7 +81,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the like request to settle") { self.mockClient.rateSongRatings.first == .like }
 
         #expect(self.mockClient.rateSongRatings.first == .like)
     }
@@ -91,7 +98,7 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
         // Wait for SongLikeStatusManager to call API, fail, rollback, and PlayerService to sync back
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil("the failed like to roll back") { self.playerService.currentTrackLikeStatus == .indifferent }
 
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
     }
@@ -105,10 +112,13 @@ struct PlayerServiceLibraryTests {
         self.playerService.likeCurrentTrack()
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
-        try? await Task.sleep(for: .milliseconds(50))
+        // The request has to be in flight before the track changes.
+        await waitUntil("the rating request to reach the client") { self.mockClient.rateSongCalled }
         self.playerService.currentTrack = TestFixtures.makeSong(id: "song-b")
         self.playerService.currentTrackLikeStatus = .indifferent
 
+        // Nothing further should arrive: this is a deliberate window for the stale
+        // completion to (wrongly) land, not a wait for an event.
         try? await Task.sleep(for: .milliseconds(250))
 
         #expect(self.playerService.currentTrack?.videoId == "song-b")
@@ -117,7 +127,9 @@ struct PlayerServiceLibraryTests {
 
     @Test("rapid like then unlike via PlayerService coalesces into a single request")
     func rapidLikeThenUnlikeCoalesces() async {
-        SongLikeStatusManager.shared.ratingDebounce = .milliseconds(80)
+        // The window only has to be wide enough for the second click to arrive
+        // inside it; nothing here depends on it being short.
+        SongLikeStatusManager.shared.ratingDebounce = .milliseconds(500)
         defer { SongLikeStatusManager.shared.ratingDebounce = .zero }
 
         self.playerService.currentTrack = TestFixtures.makeSong(id: "player-rating-video")
@@ -126,12 +138,16 @@ struct PlayerServiceLibraryTests {
         self.playerService.likeCurrentTrack()
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
-        try? await Task.sleep(for: .milliseconds(10))
+        // Rendezvous on the first click reaching the manager's cache, so the second
+        // click is guaranteed to fold into the same burst.
+        await waitUntil("the first click to be cached") {
+            SongLikeStatusManager.shared.status(for: "player-rating-video", accountID: nil) == .like
+        }
         self.playerService.likeCurrentTrack()
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
 
         // Let the coalesced burst settle.
-        try? await Task.sleep(for: .milliseconds(250))
+        await waitUntil("the coalesced burst to settle") { self.mockClient.rateSongRatings == [.indifferent] }
 
         #expect(self.mockClient.rateSongVideoIds.count == 1)
         #expect(self.mockClient.rateSongRatings == [.indifferent])
@@ -150,7 +166,7 @@ struct PlayerServiceLibraryTests {
         self.playerService.likeCurrentTrack()
         SongLikeStatusManager.shared.setClient(replacementClient)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the unlike request to settle") { self.mockClient.rateSongRatings.first == .indifferent }
 
         #expect(self.mockClient.rateSongRatings.first == .indifferent)
         #expect(replacementClient.rateSongCalled == false)
@@ -178,7 +194,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the rating request to be sent") { self.mockClient.rateSongCalled }
 
         #expect(self.mockClient.rateSongCalled == true)
         #expect(self.mockClient.rateSongRatings.first == .dislike)
@@ -193,7 +209,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the undislike request to settle") { self.mockClient.rateSongRatings.first == .indifferent }
 
         #expect(self.mockClient.rateSongRatings.first == .indifferent)
     }
@@ -207,7 +223,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
-        try? await Task.sleep(for: .milliseconds(200))
+        await waitUntil("the dislike request to settle") { self.mockClient.rateSongRatings.first == .dislike }
 
         #expect(self.mockClient.rateSongRatings.first == .dislike)
     }
@@ -223,7 +239,7 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
         // Wait for SongLikeStatusManager to call API, fail, rollback, and PlayerService to sync back
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitUntil("the failed dislike to roll back") { self.playerService.currentTrackLikeStatus == .indifferent }
 
         #expect(self.playerService.currentTrackLikeStatus == .indifferent)
     }
@@ -237,7 +253,8 @@ struct PlayerServiceLibraryTests {
         self.playerService.dislikeCurrentTrack()
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
-        try? await Task.sleep(for: .milliseconds(50))
+        // The request has to be in flight before the track changes.
+        await waitUntil("the rating request to reach the client") { self.mockClient.rateSongCalled }
         self.playerService.currentTrack = TestFixtures.makeSong(id: "song-b")
         self.playerService.currentTrackLikeStatus = .indifferent
 
@@ -282,7 +299,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackInLibrary == true)
 
-        try? await Task.sleep(for: .milliseconds(100))
+        await waitUntil("the library add to be sent") { self.mockClient.editSongLibraryStatusCalled }
 
         #expect(self.mockClient.editSongLibraryStatusCalled == true)
         #expect(self.mockClient.editSongLibraryStatusTokens.first?.first == "add-token")
@@ -298,7 +315,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackInLibrary == false)
 
-        try? await Task.sleep(for: .milliseconds(100))
+        await waitUntil("the library removal to be sent") { self.mockClient.editSongLibraryStatusCalled }
 
         #expect(self.mockClient.editSongLibraryStatusCalled == true)
         #expect(self.mockClient.editSongLibraryStatusTokens.first?.first == "remove-token")
@@ -315,7 +332,7 @@ struct PlayerServiceLibraryTests {
 
         #expect(self.playerService.currentTrackInLibrary == true)
 
-        try? await Task.sleep(for: .milliseconds(100))
+        await waitUntil("the failed library toggle to roll back") { self.playerService.currentTrackInLibrary == false }
 
         #expect(self.playerService.currentTrackInLibrary == false)
     }

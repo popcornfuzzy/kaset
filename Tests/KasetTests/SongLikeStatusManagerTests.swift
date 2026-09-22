@@ -40,6 +40,16 @@ struct SongLikeStatusManagerTests {
         self.manager.status(for: videoId, accountID: nil)
     }
 
+    /// A coalescing window wide enough that the rendezvous below cannot miss it.
+    /// These tests do not care how long the debounce is, only that the next
+    /// intent arrives inside it, so it is deliberately generous: the wider the
+    /// window, the less the test depends on how promptly the machine schedules
+    /// the intent's task.
+    private static let burstWindow: Duration = .milliseconds(500)
+
+    /// Video id used by the coalescing tests.
+    private static let ratedVideo = "manager-rating-video"
+
     // MARK: - Status Query Tests
 
     @Test("status for videoId returns nil when not cached")
@@ -161,11 +171,13 @@ struct SongLikeStatusManagerTests {
     @Test("rapid like then unlike coalesces to a single request with the final intent")
     func rapidLikeThenUnlikeCoalesces() async {
         let accountID = self.prepareTest()
-        let song = TestFixtures.makeSong(id: "manager-rating-video")
-        let debounce: Duration = .milliseconds(80)
+        let song = TestFixtures.makeSong(id: Self.ratedVideo)
+        let debounce = Self.burstWindow
 
         let first = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
-        try? await Task.sleep(for: .milliseconds(10))
+        // Rendezvous on the first intent's optimistic write, not on a sleep, so the
+        // unlike is guaranteed to fold into the like's burst. See waitUntil(_:timeout:_:).
+        await waitUntil("the like to be cached") { self.primaryStatus(for: Self.ratedVideo) == .like }
         let second = Task { await self.manager.unlike(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
 
         _ = await first.value
@@ -174,19 +186,19 @@ struct SongLikeStatusManagerTests {
         #expect(self.mockClient.rateSongCalled == true)
         #expect(self.mockClient.rateSongVideoIds.count == 1)
         #expect(self.mockClient.rateSongRatings == [.indifferent])
-        #expect(self.primaryStatus(for: "manager-rating-video") == .indifferent)
+        #expect(self.primaryStatus(for: Self.ratedVideo) == .indifferent)
     }
 
     @Test("rapid like-unlike-like coalesces to a single request with the last intent")
     func rapidTripleToggleCoalesces() async {
         let accountID = self.prepareTest()
-        let song = TestFixtures.makeSong(id: "manager-rating-video")
-        let debounce: Duration = .milliseconds(100)
+        let song = TestFixtures.makeSong(id: Self.ratedVideo)
+        let debounce = Self.burstWindow
 
         let first = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
-        try? await Task.sleep(for: .milliseconds(10))
+        await waitUntil("the like to be cached") { self.primaryStatus(for: Self.ratedVideo) == .like }
         let second = Task { await self.manager.unlike(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
-        try? await Task.sleep(for: .milliseconds(10))
+        await waitUntil("the unlike to be cached") { self.primaryStatus(for: Self.ratedVideo) == .indifferent }
         let third = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
 
         _ = await first.value
@@ -195,18 +207,20 @@ struct SongLikeStatusManagerTests {
 
         #expect(self.mockClient.rateSongVideoIds.count == 1)
         #expect(self.mockClient.rateSongRatings == [.like])
-        #expect(self.primaryStatus(for: "manager-rating-video") == .like)
+        #expect(self.primaryStatus(for: Self.ratedVideo) == .like)
     }
 
     @Test("new intent cancels an in-flight request without rolling back the newer intent")
     func newIntentCancelsInflightRequest() async {
         let accountID = self.prepareTest()
-        let song = TestFixtures.makeSong(id: "manager-rating-video")
+        let song = TestFixtures.makeSong(id: Self.ratedVideo)
         self.manager.ratingDebounce = .zero
         self.mockClient.rateSongDelay = .milliseconds(150)
 
         let first = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient) }
-        try? await Task.sleep(for: .milliseconds(10))
+        // Wait for the first request to actually reach the client: the unlike must
+        // arrive while that request is in flight, or there is nothing to cancel.
+        await waitUntil("the first request to reach the client") { self.mockClient.rateSongVideoIds.count == 1 }
         let second = Task { await self.manager.unlike(song, accountID: accountID, client: self.mockClient) }
 
         let firstResult = await first.value
@@ -214,7 +228,7 @@ struct SongLikeStatusManagerTests {
 
         // Both requests were recorded, but the first was cancelled before settling and
         // must not roll back over the newer (successful) intent.
-        #expect(self.primaryStatus(for: "manager-rating-video") == .indifferent)
+        #expect(self.primaryStatus(for: Self.ratedVideo) == .indifferent)
         #expect(firstResult == .indifferent)
         #expect(secondResult == .indifferent)
         #expect(self.mockClient.rateSongVideoIds.count == 2)
@@ -224,13 +238,13 @@ struct SongLikeStatusManagerTests {
     @Test("failed intent in a burst rolls back to the pre-burst baseline")
     func failedBurstIntentRollsBackToBaseline() async {
         let accountID = self.prepareTest()
-        let song = TestFixtures.makeSong(id: "manager-rating-video")
-        let debounce: Duration = .milliseconds(80)
+        let song = TestFixtures.makeSong(id: Self.ratedVideo)
+        let debounce = Self.burstWindow
         self.manager.ratingRetryDelays = []
         self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
 
         let first = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
-        try? await Task.sleep(for: .milliseconds(10))
+        await waitUntil("the like to be cached") { self.primaryStatus(for: Self.ratedVideo) == .like }
         let second = Task { await self.manager.unlike(song, accountID: accountID, client: self.mockClient, debounce: debounce) }
 
         _ = await first.value
@@ -240,26 +254,27 @@ struct SongLikeStatusManagerTests {
         // the unlike failed, so we roll back to the pre-burst baseline (no cached status).
         #expect(self.mockClient.rateSongVideoIds.count == 1)
         #expect(self.mockClient.rateSongRatings == [.indifferent])
-        #expect(self.primaryStatus(for: "manager-rating-video") == nil)
+        #expect(self.primaryStatus(for: Self.ratedVideo) == nil)
     }
 
     @Test("failed older request does not clobber a newer intent")
     func failedOlderRequestDoesNotClobberNewer() async {
         let accountID = self.prepareTest()
-        let song = TestFixtures.makeSong(id: "manager-rating-video")
+        let song = TestFixtures.makeSong(id: Self.ratedVideo)
         self.manager.ratingDebounce = .zero
         self.manager.ratingRetryDelays = []
         self.mockClient.rateSongDelay = .milliseconds(100)
         self.mockClient.rateSongFailuresBeforeSuccess = 1  // first call fails, second succeeds
 
         let first = Task { await self.manager.like(song, accountID: accountID, client: self.mockClient) }
-        try? await Task.sleep(for: .milliseconds(10))
+        // The newer intent must arrive while the older request is still in flight.
+        await waitUntil("the first request to reach the client") { self.mockClient.rateSongVideoIds.count == 1 }
         let second = Task { await self.manager.unlike(song, accountID: accountID, client: self.mockClient) }
 
         let firstResult = await first.value
         let secondResult = await second.value
 
-        #expect(self.primaryStatus(for: "manager-rating-video") == .indifferent)
+        #expect(self.primaryStatus(for: Self.ratedVideo) == .indifferent)
         #expect(firstResult == .indifferent)
         #expect(secondResult == .indifferent)
         #expect(self.mockClient.rateSongVideoIds.count == 2)

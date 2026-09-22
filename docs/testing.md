@@ -134,7 +134,27 @@ struct PlayerServiceTests {
 
 **`.serialized` only orders tests *within* a suite.** Suites still run concurrently with each other, so two suites that touch the same `@MainActor` singleton still interleave at `await` points — one suite's `init()`/setup can clear state in the middle of another's test. That is why CI runs the whole bundle with `--no-parallel` (see [CI](#ci-configuration)): the suite is written for serial execution, and this makes the run deterministic instead of depending on which suites happen to overlap.
 
-Keep tests independent of that too, when you can: wait for the condition you assert on (bounded polling) rather than sleeping a fixed amount, and prefer asserting on objects the test owns over app-wide singletons.
+Keep tests independent of that too, when you can: prefer asserting on objects the test owns over app-wide singletons, and wait for the condition you assert on rather than sleeping a fixed amount.
+
+### Waiting for async work
+
+`Task.sleep(for: .milliseconds(200))` encodes an assumption about how fast the machine is. When the thing being tested is asynchronous end to end — a spawned task, a coalescing burst, a retry loop — wait for an event the code emits instead:
+
+```swift
+await waitUntil("the rating request to be sent") { self.mockClient.rateSongCalled }
+```
+
+`waitUntil` (`Tests/KasetTests/SwiftTestingHelpers/AsyncTestWait.swift`) polls the condition on the main actor, yields between checks, and records an issue if the timeout passes.
+
+This matters most where a test has to *interleave* two async actions — a coalescing burst is defined by the second intent arriving while the first is still waiting out its debounce. Sleeping a fixed amount there does not guarantee the first task has even started, so the burst is not coalesced and the test fails on a slow machine while passing locally. Rendezvous on an observable event instead (the optimistic cache write, or the request reaching the mock client):
+
+```swift
+let first = Task { await manager.like(song, accountID: accountID, client: mockClient, debounce: window) }
+await waitUntil("the like to be cached") { manager.status(for: song.videoId, accountID: nil) == .like }
+let second = Task { await manager.unlike(song, accountID: accountID, client: mockClient, debounce: window) }
+```
+
+A sleep is still the right tool for asserting that something *did not* happen — `#expect(self.mockClient.rateSongCalled == false)` has no event to wait for. Say so in a comment, so it is not mistaken for a rendezvous.
 
 ### Test Tags
 
