@@ -781,7 +781,18 @@ final class SingletonPlayerWebView {
 
                 // Repeat-one must keep enforcing queue/current song even if WebView doesn't flag `trackChanged`
                 // for a transient autoplay swap. In other modes, keep the existing trackChanged gate.
-                let shouldReconcileMetadata = (trackChanged || self.playerService.repeatMode == .one)
+                // A state update that is not a track change still has to be reconciled when it carries
+                // the artwork of the playing track and that track has none: nothing else would ever
+                // deliver the picture, which left the now-playing art blank for the whole song (see
+                // `shouldReconcileMissingArtwork`).
+                let shouldReconcileMetadata = (trackChanged
+                    || self.playerService.repeatMode == .one
+                    || self.playerService.shouldReconcileMissingArtwork(
+                        observedVideoId: observedVideoId,
+                        title: title,
+                        artist: artist,
+                        thumbnailUrl: thumbnailUrl
+                    ))
                     && (observedVideoId != nil || !title.isEmpty)
 
                 if shouldReconcileMetadata {

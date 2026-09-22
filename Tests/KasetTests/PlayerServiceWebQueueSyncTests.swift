@@ -397,6 +397,161 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/webview-thumb.jpg")
     }
 
+    @Test("A WebView picture never replaces artwork we already hold for the same video")
+    func webMetadataDoesNotReplaceKnownArtworkWhenMetadataDrifts() async {
+        // The player bar's `<img>` is the same picture from a re-signed, differently sized URL, and at
+        // launch it can still hold a placeholder or the previous song's art. Letting it replace the
+        // artwork of the video we are playing left the now-playing picture loading a URL that never
+        // resolved — the artwork stayed blank even though `currentTrack` was "correct".
+        let queueArtwork = URL(string: "https://lh3.googleusercontent.com/queue-artwork=w544-h544-l90-rj?sqp=queue-signature")!
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: queueArtwork,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        // Title drift, so the observation is not treated as "the current track, richer": it takes the
+        // branch that rebuilds `currentTrack` from YouTube's row.
+        self.playerService.updateTrackMetadata(
+            title: "Song 1 (Explicit)",
+            artist: "Artist",
+            thumbnailUrl: "https://lh3.googleusercontent.com/queue-artwork=w60-h60-l90-rj?sqp=webview-signature",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == queueArtwork.absoluteString)
+    }
+
+    @Test("An observation that carries artwork fills a playing track that has none")
+    func artworkOnlyObservationFillsMissingArtwork() async {
+        // A song that starts while the WebView is still opening can be left without a picture:
+        // `fetchSongMetadata` may lose the race against account initialization, and the player-bar
+        // `<img>` is empty until the page has rendered the track. The observer's later state updates
+        // carry that picture and are *not* a track change, so without an artwork-only reconcile the
+        // now-playing artwork stayed blank for the whole song.
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v1",
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg"
+        ))
+
+        self.playerService.updateTrackMetadata(
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/webview-thumb.jpg")
+        #expect(self.playerService.currentTrack?.videoId == "v1")
+    }
+
+    @Test("The artwork-only reconcile only accepts the playing video's own picture")
+    func artworkOnlyReconcileIsNarrow() async {
+        let artwork = URL(string: "https://example.com/api-thumb.jpg")!
+        let songs = [
+            Song(
+                id: "v1",
+                title: "Song 1",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+            Song(
+                id: "v2",
+                title: "Song 2",
+                artists: [Artist(id: "artist-1", name: "Artist")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: artwork,
+                videoId: "v2"
+            ),
+        ]
+
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        // Another video's picture, an empty one, and metadata we do not consider equivalent are all
+        // rejected — this gate exists to fill a picture in, not to adopt YouTube's row.
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v2",
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg"
+        ) == false)
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v1",
+            title: "Song 1",
+            artist: "Artist",
+            thumbnailUrl: ""
+        ) == false)
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v1",
+            title: "Different Song",
+            artist: "Artist",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg"
+        ) == false)
+
+        // A title that YouTube localizes differently still qualifies, because the equivalent-metadata
+        // check folds separators the way the rest of the reconcile does.
+        self.playerService.currentTrack = Song(
+            id: "v1",
+            title: "You Make My Dreams (Come True)",
+            artists: [Artist(id: "artist-1", name: "Daryl Hall & John Oates")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "v1"
+        )
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v1",
+            title: "You Make My Dreams (Come True)",
+            artist: "Daryl Hall and John Oates",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg"
+        ))
+
+        // Once the track has artwork the gate stands down, so the 1 Hz state updates stop reconciling.
+        self.playerService.currentTrack = Song(
+            id: "v1",
+            title: "You Make My Dreams (Come True)",
+            artists: [Artist(id: "artist-1", name: "Daryl Hall & John Oates")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: artwork,
+            videoId: "v1"
+        )
+        #expect(self.playerService.shouldReconcileMissingArtwork(
+            observedVideoId: "v1",
+            title: "You Make My Dreams (Come True)",
+            artist: "Daryl Hall & John Oates",
+            thumbnailUrl: "https://example.com/webview-thumb.jpg"
+        ) == false)
+    }
+
     @Test("Artist identity ignores localized conjunctions and separator formatting")
     func artistIdentityIgnoresLocalizedConjunctionsAndSeparators() {
         #expect(PlayerService.artistsEquivalent("Artist A, Artist B", "Artist A and Artist B"))

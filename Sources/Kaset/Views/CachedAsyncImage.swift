@@ -31,6 +31,27 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         [.milliseconds(300), .seconds(1), .seconds(3)]
     }
 
+    /// Cadence of the attempts that follow the quick ones.
+    ///
+    /// The quick retries only cover a hiccup of a few seconds, but the situations that actually lose
+    /// artwork last longer and do resolve themselves: the app is still opening its WebView and the
+    /// network is busy, a streamed song's picture is still being upgraded from the player bar, or the
+    /// CDN answers a rate-limited 403. A view that gave up after three attempts kept its placeholder
+    /// for the rest of the song — nothing later re-runs `.task(id:)` while the artwork URL itself is
+    /// unchanged — so the view keeps trying while it is on screen. Attempts are cheap:
+    /// ``ImageCache`` dedupes identical requests, remembers sizes YouTube does not have, and a URL that
+    /// already succeeded is answered from the memory or disk cache without a request at all.
+    private static var recoveryRetryDelays: [Duration] {
+        [.seconds(5), .seconds(10), .seconds(20), .seconds(40), .seconds(60)]
+    }
+
+    /// Delay before retry number `retryIndex` (0-based): the quick attempts first, then the recovery
+    /// cadence, which bottoms out at its cap. Pure, so the schedule is testable without a view.
+    static func retryDelay(afterRetry retryIndex: Int) -> Duration {
+        let schedule = Self.retryDelays + Self.recoveryRetryDelays
+        return schedule[min(max(retryIndex, 0), schedule.count - 1)]
+    }
+
     @State private var image: NSImage?
     @State private var isLoaded = false
     /// Identity of the artwork this view is showing *or currently loading*.
@@ -149,14 +170,17 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             // leaving the layer transparent while the retry is pending.
             self.isLoaded = true
 
-            guard retryIndex < Self.retryDelays.count else {
+            if retryIndex == Self.retryDelays.count {
+                // Reported once, when the quick attempts are spent: the recovery attempts that follow
+                // are quiet because they usually succeed, and a size YouTube does not have is
+                // remembered by `ImageCache` and never requested again.
                 DiagnosticsLogger.ui.error(
-                    "Artwork failed to load after \(Self.retryDelays.count + 1) attempts: \(Self.describe(url: self.url)) fallback \(Self.describe(url: self.fallbackURL))"
+                    "Artwork failed to load after \(Self.retryDelays.count + 1) attempts; still retrying while the view is on screen: \(Self.describe(url: self.url), privacy: .public) fallback \(Self.describe(url: self.fallbackURL), privacy: .public)"
                 )
-                return
             }
+
             do {
-                try await Task.sleep(for: Self.retryDelays[retryIndex])
+                try await Task.sleep(for: Self.retryDelay(afterRetry: retryIndex))
             } catch {
                 return // Cancelled: a newer URL/identity owns the view now.
             }
@@ -169,8 +193,11 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     }
 
     /// Loggable description of an artwork URL: host and path only, because the query carries the URL
-    /// signature (kept private, per the project's secret-handling rules).
-    private static func describe(url: URL?) -> String {
+    /// signature (kept private, per the project's secret-handling rules). Callers log this with
+    /// `privacy: .public`; an interpolated `String` is private by default, which is what previously
+    /// hid every artwork failure behind `<private>` and made a blank picture impossible to
+    /// diagnose from the log.
+    static func describe(url: URL?) -> String {
         guard let url else { return "nil" }
         return "\(url.host() ?? "unknown")\(url.path())"
     }

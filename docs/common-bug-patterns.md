@@ -250,6 +250,35 @@ lands before the download finishes, so the artwork vanished intermittently inste
 
 Artwork loads also need a retry. A view's `.task(id:)` runs only when its id changes, so one failed
 fetch used to strand the placeholder until the next track change — nothing else would re-trigger it.
+Retries have to outlive that quick burst, too. The artwork losses that actually reach users last
+longer than a couple of seconds and then fix themselves (the app is still opening its WebView and the
+network is busy, a streamed song's picture is being upgraded, the CDN answers a rate-limited 403), so
+the view keeps retrying — on a slower cadence, up to a minute — for as long as it stays on screen.
+That is the difference between "the artwork appears late" and "the artwork never appears": the URL
+itself does not change again, so nothing else would ever re-run the load. Log the failures with
+`privacy: .public` for host and path only (never the query, which carries the signature) — an
+interpolated `String` is private by default, and a wall of `<private>` is why a blank picture could not
+be diagnosed from the log at all.
+
+Metadata reconciliation has the mirror-image rule: **a picture that arrives while the track plays is
+not a track change, so it needs its own reason to be reconciled.** A song that starts while the WebView
+is still opening can be left without artwork — `fetchSongMetadata` can lose the race against account
+initialization, and the player bar's `<img>` is empty until the page renders the track — and the
+observer only reached the metadata reconcile on `trackChanged`. The picture the WebView had was
+therefore dropped on the floor, and the now-playing art stayed blank for the whole song.
+
+```swift
+// ❌ BAD: the artwork the WebView reports later never reaches the playing track
+let shouldReconcileMetadata = (trackChanged || self.playerService.repeatMode == .one)
+    && (observedVideoId != nil || !title.isEmpty)
+
+// ✅ GOOD: an equivalent observation of the *same* video is also reconciled when the track has no
+// artwork yet, and the reconcile itself only takes the WebView's picture because we have none
+let shouldReconcileMetadata = (trackChanged
+    || self.playerService.repeatMode == .one
+    || self.playerService.shouldReconcileMissingArtwork(observedVideoId: observedVideoId, …))
+    && (observedVideoId != nil || !title.isEmpty)
+```
 
 Two more rules come out of the same "one picture, many URLs" property, and both show up as *the
 artwork is not sharp* rather than as missing art. **Ask for the still by its largest name**:

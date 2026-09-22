@@ -4,6 +4,55 @@ import Foundation
 
 @MainActor
 extension PlayerService {
+    /// Artwork resolution for an observation: a picture we already hold for this video wins over the
+    /// WebView's player-bar `<img src>`.
+    ///
+    /// The observed URL is the *same* artwork from a differently signed/sized URL, and YouTube rewrites
+    /// it while it upgrades the image — and at launch, before the page has rendered the track, the
+    /// player bar can still hold a placeholder or the previous song's picture. Adopting it therefore
+    /// churns `currentTrack` for no new content (visible flicker) and can hand the artwork views a URL
+    /// that never resolves (a blank now-playing picture until something else re-points the track).
+    /// The observation is only a fallback for artwork we do not have yet: the current track's own
+    /// picture, then the queue entry for the same video, then — last — what the WebView reported.
+    private func resolvedThumbnailURL(observed thumbnailUrl: String?, videoId: String) -> URL? {
+        if self.currentTrack?.videoId == videoId, let artwork = self.currentTrack?.thumbnailURL {
+            return artwork
+        }
+        if let queuedArtwork = self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL {
+            return queuedArtwork
+        }
+        return self.normalizedThumbnailURL(thumbnailUrl) ?? self.currentTrack?.thumbnailURL
+    }
+
+    /// Whether an observation that is *not* a track change still has to be reconciled because it
+    /// carries artwork the playing track is missing.
+    ///
+    /// A song that starts while the WebView is still opening can end up without a picture:
+    /// ``fetchSongMetadata`` can lose the race against account initialization, and the player bar
+    /// `<img>` is empty until the page renders the track. The observer's state updates carry that
+    /// picture as soon as the WebView has it, but ``updateTrackMetadata`` only ran on a *track change*,
+    /// so the artwork of the song that is playing stayed blank for its whole length.
+    ///
+    /// Only an observation of the same video that we already consider equivalent to the playing track
+    /// qualifies: that is the path that keeps our richer metadata and takes the WebView's picture only
+    /// because we have none.
+    func shouldReconcileMissingArtwork(
+        observedVideoId: String?,
+        title: String,
+        artist: String,
+        thumbnailUrl: String
+    ) -> Bool {
+        guard let track = self.currentTrack,
+              track.thumbnailURL == nil,
+              let observedVideoId = self.normalizedObservedVideoId(observedVideoId),
+              observedVideoId == track.videoId,
+              self.normalizedThumbnailURL(thumbnailUrl) != nil
+        else {
+            return false
+        }
+        return self.metadataMatchesSong(title: title, artist: artist, song: track)
+    }
+
     private func normalizedThumbnailURL(_ thumbnailUrl: String?) -> URL? {
         guard let thumbnailUrl else { return nil }
         let trimmed = thumbnailUrl.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -189,9 +238,7 @@ extension PlayerService {
         thumbnailUrl: String,
         videoId: String
     ) -> Song {
-        let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
-            ?? self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL
-            ?? self.currentTrack?.thumbnailURL
+        let thumbnailURL = self.resolvedThumbnailURL(observed: thumbnailUrl, videoId: videoId)
         let artistObj = Artist(id: "unknown", name: Self.commaSeparatedArtistDisplay(artist))
         return Song(
             id: videoId,
@@ -743,9 +790,7 @@ extension PlayerService {
             self.updateCurrentPlaybackKind(using: nil)
         }
 
-        let thumbnailURL = self.normalizedThumbnailURL(thumbnailUrl)
-            ?? self.queue.first(where: { $0.videoId == resolvedVideoId })?.thumbnailURL
-            ?? self.currentTrack?.thumbnailURL
+        let thumbnailURL = self.resolvedThumbnailURL(observed: thumbnailUrl, videoId: resolvedVideoId)
         let trackChanged = self.currentTrack?.title != title
             || !Self.artistsEquivalent(self.currentTrack?.artistsDisplay ?? "", artist)
             || self.currentTrack?.videoId != resolvedVideoId
