@@ -132,6 +132,10 @@ struct PlayerServiceTests {
 
 **Why `.serialized`?** `@MainActor` tests must run serially to avoid race conditions. Swift Testing runs tests in parallel by default.
 
+**`.serialized` only orders tests *within* a suite.** Suites still run concurrently with each other, so two suites that touch the same `@MainActor` singleton still interleave at `await` points — one suite's `init()`/setup can clear state in the middle of another's test. That is why CI runs the whole bundle with `--no-parallel` (see [CI](#ci-configuration)): the suite is written for serial execution, and this makes the run deterministic instead of depending on which suites happen to overlap.
+
+Keep tests independent of that too, when you can: wait for the condition you assert on (bounded polling) rather than sleeping a fixed amount, and prefer asserting on objects the test owns over app-wide singletons.
+
 ### Test Tags
 
 Apply tags to categorize tests for filtering:
@@ -143,10 +147,16 @@ Apply tags to categorize tests for filtering:
 Available tags: `.api`, `.parser`, `.viewModel`, `.service`, `.model`, `.slow`, `.integration`
 
 **Run by tag:**
+
+`swift test --filter`/`--skip` match against test IDs (target, suite and test names), **not** tags, so `swift test --skip integration` selects nothing. Use the suite names in the pattern, and the `--test-tag` / `--skip-test-tag` flags when driving the suite through `xcodebuild`:
+
 ```bash
-# Run only parser tests
-xcodebuild test -scheme Kaset -only-testing:KasetTests -skip-testing:KasetUITests \
-  2>&1 | grep -E "parser"
+# SwiftPM: select / exclude by name
+swift test --filter "CanvasVideoViewTests|MusicIntentIntegrationTests"
+swift test --skip "KasetUITests|MusicIntentIntegrationTests"
+
+# xcodebuild: select / exclude by tag
+xcodebuild test -scheme Kaset -only-testing:KasetTests --test-iterations 1 -skip-test-tag .slow
 ```
 
 ### Time Limits
@@ -370,21 +380,29 @@ LLM outputs are inherently non-deterministic. These tests mitigate flakiness by:
 2. **Relaxed matching**: Checks multiple fields (e.g., `mood` OR `query`) for expected content
 3. **Case-insensitive**: All string comparisons are lowercased
 4. **Fresh sessions**: Each attempt uses a new `LanguageModelSession` to avoid context drift
-5. **Tagged for exclusion**: Use `-skip-test-tag integration` in CI to skip these tests
+5. **Excluded from CI**: the unit-test jobs skip this suite by name (see [CI Configuration](#ci-configuration))
 
-#### Recommended CI Configuration
+#### CI Configuration
 
-For stable CI pipelines, **exclude integration tests** and run them separately in a scheduled job:
+Non-deterministic or environment-dependent tests never gate a pull request or a release. `.github/workflows/tests.yml` and `release.yml` run:
 
 ```bash
-# CI: Run unit tests only (stable)
-xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-  -only-testing:KasetTests -skip-test-tag integration
-
-# Scheduled job: Run integration tests (may need re-runs)
-xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-  -only-testing:KasetTests/MusicIntentIntegrationTests
+# Stable unit tests: serial execution, without the LLM suite
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 ```
+
+The Apple Intelligence suite runs in the scheduled `macos_integration_tests` job (nightly and on `workflow_dispatch`), where a failure is a signal to investigate rather than a blocked merge:
+
+```bash
+swift test -q --no-parallel --filter "MusicIntentIntegrationTests"
+```
+
+Other environment-dependent suites to keep out of the merge gate:
+
+| Suite | Depends on |
+|-------|------------|
+| `MusicIntentIntegrationTests` | Apple Intelligence; non-deterministic output |
+| `CanvasVideoViewTests` | Real AVFoundation playback; the first item in a process can take many seconds to start on a busy or paravirtualized runner, so its readiness wait is generous |
 
 #### What's Tested
 
@@ -404,12 +422,10 @@ xcodebuild test -scheme Kaset -destination 'platform=macOS' \
 
 ```bash
 # Run ONLY integration tests (requires Apple Intelligence)
-xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-  -only-testing:KasetTests/MusicIntentIntegrationTests
+swift test --filter "MusicIntentIntegrationTests"
 
-# Run all unit tests (integration tests auto-skip if AI unavailable)
-xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-  -only-testing:KasetTests
+# Run the full unit suite the way CI does
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 ```
 
 #### Test Characteristics

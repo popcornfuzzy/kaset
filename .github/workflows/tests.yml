@@ -21,11 +21,17 @@ on:
       - "Sources/**"
       - "Tests/**"
       - ".github/workflows/tests.yml"
+  schedule:
+    # The integration suites are excluded from the stable unit-test run (see
+    # docs/testing.md); this nightly run is what exercises them.
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 jobs:
   macos_unit_tests:
     name: macOS Unit Tests
+    # The nightly schedule exists to exercise the integration suites below.
+    if: github.event_name != 'schedule'
     timeout-minutes: 20
     runs-on: macos-26
     steps:
@@ -41,11 +47,43 @@ jobs:
       - name: Clear SPM artifacts cache
         run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts
 
+      # The suite is written for serial execution: suites share @MainActor
+      # singletons (SongLikeStatusManager's cache and rating knobs) that their
+      # setups clear, and several tests wait on fixed sleeps. Run in parallel
+      # and one suite's setup lands inside another's awaits, which is how this
+      # job used to fail on tests that pass in isolation.
+      # MusicIntentIntegrationTests is excluded here because its Apple
+      # Intelligence output is non-deterministic; the integration job below runs
+      # it. See docs/testing.md.
       - name: Run unit tests
-        run: swift test -q --skip KasetUITests
+        run: 'swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"'
+
+  macos_integration_tests:
+    name: macOS Integration Tests
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    runs-on: macos-26
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Select Xcode version
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Clear SPM artifacts cache
+        run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts
+
+      # LLM output is non-deterministic, so these are never a merge gate: they
+      # run nightly and on demand, and may need a re-run. See docs/testing.md.
+      - name: Run integration tests
+        run: 'swift test -q --no-parallel --filter "MusicIntentIntegrationTests"'
 
   macos_ui_tests:
     name: macOS UI Tests
+    if: github.event_name != 'schedule'
     timeout-minutes: 30
     runs-on: macos-26
     steps:

@@ -36,7 +36,12 @@ struct CanvasVideoViewTests {
         defer { view.teardown() }
 
         // Wait for AVFoundation to load the asset and the looper to enqueue it.
-        let deadline = Date().addingTimeInterval(10)
+        // Readiness itself is one 0.1s time-observer tick once playback starts;
+        // the wait is for AVFoundation's own start-up. The first item created in
+        // a process pays for bringing up the decode pipeline, which on a busy or
+        // paravirtualized machine has been measured at over 12s, so the deadline
+        // is generous on purpose — it is not a readiness budget.
+        let deadline = Date().addingTimeInterval(Self.readinessTimeout)
         while !didBecomeReady, !didFail, Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -57,16 +62,23 @@ struct CanvasVideoViewTests {
         view.load(url: videoURL)
         defer { view.teardown() }
 
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(Self.readinessTimeout)
         while !didBecomeReady, Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(didBecomeReady)
 
+        // Sample the timeline until it moves rather than sleeping a fixed amount
+        // and hoping: the point of the assertion is that a ready player advances,
+        // and a fixed sleep makes the test fail whenever the machine is busy.
         let firstSample = try #require(view.currentPlaybackTime)
-        try await Task.sleep(for: .milliseconds(400))
-        let secondSample = try #require(view.currentPlaybackTime)
-        #expect(secondSample > firstSample, "readiness was reported but the timeline is not moving")
+        let advanceDeadline = Date().addingTimeInterval(5)
+        var advanced = false
+        while !advanced, Date() < advanceDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+            advanced = (view.currentPlaybackTime ?? 0) > firstSample
+        }
+        #expect(advanced, "readiness was reported but the timeline is not moving")
     }
 
     @Test("the canvas player keeps the stalling policy streaming canvases need")
@@ -99,6 +111,11 @@ struct CanvasVideoViewTests {
     }
 
     // MARK: - Fixtures
+
+    /// How long a canvas may take to start playing before the test gives up.
+    /// AVFoundation's start-up for the first item in a process is what this
+    /// covers; it is not a readiness budget.
+    private static let readinessTimeout: TimeInterval = 60
 
     /// Writes a tiny (30-frame, 128×128) H.264 clip into a fresh temp directory
     /// and returns its URL.

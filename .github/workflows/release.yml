@@ -44,8 +44,12 @@ jobs:
       - name: Clear SPM artifacts cache
         run: rm -rf ~/Library/Caches/org.swift.swiftpm/artifacts
 
+      # Same invocation as the unit-test job in tests.yml: serial execution (the
+      # suite shares @MainActor singletons and fixed-sleep timings) and without
+      # the non-deterministic Apple Intelligence integration suite, which must
+      # never gate a release. See docs/testing.md.
       - name: Run unit tests
-        run: swift test -q --skip KasetUITests
+        run: 'swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"'
 
       - name: Determine version from tag
         id: version

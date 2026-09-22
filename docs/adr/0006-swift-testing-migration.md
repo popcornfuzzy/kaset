@@ -541,12 +541,16 @@ func apiReturnsValidResponse() async throws {
 
 Run filtered tests:
 
-```bash
-# Run only API tests
-swift test --filter .api
+> Correction: `swift test --filter`/`--skip` match test IDs (target, suite and test names), not
+tags, so the `--filter .api` / `--skip .slow` forms below never selected anything. Tag filtering is
+only available through `xcodebuild`'s `-test-tag` / `-skip-test-tag` (see `docs/testing.md`).
 
-# Exclude slow tests
-swift test --skip .slow
+```bash
+# Run only API tests (by name, since SwiftPM cannot filter by tag)
+swift test --filter "YTMusicClientTests"
+
+# Exclude slow tests (xcodebuild, by tag)
+xcodebuild test -scheme Kaset -only-testing:KasetTests -skip-test-tag .slow
 ```
 
 ---
@@ -554,17 +558,14 @@ swift test --skip .slow
 ## Build Commands After Migration
 
 ```bash
-# Run all tests (both XCTest and Swift Testing)
-xcodebuild -scheme Kaset -destination 'platform=macOS' test
+# Run all tests (Swift Testing; KasetUITests is a separate target)
+swift test
 
-# Run only unit tests (excludes UI tests)
-xcodebuild -scheme Kaset -destination 'platform=macOS' test -only-testing:KasetTests
+# Run only unit tests, the way CI does
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 
 # Run specific Swift Testing suite
 swift test --filter HomeViewModelTests
-
-# Run tests with specific tag (after Tags.swift is created)
-swift test --filter .api
 ```
 
 **CI/CD Note**: Ensure build agents use **Xcode 16+**. Earlier versions will not discover Swift Testing tests.
