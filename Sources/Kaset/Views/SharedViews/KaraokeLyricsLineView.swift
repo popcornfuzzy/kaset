@@ -177,6 +177,7 @@ struct KaraokeLyricsLineView: View {
                     width: self.layout.textWidths[index],
                     fill: word.fill(at: self.displayTimeMs),
                     swell: word.swell(at: self.displayTimeMs),
+                    glow: word.glowStrength(at: self.displayTimeMs),
                     color: self.color,
                     dimOpacity: self.dimOpacity,
                     fontSize: self.layout.fontSize,
@@ -204,6 +205,10 @@ struct KaraokeWordView: View {
     /// How much this word is emphasised, 0...1, from the model's time-based
     /// envelope: it cannot pop because it is never read part-way through.
     let swell: Double
+    /// Strength of the halo on this word, 0...1. Zero at both ends of the word's own
+    /// fill ramp, so a word that has finished changing is a word nothing is happening
+    /// to — which is what lets a completed word drop its extra layers invisibly.
+    let glow: Double
     let color: Color
     let dimOpacity: Double
     let fontSize: CGFloat
@@ -231,8 +236,17 @@ struct KaraokeWordView: View {
                 self.sungLayer
             }
         }
-        .scaleEffect(1 + 0.032 * self.emphasis * self.swell)
-        .offset(y: -self.fontSize * 0.018 * self.emphasis * self.swell)
+        // The word being sung rises by a hair and settles as it lands. The emphasis is a
+        // **lift, not a scale**, on purpose: scaling a word scales its text, and SwiftUI
+        // rasterizes text at the scale it is asked for, so a scale animated frame by frame
+        // steps its anti-aliasing every frame and snaps hardest on the frame it returns to
+        // its resting size. A translation is a transform of an unchanged raster, so it moves
+        // cleanly.
+        //
+        // The amplitude is deliberately a *fraction* of a pixel at typical text sizes: it is
+        // here to keep the sung word from being perfectly static, not to be seen as movement.
+        // The glow is what marks the word.
+        .offset(y: -self.fontSize * 0.02 * self.emphasis * self.swell)
     }
 
     /// The sung part of the word and the halo it casts.
@@ -246,8 +260,9 @@ struct KaraokeWordView: View {
         let lit = Text(self.text).foregroundStyle(self.color)
 
         if self.fill >= 1 {
-            // Fully sung: there is nothing left to mask and no edge left to glow, so the
-            // word costs a single text layer instead of three.
+            // Fully sung: there is nothing left to mask and the glow has already faded to
+            // nothing by the time a word completes, so the word costs a single text layer
+            // instead of three — and dropping the others changes no pixel.
             lit
         } else {
             let sung = lit.mask { self.fillMask }
@@ -256,18 +271,13 @@ struct KaraokeWordView: View {
                 ZStack {
                     sung
                         .blur(radius: self.fontSize * 0.16)
-                        .opacity(0.5 * self.emphasis * self.glowFade)
+                        .opacity(0.5 * self.emphasis * self.glow)
                     sung
                 }
             } else {
                 sung
             }
         }
-    }
-
-    /// The halo eases in with the word instead of snapping on at its first pixel.
-    private var glowFade: Double {
-        min(1, max(self.fill, 0) * 3)
     }
 
     /// Alpha ramp whose edge sits at the word's fill position and whose feather leads

@@ -58,11 +58,36 @@ struct KaraokeWord: Equatable, Sendable {
         return rise * (1 - settle * 0.8)
     }
 
-    /// How much the word is emphasised at a playback position, 0...1.
+    /// Strength of the glow on the word being sung, 0...1.
     ///
-    /// The word being sung swells as it is sung and settles as it lands. The
-    /// envelope is measured in time rather than in fill, and both ends have zero
-    /// slope, so a short word does not snap to full size in its first frames.
+    /// The glow blooms in behind the leading edge and calms again as the word lands,
+    /// reaching **exactly zero** as the word completes. It used to be a function of the
+    /// fill, which meant it was still at full strength on the frame the word finished and
+    /// then vanished with it — a full-brightness halo disappearing in a single frame reads
+    /// as the word jumping smaller, and on the last word of a line that lands while the
+    /// line is scaling down, so the line looked like it jumped in place instead of easing
+    /// out.
+    ///
+    /// Both ends have zero slope and it ends with the word, so a word can be finished
+    /// without anything on it changing — which is also what keeps the frame a row settles
+    /// to identical to the one it was already showing.
+    func glowStrength(at timeMs: Double, riseMs: Double = 130, fadeMs: Double = 170) -> Double {
+        let elapsed = timeMs - self.fillStartMs
+        guard elapsed > 0 else { return 0 }
+        let remaining = self.durationMs - elapsed
+        guard remaining > 0 else { return 0 }
+
+        let rise = KaraokeFillModel.smoothstep(elapsed / min(riseMs, self.durationMs * 0.4))
+        let fade = KaraokeFillModel.smoothstep(remaining / min(fadeMs, self.durationMs * 0.5))
+        return rise * fade
+    }
+
+    /// How much the word being sung is lifted at a playback position, 0...1.
+    ///
+    /// The word rises as it is sung and settles as it lands. The envelope is measured in
+    /// time rather than in fill, and both ends have zero slope, so a short word does not
+    /// snap to full lift in its first frames. It is deliberately not a *size*: see the
+    /// renderer for why a word must not be scaled.
     func swell(at timeMs: Double, attackMs: Double = 130, releaseMs: Double = 170) -> Double {
         let elapsed = timeMs - self.fillStartMs
         guard elapsed > 0 else { return 0 }
@@ -145,35 +170,82 @@ enum KaraokeFillModel {
         }
     }
 
+    /// When a line stops being sung: the later of its declared end and the end of its last fill
+    /// ramp.
+    ///
+    /// The two can disagree. Providers are not obliged to give a duration, and a line with none
+    /// would otherwise stop being sung while its last word was still filling. This single
+    /// position answers both questions the display asks about a line that is finishing — is it
+    /// still on the display clock, and has the highlight moved on — so the two can never
+    /// disagree with each other either.
+    static func settleBoundaryMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
+        let declaredEnd = Double(line.timeInMs) + max(Double(line.duration), 0)
+        let contentEnd = self.words(for: line, timing: timing).map(\.fillEndMs).max() ?? 0
+        return max(declaredEnd, contentEnd)
+    }
+
+    /// Index of the line being sung at a playback position.
+    ///
+    /// This is the line that is *being sung*, not the line the sheet is scrolling towards: a
+    /// line stops being the one being sung when its own content is settled
+    /// (`settleBoundaryMs`) — just after its last word lands, and exactly then for a line whose
+    /// duration the provider never gave. Only at that point does the line that is leaving begin
+    /// to dim, shrink and recede, so a line reaches its sung state before it starts to go.
+    ///
+    /// It is deliberately not computed with `KaraokeTiming.scrollLookaheadMs`. That lead exists
+    /// so the *scroll* has the line in place before its first word is sung; letting it move the
+    /// highlight too meant a line began leaving up to 120 ms before it had finished being sung,
+    /// which is what made the line that had just finished look like it never settled.
+    ///
+    /// The declared rule is the cheap one — the last line that has started and has not run past
+    /// its own duration. Only a line whose fill overran that duration keeps the highlight, and
+    /// deciding that costs one comparison against that one line's fill windows. Because the
+    /// declared rule has already stepped past the earlier line, its declared end is behind us,
+    /// so testing against its content end is testing against `settleBoundaryMs`.
+    static func highlightIndex(
+        in lyrics: SyncedLyrics,
+        at timeMs: Int,
+        timing: KaraokeTiming = .standard
+    ) -> Int? {
+        guard let declared = lyrics.currentLineIndex(at: timeMs) else { return nil }
+        guard declared > 0 else { return declared }
+
+        let earlier = lyrics.lines[declared - 1]
+        let contentEnd = self.words(for: earlier, timing: timing).map(\.fillEndMs).max() ?? 0
+        return Double(timeMs) < contentEnd ? declared - 1 : declared
+    }
+
     /// Whether a lyric row should run on the display clock.
     ///
     /// Three rows run: the line being sung, the line after it (so its fill and swell are
-    /// already moving when the highlight arrives), and — briefly — the line that has just
-    /// finished.
+    /// already moving when the highlight arrives), and the line that has just finished, until
+    /// the clock is past `settleBoundaryMs`.
     ///
-    /// The trailing line is not about its own fill, which is complete either way. It is
-    /// about how a line *leaves*: a row that is not live renders a settled frame, and a row
-    /// that is live renders from the clock, which are two different subtrees. Switching
-    /// between them in the same update that changes the row's status replaces that subtree
-    /// mid-transition, and SwiftUI does not animate a subtree it replaces — which made the
-    /// line that had just finished snap down to its resting size instead of scaling down to
-    /// it, while the line arriving behind it, whose row stayed live throughout, animated
-    /// correctly.
+    /// That last window is not about the row's own fill, which is complete either way. It is
+    /// about the hand-off: a row that is not live renders one settled frame and stops, and the
+    /// departure of the line that has just been sung is Core Animation's from there on — a
+    /// frozen raster being scaled, dimmed and blurred, rather than a half-filled line being
+    /// re-drawn and re-rasterized every frame while it shrinks. The hand-off itself is a value
+    /// change inside an unchanged subtree (`KaraokeTimeSource` keeps one timeline and pauses
+    /// it), so which frame it lands on is no longer load-bearing; what it lands on is the frame
+    /// the row was already showing, because everything the fill does has finished by
+    /// `settleBoundaryMs`.
     ///
-    /// Keeping the row live until the clock is past the line's end makes the switch happen
-    /// when the two frames are pixel-identical (the fill is complete and the halo has
-    /// settled), so the swap is invisible and the scale-down is left to animate.
+    /// The line is taken lazily rather than as a precomputed end time: the words behind
+    /// `settleBoundaryMs` are only needed for the one row that has just finished — every
+    /// other row leaves through one of the index checks above — and deriving them for every
+    /// row of a sheet on every render is exactly the per-render cost this pipeline avoids.
     static func isLiveRow(
         lineIndex: Int,
         currentLineIndex: Int?,
-        lineEndMs: Double?,
+        line: SyncedLyricLine?,
         clockMs: Double,
         timing: KaraokeTiming = .standard
     ) -> Bool {
         guard let currentLineIndex else { return false }
         if lineIndex == currentLineIndex || lineIndex == currentLineIndex + 1 { return true }
-        guard lineIndex == currentLineIndex - 1, let lineEndMs else { return false }
-        return clockMs < lineEndMs + timing.trailingSettleMs
+        guard lineIndex == currentLineIndex - 1, let line else { return false }
+        return clockMs < self.settleBoundaryMs(for: line, timing: timing)
     }
 
     // MARK: - Word-timed lines

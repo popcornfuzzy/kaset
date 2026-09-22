@@ -108,13 +108,31 @@ words carry the same halo instead of the halo growing with the word.
 The halo is the **blurred image of the sung layer** — `masked.blur(radius:).opacity(…)`, blur applied
 *after* the mask — rather than a second blurred copy sharing the same mask. Blurring after masking
 lets the bloom spread past the word's own box and taper into the line, instead of ending on the edge
-of the text box; the halo also eases in with the word (`min(1, fill × 3)`) so it does not snap on at
-the word's first pixel.
+of the text box.
 
-The word being sung swells and lifts. That envelope is measured in **time** (`KaraokeWord.swell`,
-rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than in fill, so a short
-word no longer reaches full size within its first few frames — the original fill-indexed curve hit half
-its peak at 5% of a word's fill, which read as a pop rather than as an animation.
+The halo's strength is its own **time** envelope (`KaraokeWord.glowStrength`), rising over 130 ms and
+fading back to *exactly zero* over the last 170 ms of the word, with zero slope at both ends. It was
+originally a function of the fill (`min(1, fill × 3)`), which meant it was still at full strength on the
+frame the word finished and then vanished with the word's mask — a full-brightness halo disappearing
+in a single frame, measured at 1.08 where an ordinary frame of the same wipe is 0.03. Ending the
+envelope with the word means a finished word is a word nothing is happening to, which is also what
+lets the completed-word layer reduction above be invisible.
+
+The word being sung **lifts, and is never scaled**, by `fontSize × 0.02` at the peak — a fraction of a
+pixel at 16 pt, deliberately: it exists to keep the sung word from being perfectly static, not to be
+read as movement. The glow is what marks the word. (It was first written at `fontSize × 0.06`, which
+was visible enough to be distracting.) That envelope is likewise measured in time
+(`KaraokeWord.swell`, rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than
+in fill, so a short word no longer reaches full lift within its first few frames. Scaling a word was
+implemented first and reverted: SwiftUI rasterizes text at the scale it is asked for, so a scale driven
+frame by frame re-rasterizes the word's anti-aliasing on nearly every frame (measured steps of
+0.1–0.6 alternating, against 0.03 for the fill alone) and snaps hardest on the frame it returns to its
+resting size — a 1.05 step, the largest single-frame change in the whole animation. That frame lands
+40 ms before the line ends, in the middle of the line's own scale-down, and read as the word (and so
+the line) jumping in place. Scaling a *line* is fine because that animation is Core Animation's, not a
+per-frame redraw. A sub-pixel translation is a transform of an unchanged raster, so the lift steps
+cleanly; `emphasisLiftsRatherThanScales` pins it by asserting the word's ink covers exactly the same
+columns at full emphasis as at none.
 
 A line a provider timed only as a whole takes the other path in the same view (`lineSyncedText`): the
 whole line is one `Text` under the dim layer, the lit copy's opacity is its appear progress, and the
@@ -127,9 +145,11 @@ is carried as a layout value (so syllable runs stay glued), and a wrapped row st
 instead of inheriting the gap of its first word. Fill direction is per word: a right-to-left word fills
 from its trailing edge, so Arabic and Hebrew lyrics fill the way they read.
 
-`KaraokeTimeSource` decides per row whether it is live: the row is wrapped in a `TimelineView` when
-it is the line being sung **or the line after it**, and every other row renders a single static frame.
-Per-frame work is therefore two lines' worth of masking at most, not the whole lyric sheet.
+`KaraokeTimeSource` decides per row whether it is live: the line being sung, the line after it, and
+the line that has just finished until its content is settled run on the display clock; every other row
+is handed a settled position and its timeline is **paused in place** rather than removed. Per-frame work
+is therefore two lines' worth of masking at most, not the whole lyric sheet — see *A line that leaves*
+for why the settled rows keep their timeline instead of dropping it.
 
 Running the next line live is what makes a line change continuous: by the time a line becomes the
 current one its fill and swell have already been running since their own start, so it can never first
@@ -137,22 +157,75 @@ be seen part-way through its first word (which is what made the first word appea
 swell the moment the line changed). The line-level emphasis — opacity, scale, drift, and the fullscreen
 recede blur — still animates across the change on `AppAnimation.lyricLine`.
 
+### When the highlight moves
+
+The panel used to compute the rows' status from `currentLineIndex(at: timeMs + scrollLookaheadMs)` —
+the *same* 120 ms lead the auto-scroll uses. So the departing line began to dim, shrink and recede
+120 ms before its own content was settled: on a word-synced line its last word was still sweeping
+(typically 65–85 % of the way across), and on a line-synced line its halo was still decaying into its
+residue. A line that starts to leave while it is still being sung never reaches its sung state, which is
+exactly how the bug was reported.
+
+`KaraokeFillModel.highlightIndex(in:at:)` is the rule now: the line being sung is the last line that has
+started whose content has not settled. That is the cheap declared rule — the last line that has started
+and has not run past its own duration — plus one guard, for a line whose last word is still filling past
+its declared end. The guard costs one comparison against one line's fill windows, not a derivation over
+the sheet. `scrollLookaheadMs` now leads the *scroll* only: the sheet is put in place before the line's
+first word, and the highlight arrives when the line it is on is sung.
+
+The two are deliberately different instants, and the difference is a few tens of milliseconds either way:
+the incoming line's first word starts filling `attackLeadMs` before the outgoing line's declared end, so a
+highlight that moved only when the outgoing content settled would brighten the incoming line just after
+its fill had started. Erring that way is a line that is briefly dim while the first of it is being sung;
+erring the other way — how it was — is the line that is leaving, which is the one the eye is following.
+
 ### A line that leaves
 
-A row renders either from the display clock or from a settled frame, and those are two
-different subtrees. Switching between them **in the same update** that changes the row's status
-replaces that subtree mid-transition, and SwiftUI does not animate a subtree it replaces: the line
-that had just been sung snapped to its resting size instead of scaling down to it, while the line
-arriving behind it — whose row stayed live throughout — animated correctly. That asymmetry was the
-bug.
+A row renders either from the display clock or from a settled frame, and those are two different
+subtrees **if the row branches between them**. It used to:
 
-`KaraokeFillModel.isLiveRow` therefore keeps the finished line on the display clock until the clock
-is past the line's own end (plus `KaraokeTiming.trailingSettleMs`). At that point the settled frame
-and the live frame are pixel-identical — the fill is complete and the halo has settled — so the swap
-is invisible and the scale-down is left to animate on `AppAnimation.lyricLine`. The same rule fixes
-word-synced lines, whose last word used to jump to complete when the highlight moved on. It is
-covered by a unit test for the rule and a pixel test asserting the two frames are identical
-(`settledFrameIsPixelIdentical`).
+```swift
+if self.isLive {
+    TimelineView(.animation(minimumInterval: …)) { self.content(self.clock.advance(to: $0.date)) }
+} else {
+    self.content(KaraokeFillModel.staticTimeMs(for: self.status, words: self.words, line: self.line))
+}
+```
+
+An `if`/`else` in a `ViewBuilder` builds `_ConditionalContent`, so switching branches **replaces** the
+subtree — and SwiftUI does not animate a subtree it replaces. That switch happens in the same update
+that changes the row's status, which is the frame the line that has just been sung begins its
+departure: the row being replaced was the row being animated out.
+
+It was papered over by keeping the finished row on the display clock until the settled frame and the
+live frame were pixel-identical — `KaraokeFillModel.settleBoundaryMs` plus a trailing settle window
+(`KaraokeTiming.trailingSettleMs`, since removed). That made the replacement invisible but left two
+problems behind. *When* the swap landed was still at the mercy of the interpolated clock — on the frame
+of the status change if the clock had run ahead, mid-spring if it lagged, since the window was measured
+against the display clock while the change was driven by the poll — and for as long as it lasted the row
+went on redrawing a frozen fill inside a changing 5 % scale, and in fullscreen a changing blur.
+
+`KaraokeTimeSource` now keeps **one** `TimelineView` in both states and only pauses it:
+
+```swift
+TimelineView(.animation(minimumInterval: self.minimumFrameInterval, paused: !self.isLive)) { timeline in
+    self.content(self.position(at: timeline.date))
+}
+```
+
+The hand-off is a value change inside an unchanged subtree, so the frame it lands on no longer matters,
+and the row's content keeps its identity across it. That is asserted directly: `KaraokeRowHandoffTests`
+hosts the row's time source, hands it a `@State` value from inside its content — which outlives
+re-renders but not a replaced subtree — and fails if a second identity ever appears, as it does when the
+`if`/`else` is put back. The same test pins the other half: a live row is handed a new position every
+frame, and a settled row is handed its settled position exactly once and then draws nothing at all.
+
+Paused rather than removed is also what makes the departure Core Animation's. A line that has finished
+is a line nothing is happening to, so its scale, opacity, drift and blur animate a frozen raster instead
+of a per-frame redraw of scaled text — which is the same mechanism the word-level fix above was about,
+applied to the whole line. `isLiveRow` therefore ends its trailing window at `settleBoundaryMs` with no
+extra slack: the last frame the row draws is the frame it settles to (`settledFrameIsPixelIdentical`
+asserts the two are identical), which is also the frame the highlight moves on.
 
 ### Opening the sheet
 
@@ -171,8 +244,60 @@ every row's emphasis — which is what those animations looked like: choppy.
 
 `settleScroll(using:)` now owns all three: it reads the target from state, repeats an unanimated jump
 until the sheet has settled (a repeated jump is invisible, and it is idempotent), and holds
-`isSettling` while it does — during which scrolls jump instead of animating and the rows apply their
-emphasis without a spring. It runs when the view appears and again when the lyric sheet is replaced.
+`isSettling` while it does — during which scrolls jump instead of animating. It runs when the view
+appears and again when the lyric sheet is replaced, and it is bounded by **wall clock** rather than by
+iteration count, because the busy main thread this window exists for is exactly what stretches
+`Task.sleep`.
+
+#### The departing line still snapped, for a while
+
+For a long time the leaving line was reported to still snap in place, and three fixes were attempted at
+the wrong level. Two were decoration: the halo that popped off a completing word, and the word lift that
+re-rasterized as it returned to rest. Both were real defects, both are still fixed (`glowStrength` and
+lift-not-scale above), and neither was the one being described. The third was the panel's settling
+window, which suppressed the rows' emphasis spring while the sheet was being put in position —
+`.animation(isSettling ? nil : AppAnimation.lyricLine, value: status)`. That window is not short-lived
+(it restarts whenever the lyric sheet is replaced and it stretches with main-thread load, which is
+precisely when lines change), and inside it the departing line's scale, opacity and drift were applied
+with **no animation at all** while its words kept animating, because the fill is driven by the display
+clock rather than by an implicit animation. That asymmetry matched the report well enough to look
+right — and removing the gate was worth doing, since a line change must never be conditional — but it
+was not the cause either: the emphasis animation had been switched off to hide a pop-in, and the pop-in
+is better removed at its source (the sheet **seeds** `currentLineIndex`/`currentLineId` from the
+playback position it is handed, so its first frame already carries the right emphasis and there is no
+spring to suppress).
+
+What was actually wrong, in the end, was three things that no fix at the decoration level could reach:
+
+1. **The highlight moved 120 ms early**, because the rows' status was computed with the scroll lead
+   (see *When the highlight moves*), so the line was still being sung when it started to leave.
+2. **The row's hand-off replaced its subtree**, on the frame the departure began (see *A line that
+   leaves*), so the departure was applied to a subtree SwiftUI had just built.
+3. **The row kept redrawing during the departure**, because a finished line stayed on the display clock
+   for a trailing window that had no job left once the hand-off stopped being a replacement.
+
+Measuring any of that needed an instrument that can see an implicit animation, which nothing offscreen
+can: `ImageRenderer` draws one frame at model values and never runs a timeline. `LyricsEmphasisAnimationTests`
+hosts the real panel in a window, publishes playback positions at the 10 Hz the lyrics poll uses, pumps
+the run loop and reads the rendered pixels. Its line that leaves is deliberately wide — so its right edge
+is the widest ink on screen and its width can be followed frame by frame — and its last word fills late,
+so "was this line still being sung when it left?" is a question the pixels answer: the fraction of that
+row which is bright rather than at the dim base, measured on the frame before the departure is visible.
+
+The harness is honest about its own limit. Reading a frame out of a hosted `NSView` costs ~60 ms here
+(AppKit's offscreen caching path, not the drawing), so the trace runs at ~15 Hz however tightly the loop
+is written; the departure assertions are therefore shaped as "the change takes several sampled frames to
+arrive, and no single sample carries most of it" — which a change applied in one step cannot satisfy —
+rather than pretending to follow a 0.42 s spring at display rate. Both halves were checked by putting the
+old behaviour back: the emphasis lead fails the fully-sung assertion, and the `if`/`else` hand-off fails
+the identity assertion in `KaraokeRowHandoffTests`.
+
+Honest footnote on the seeding: in the harness the pop-in did *not* reproduce without it — SwiftUI
+appears to fold `onAppear`'s first highlight write into the commit that contains the sheet, so the
+frame measured already had the right emphasis either way. The seeding is therefore not a fix for a
+reproduced defect but the thing that makes the first frame correct *regardless* of when that write
+lands, which is what lets the animation be unconditional. It is cheap and it cannot be wrong; a pixel
+test was tried for it, passed with the seeding removed, and was deleted rather than kept as noise.
 
 ### Cost — what a frame is allowed to do
 
@@ -193,21 +318,28 @@ mask are dropped: the lit copy covers the base exactly, so most of a line is sin
 only the word actually being sung carries a mask and the halo blur.
 
 **Rows redraw at the rate they need** (`KaraokeFrameBudget`): the line being sung at 60 Hz; the line
-after it, and a finished line while it settles, at 30 Hz (nothing on either is moving — their
-transitions are Core Animation's, not redraws of their own); 10 Hz while the fullscreen player covers
-the panel, which is one frame per playback sample and keeps the clock correct without paying for
-frames nobody can see; and 20 Hz while playback is paused, where the fill is frozen and a frame only
-exists to take up a sample correction or a seek. Reduce Motion uses 20 Hz. A karaoke fill is slow — a
-few pixels a frame — so 60 Hz is already smoother than the motion needs; on a 120 Hz display, halving
-the rate is the single largest saving. The one row that must not be throttled is the bouncing pause
-dot, which is decorative motion that only exists while it is moving.
+after it at 30 Hz (nothing on it is moving — its transitions are Core Animation's, not redraws of its
+own); 10 Hz while the fullscreen player covers the panel, which is one frame per playback sample and
+keeps the clock correct without paying for frames nobody can see; and 20 Hz while playback is paused,
+where the fill is frozen and a frame only exists to take up a sample correction or a seek. Reduce Motion
+uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so 60 Hz is already smoother than the motion
+needs; on a 120 Hz display, halving the rate is the single largest saving. The one row that must not be
+throttled is the bouncing pause dot, which is decorative motion that only exists while it is moving.
+
+**A settled row draws nothing.** It is not merely throttled: its timeline is paused
+(`KaraokeTimeSource`), so it is handed its settled position once and then not drawn again until the
+highlight comes back for it. That is what the third defect above was — a departed line redrawing its
+frozen fill, scaled — and it is also the cheapest frame in the sheet, since a sheet is mostly lines that
+have already been sung.
 
 ### Line transitions, emphasis and Reduce Motion
 
 Line emphasis moves from `.easeInOut(0.4)` to `AppAnimation.lyricLine`, a crisp spring, with a small
 status-keyed drift so a line settles as it becomes current; fullscreen also blurs the lines around the
-one being sung. Auto-scroll follows playback 120 ms ahead of a line's own start, so the line is in
-place when its first word is sung.
+one being sung. The emphasis changes when the line being sung changes — that is, when the previous
+line's content is settled — while the *scroll* follows playback 120 ms ahead of a line's own start, so
+the line is in place when its first word is sung. The two leads are deliberately different; using the
+scroll's for the emphasis is what put the departure ahead of the singing.
 
 Reduce Motion (via the SwiftUI `accessibilityReduceMotion` environment, the reactive counterpart of
 the `NSWorkspace` check used elsewhere) keeps the fill — it is the information — and drops the
@@ -226,7 +358,10 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
   and zero again by its end), and the rendering is covered by offscreen pixel tests
   (`KaraokeLyricsRenderTests`) that assert fill position, dim-vs-sung alpha, edge feathering, a halo
   that blooms past the text box instead of being cut off at it, word gaps, and wrapping.
-- Only one line redraws per frame, and only while it is current.
+- A line that has finished is sung to the end of its own content *before* it starts to leave, and it
+  leaves on a frozen raster in a subtree that keeps its identity — the two halves of the hand-off are
+  covered by `KaraokeRowHandoffTests` and the panel-level `LyricsEmphasisAnimationTests`.
+- Only the rows the highlight needs redraw, and a settled row is paused rather than merely cheap.
 
 ### Negative
 
@@ -238,6 +373,13 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
   cost regresses past its (loose) budget.
 - **The clock is stateful and outside SwiftUI's model**: it must be reset on track change
   (`onChange(of: lyrics)`), and it must be fed on `isPlaying` changes as well as position samples.
+- **The highlight and the scroll are separate indices now** (`currentLineIndex`/`scrollLineId` on both
+  surfaces): the scroll leads playback and the emphasis does not. Collapsing them again would reintroduce
+  the early departure.
+- **The emphasis change is a few tens of milliseconds after the incoming line's first word starts
+  filling** (the incoming line is armed, so its fill is already running). Erred deliberately in that
+  direction: a line briefly dim at its first word is much less noticeable than a line that starts to
+  leave while it is still being sung.
 - **Provider timings are onsets**: the fill compensates with a fixed lead and tail rather than per-song
   calibration, so a badly timed provider still looks badly timed.
 - **Two lyric looks, by capability**: word-synced lyrics fill word by word, line-synced lyrics appear

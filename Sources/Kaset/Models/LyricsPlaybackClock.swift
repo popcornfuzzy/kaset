@@ -51,11 +51,12 @@ struct KaraokeTiming: Equatable, Sendable {
 
     /// How far ahead of a line's own start the auto-scroll starts following it, so
     /// the line is in place when its first word is sung.
+    ///
+    /// This leads the *scroll* only. The highlight moves when the line it is on is
+    /// settled (`KaraokeFillModel.highlightIndex`), never this much ahead of it:
+    /// a highlight that arrives early is a line that starts leaving while it is still
+    /// being sung.
     var scrollLookaheadMs: Double = 120
-
-    /// How long a line keeps running on the display clock after it stops being the
-    /// line being sung. See `KaraokeFillModel.isLiveRow` for why that is not zero.
-    var trailingSettleMs: Double = 150
 
     static let standard = KaraokeTiming()
 }

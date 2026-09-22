@@ -320,6 +320,46 @@ struct KaraokeFillModelTests {
         #expect(samples.allSatisfy { $0 >= 0 && $0 <= 1 })
     }
 
+    @Test("The glow is quiet at both ends of a word, so a finished word changes nothing")
+    func glowSettlesAtTheWordEnds() {
+        let span = KaraokeFillModel.words(for: Self.wordTimedLine())[0]
+        let middle = (span.fillStartMs + span.fillEndMs) / 2
+
+        // Nothing glows before the word, and nothing glows once it has landed — the
+        // envelope reaches zero at the word's own end rather than being cut off there.
+        #expect(span.glowStrength(at: span.fillStartMs) == 0)
+        #expect(span.glowStrength(at: span.fillStartMs - 500) == 0)
+        #expect(span.glowStrength(at: span.fillEndMs) == 0)
+        #expect(span.glowStrength(at: span.fillEndMs + 500) == 0)
+        #expect(span.glowStrength(at: middle) > 0.9)
+
+        // By the last frame before the word completes it is already dark: this is the
+        // difference between a glow that fades and a glow that is deleted with its word
+        // (a full-brightness halo vanishing in one frame is what read as a jump).
+        #expect(span.glowStrength(at: span.fillEndMs - 16.7) < 0.05)
+
+        let samples = stride(from: span.fillStartMs, through: span.fillEndMs, by: 5)
+            .map { span.glowStrength(at: $0) }
+        #expect(samples.allSatisfy { $0 >= 0 && $0 <= 1 })
+
+        // Fast enough to feel like a bloom, slow enough to be smooth at 60 Hz: no single
+        // frame of the envelope moves more than a fifth of its range.
+        let steps = zip(samples, samples.dropFirst()).map { abs($1 - $0) }
+        #expect((steps.max() ?? 0) < 0.2)
+
+        // Even the shortest word a provider can hand us gets a full bloom and a clean fade.
+        let brief = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 120,
+            text: "a b",
+            words: [TimedWord(timeInMs: 0, word: "a"), TimedWord(timeInMs: 60, word: " b")]
+        )
+        let short = KaraokeFillModel.words(for: brief)[0]
+        #expect(short.glowStrength(at: short.fillEndMs) == 0)
+        #expect(stride(from: short.fillStartMs, through: short.fillEndMs, by: 2)
+            .map { short.glowStrength(at: $0) }.max() ?? 0 > 0.9)
+    }
+
     @Test("A short word still has time to swell")
     func shortWordSwells() {
         let line = SyncedLyricLine(
@@ -357,37 +397,152 @@ struct KaraokeFillModelTests {
         #expect(KaraokeFillModel.staticTimeMs(for: .previous, line: gap) == 4000)
     }
 
-    @Test("A line that has just finished keeps running until the clock is past its end")
+    @Test("A line that has just finished draws until its own content is settled, and then stops")
     func trailingLineKeepsRunning() {
-        func isLive(_ lineIndex: Int, _ currentLineIndex: Int?, _ lineEndMs: Double?, _ clockMs: Double) -> Bool {
+        let finished = SyncedLyricLine(timeInMs: 8000, duration: 1000, text: "one two", words: nil)
+        let following = SyncedLyricLine(timeInMs: 11_000, duration: 1000, text: "later", words: nil)
+
+        func isLive(_ lineIndex: Int, _ currentLineIndex: Int?, _ line: SyncedLyricLine?, _ clockMs: Double) -> Bool {
             KaraokeFillModel.isLiveRow(
                 lineIndex: lineIndex,
                 currentLineIndex: currentLineIndex,
-                lineEndMs: lineEndMs,
+                line: line,
                 clockMs: clockMs
             )
         }
 
         // The line being sung and the line after it always run on the clock.
-        #expect(isLive(5, 5, 10_000, 0))
-        #expect(isLive(6, 5, 12_000, 0))
+        #expect(isLive(5, 5, finished, 0))
+        #expect(isLive(6, 5, following, 0))
 
-        // The line that just finished keeps running until the clock is past its end, so
-        // its switch to a settled frame lands on a frame that looks identical — the swap
-        // that follows its status change must not replace its subtree mid-transition (that
-        // is what made the line snap down instead of scaling down).
-        #expect(isLive(4, 5, 9_000, 8_500))
-        #expect(isLive(4, 5, 9_000, 9_100))
-        #expect(!isLive(4, 5, 9_000, 9_200))
+        // The line that just finished draws until the clock reaches the point where its content
+        // is settled — its declared end here — and stops there. That instant is the same one the
+        // highlight moves on (`highlightIndex`), so the row is already showing the frame it
+        // settles to, and the line's departure is Core Animation animating a frozen raster
+        // instead of a redraw of scaled text.
+        #expect(isLive(4, 5, finished, 8_500))
+        #expect(isLive(4, 5, finished, 8_999))
+        #expect(!isLive(4, 5, finished, 9_000))
 
         // Anything further back is settled, with no clock time involved at all.
-        #expect(!isLive(3, 5, 7_000, 8_500))
+        #expect(!isLive(3, 5, following, 8_500))
 
         // Before the first highlight is known, nothing runs.
-        #expect(!isLive(0, nil, 1_000, 0))
+        #expect(!isLive(0, nil, finished, 0))
 
-        // A line with no end time (a wordless gap) never lingers.
+        // A row with no line at all never lingers.
         #expect(!isLive(4, 5, nil, 0))
+    }
+
+    @Test("The highlight moves when a line has been sung, not a scroll lead before it")
+    func highlightAdvancesOnlyWhenTheLineIsSung() {
+        let first = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 2000,
+            text: "one two",
+            words: [TimedWord(timeInMs: 0, word: "one"), TimedWord(timeInMs: 1600, word: " two")]
+        )
+        let second = SyncedLyricLine(timeInMs: 2000, duration: 2000, text: "next line", words: nil)
+        let lyrics = SyncedLyrics(lines: [first, second], source: "HighlightTest")
+
+        // The panel used to compute this from `currentLineIndex(at: timeMs + scrollLookaheadMs)`,
+        // so the highlight — and with it the departing line's dim, shrink and recede — moved on
+        // 120 ms before the line had finished being sung. The last word of the line above fills
+        // until 1960 ms, so the old rule started leaving with it still sweeping.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1880) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1960) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1999) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 2000) == 1)
+
+        // Everything the departing line was still doing is done by then: its fill is complete
+        // and its time envelopes have run out, which is why the frame it settles to is the frame
+        // it was already showing.
+        let sung = KaraokeFillModel.words(for: first)
+        #expect(sung.allSatisfy { $0.fill(at: 2000) == 1 })
+        #expect(sung.allSatisfy { $0.glowStrength(at: 2000) == 0 && $0.swell(at: 2000) == 0 })
+
+        // And its row has stopped drawing on that same frame.
+        #expect(!KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: first, clockMs: 2000))
+    }
+
+    @Test("The highlight waits for a line whose words overran its declared end")
+    func highlightWaitsForAWordThatOverranItsLine() {
+        // A provider gave the line no duration at all. Such a line is sung for as long as its
+        // words say, so there is no declared end to step off — the only honest boundary is the
+        // end of its last fill ramp.
+        let undated = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 0,
+            text: "hold me",
+            words: [TimedWord(timeInMs: 0, word: "hold"), TimedWord(timeInMs: 900, word: " me")]
+        )
+        let next = SyncedLyricLine(timeInMs: 1000, duration: 2000, text: "next", words: nil)
+        let lyrics = SyncedLyrics(lines: [undated, next], source: "HighlightTest")
+
+        // The last word is still filling at 1280 ms, well past the point the declared rule has
+        // moved on, so the highlight stays with the line that is still being sung.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: undated) == 1280)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1100) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1279) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1280) == 1)
+    }
+
+    @Test("A line-synced line has settled before the highlight leaves it")
+    func lineSyncedLineSettlesBeforeTheHighlightMoves() {
+        let line = SyncedLyricLine(timeInMs: 0, duration: 2000, text: "a whole line", words: nil)
+        let next = SyncedLyricLine(timeInMs: 2000, duration: 2000, text: "next", words: nil)
+        let lyrics = SyncedLyrics(lines: [line, next], source: "HighlightTest")
+        let word = KaraokeFillModel.words(for: line)[0]
+
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 2000) == 1)
+
+        // Its appear ramp is finished and its halo has already decayed to the residue it holds
+        // for the rest of the line, so the settled frame is the frame it was showing.
+        #expect(word.appearProgress(at: 2000) == 1)
+        #expect(abs(word.haloStrength(at: 2000) - word.haloStrength(at: 5000)) < 0.001)
+    }
+
+    @Test("The scroll still leads playback, even though the highlight does not")
+    func scrollKeepsItsLookahead() {
+        let lyrics = SyncedLyrics(
+            lines: (0 ..< 3).map { index in
+                SyncedLyricLine(timeInMs: index * 2000, duration: 2000, text: "line \(index)", words: nil)
+            },
+            source: "HighlightTest"
+        )
+
+        // The highlight is still on the first line — it is being sung — while the scroll is
+        // already heading for the second, so the sheet is in place when the second line's first
+        // word starts. The two leads are deliberately different.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1900) == 0)
+        #expect(lyrics.currentLineIndex(at: 1900 + Int(KaraokeTiming.standard.scrollLookaheadMs)) == 1)
+    }
+
+    @Test("A finished line runs on until the later of its end and its last fill")
+    func trailingWindowCoversAWordStillFilling() {
+        // A provider gave the line no duration, but its last word is still filling at
+        // the declared end: the row must stay live until the fill lands, or the swap to
+        // a settled frame would show as the last word jumping to complete.
+        let undated = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 0,
+            text: "one two",
+            words: [TimedWord(timeInMs: 0, word: "one"), TimedWord(timeInMs: 900, word: " two")]
+        )
+        #expect(KaraokeFillModel.settleBoundaryMs(for: undated) == 1_280)
+
+        let live = KaraokeFillModel.isLiveRow(
+            lineIndex: 4,
+            currentLineIndex: 5,
+            line: undated,
+            clockMs: 1_300
+        )
+        #expect(!live)
+        #expect(KaraokeFillModel.isLiveRow(lineIndex: 4, currentLineIndex: 5, line: undated, clockMs: 1_279))
+
+        // A line whose declared end is the later of the two is unaffected.
+        let dated = SyncedLyricLine(timeInMs: 0, duration: 4000, text: "one two", words: nil)
+        #expect(KaraokeFillModel.settleBoundaryMs(for: dated) == 4000)
     }
 
     @Test("The redraw budgets buy smoothness where it can be seen and nowhere else")

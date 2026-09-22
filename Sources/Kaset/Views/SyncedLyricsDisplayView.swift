@@ -21,13 +21,21 @@ struct SyncedLyricsDisplayView: View {
     @State private var clock = LyricsPlaybackClock()
     /// Measured line layouts, kept across the sheet's re-renders.
     @State private var layoutCache = KaraokeLayoutCache()
+    /// The line being sung: what the rows' emphasis, the pause dots and the rows'
+    /// liveness are keyed to. It moves when the line it is on is settled, never
+    /// `scrollLookaheadMs` ahead of it (see `KaraokeFillModel.highlightIndex(in:at:)`).
     @State private var currentLineId: UUID?
     @State private var currentLineIndex: Int?
-    /// Whether the panel is still opening: its first paint (a whole lyric sheet) is the
-    /// most expensive frame of its life, and the sidebar is sliding in at the same time, so
-    /// during that window the sheet jumps instead of scrolling and applies the highlight
-    /// without a spring. Running either through that frame is what made opening the panel
-    /// look choppy, and sometimes land in the wrong place.
+    /// The line the sheet is scrolled to, which *does* lead playback by
+    /// `KaraokeTiming.scrollLookaheadMs` so the line is already in place when its first word
+    /// is sung. Kept apart from the highlight because the two want different times: the
+    /// scroll has to arrive early, the emphasis must not leave early.
+    @State private var scrollLineId: UUID?
+    /// Whether the panel is still putting itself in position: its first paint (a whole lyric
+    /// sheet) is the most expensive frame of its life, and the sidebar is sliding in at the
+    /// same time, so during that window the sheet *jumps* instead of scrolling. This is about
+    /// where the sheet is, never about how a line changes — it must not be allowed to gate the
+    /// rows' emphasis (see the initializer for why).
     @State private var isSettling = true
     /// Whether the user has manually scrolled (pauses auto-scroll).
     @State private var userIsScrolling = false
@@ -44,17 +52,51 @@ struct SyncedLyricsDisplayView: View {
     /// - Parameter animatesWhilePaused: the bouncing pause dot is decorative motion that
     ///   only exists while it is moving, so it keeps its rate when playback is paused.
     private func frameInterval(lineIndex: Int, animatesWhilePaused: Bool = false) -> Double? {
-        guard let currentLineIndex, self.isLive(lineIndex: lineIndex) else { return nil }
         // Covered by the fullscreen player: the clock still has to move so the highlight
         // is correct the moment it is visible again, but no one can see the frames.
         if self.isCovered { return KaraokeFrameBudget.covered }
         if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
         if !self.isPlaying, !animatesWhilePaused { return KaraokeFrameBudget.paused }
-        return lineIndex == currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
+        return lineIndex == self.currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
     }
 
     private var karaokeEmphasis: Double {
         self.reduceMotion ? 0 : self.emphasis
+    }
+
+    /// Seeds the sheet's highlight from the playback position, so its very first frame is
+    /// already the right one.
+    ///
+    /// The highlight used to be applied a frame after the sheet appeared, and that pop-in was
+    /// papered over by suppressing the rows' emphasis animation for as long as the panel's
+    /// settling task ran (`isSettling`). That window is long-lived — it restarts whenever the
+    /// lyric sheet is replaced and stretches while the main thread is busy, which is exactly
+    /// when a line changes — so a line change inside it had no animation at all. The departing
+    /// line's scale, opacity and drift were applied instantly while its words kept animating,
+    /// because the word fill is driven by the display clock rather than by an implicit
+    /// animation. Seeding the highlight removes the pop-in itself, so the emphasis animation
+    /// never has to be switched off and a line change always animates.
+    init(
+        lyrics: SyncedLyrics,
+        currentTimeMs: Int,
+        isPlaying: Bool,
+        emphasis: Double = 0.55,
+        isCovered: Bool = false,
+        onSeek: @escaping (Int) -> Void
+    ) {
+        self.lyrics = lyrics
+        self.currentTimeMs = currentTimeMs
+        self.isPlaying = isPlaying
+        self.emphasis = emphasis
+        self.isCovered = isCovered
+        self.onSeek = onSeek
+
+        let scrollIndex = lyrics.currentLineIndex(at: currentTimeMs + Int(KaraokeTiming.standard.scrollLookaheadMs))
+        _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
+
+        let highlightIndex = KaraokeFillModel.highlightIndex(in: lyrics, at: currentTimeMs)
+        _currentLineIndex = State(initialValue: highlightIndex)
+        _currentLineId = State(initialValue: highlightIndex.map { lyrics.lines[$0].id })
     }
 
     var body: some View {
@@ -76,7 +118,6 @@ struct SyncedLyricsDisplayView: View {
                                 SyncedPauseDotsLineView(
                                     dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: Int(displayTimeMs)),
                                     status: status,
-                                    isSettling: self.isSettling,
                                     minimumFrameInterval: self.frameInterval(lineIndex: index, animatesWhilePaused: true),
                                     onTap: { self.onSeek(line.timeInMs) }
                                 )
@@ -90,7 +131,6 @@ struct SyncedLyricsDisplayView: View {
                                 isLive: self.isLive(lineIndex: index),
                                 clock: self.clock,
                                 layoutCache: self.layoutCache,
-                                isSettling: self.isSettling,
                                 minimumFrameInterval: self.frameInterval(lineIndex: index),
                                 emphasis: self.karaokeEmphasis,
                                 onTap: { self.onSeek(line.timeInMs) }
@@ -192,13 +232,18 @@ struct SyncedLyricsDisplayView: View {
         self.isSettling = true
         defer { self.isSettling = false }
 
-        for _ in 0 ..< 6 {
+        // Bounded by wall clock, not by iteration count: a busy main thread (which is what
+        // this window exists for) stretches `Task.sleep`, so counting sleeps left the sheet
+        // jumping instead of scrolling for far longer than the frame it was meant to cover.
+        let deadline = Date().addingTimeInterval(0.6)
+        for _ in 0 ..< 10 {
             guard !Task.isCancelled, !self.userIsScrolling else { return }
             await Task.yield()
-            if let currentLineId = self.currentLineId {
-                proxy.scrollTo(currentLineId, anchor: .center)
+            if let scrollLineId = self.scrollLineId {
+                proxy.scrollTo(scrollLineId, anchor: .center)
             }
-            try? await Task.sleep(for: .milliseconds(80))
+            guard Date() < deadline else { return }
+            try? await Task.sleep(for: .milliseconds(70))
         }
     }
 
@@ -211,21 +256,23 @@ struct SyncedLyricsDisplayView: View {
         return KaraokeFillModel.isLiveRow(
             lineIndex: lineIndex,
             currentLineIndex: self.currentLineIndex,
-            lineEndMs: line.map { Double($0.timeInMs + max($0.duration, 0)) },
+            line: line,
             clockMs: self.clock.displayPositionMs
         )
     }
 
     private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) {
-        // Follow slightly ahead of the line's own start so the scroll lands with the
-        // first word instead of a poll interval after it.
+        self.updateHighlight(using: timeMs)
+
+        // The scroll follows slightly ahead of the line's own start so it lands with the
+        // first word instead of a poll interval after it. Only the scroll leads: see
+        // `updateHighlight` for why the emphasis must not.
         let lookahead = Int(KaraokeTiming.standard.scrollLookaheadMs)
-        guard let index = self.lyrics.currentLineIndex(at: timeMs + lookahead) else { return }
-        let id = self.lyrics.lines[index].id
-        self.currentLineIndex = index
-        let lineChanged = id != self.currentLineId
-        self.currentLineId = id
-        guard lineChanged, !self.userIsScrolling else { return }
+        guard let scrollIndex = self.lyrics.currentLineIndex(at: timeMs + lookahead) else { return }
+        let id = self.lyrics.lines[scrollIndex].id
+        let targetChanged = id != self.scrollLineId
+        self.scrollLineId = id
+        guard targetChanged, !self.userIsScrolling else { return }
         // While the panel is still opening, jump: an animated scroll competing with the
         // open animation and the sheet's first paint is what made it stutter.
         if animate, !self.isSettling {
@@ -235,11 +282,18 @@ struct SyncedLyricsDisplayView: View {
         }
     }
 
+    /// Moves the highlight onto the line being sung, which happens when the previous line's
+    /// content is settled rather than `scrollLookaheadMs` before that — a line that starts to
+    /// leave while it is still being sung never reaches its sung state, which is what the line
+    /// that had just finished was reported as doing.
+    private func updateHighlight(using timeMs: Int) {
+        guard let index = KaraokeFillModel.highlightIndex(in: self.lyrics, at: timeMs) else { return }
+        self.currentLineIndex = index
+        self.currentLineId = self.lyrics.lines[index].id
+    }
+
     private func scrollToCurrentLine(using proxy: ScrollViewProxy, animated: Bool) {
-        guard let index = self.currentLineIndex,
-              self.lyrics.lines.indices.contains(index)
-        else { return }
-        let id = self.lyrics.lines[index].id
+        guard let id = self.scrollLineId else { return }
         if animated {
             withAnimation(.easeInOut(duration: 0.42)) {
                 proxy.scrollTo(id, anchor: .center)
@@ -302,6 +356,21 @@ enum KaraokeFrameBudget {
 /// This is what keeps the karaoke animation affordable: past and far-off lines
 /// render a single static frame, so only the line being sung and the one after it
 /// redraw per display frame.
+///
+/// It is **one** `TimelineView` in both states, paused when the row is settled, and
+/// the two states differ only in which position that timeline hands the content.
+/// That is deliberate, and it is the whole point of the type: an `if isLive { … }
+/// else { … }` builds `_ConditionalContent`, and switching branches therefore
+/// *replaces* the subtree — SwiftUI does not animate a subtree it replaces. The
+/// hand-off happens in the same update that changes the row's status, in the middle
+/// of the line's departure, so a replacement there is what made the line that had
+/// just been sung look like it snapped instead of animating out. A value change
+/// inside an unchanged view cannot do that, whatever frame it lands on.
+///
+/// Pausing, rather than removing, the timeline is also what stops a settled row from
+/// redrawing: a line that has finished is a line nothing is happening to, and its
+/// departure (scale, opacity, drift, blur) is Core Animation's animation of a frozen
+/// raster rather than a per-frame redraw of scaled text.
 @available(macOS 26.0, *)
 struct KaraokeTimeSource<Content: View>: View {
     let line: SyncedLyricLine
@@ -309,7 +378,7 @@ struct KaraokeTimeSource<Content: View>: View {
     /// not have to derive them again and again.
     var words: [KaraokeWord] = []
     let status: SyncedLyrics.LineStatus
-    /// Whether this row is run by the display clock. The line being sung *and the
+    /// Whether this row runs on the display clock. The line being sung *and the
     /// line after it* are live, so by the time the highlight moves on, the next
     /// line's fill and swell are already running from their own start — a line can
     /// never first be seen part-way through its first word.
@@ -319,13 +388,19 @@ struct KaraokeTimeSource<Content: View>: View {
     @ViewBuilder let content: (Double) -> Content
 
     var body: some View {
-        if self.isLive {
-            TimelineView(.animation(minimumInterval: self.minimumFrameInterval)) { timeline in
-                self.content(self.clock.advance(to: timeline.date))
-            }
-        } else {
-            self.content(KaraokeFillModel.staticTimeMs(for: self.status, words: self.words, line: self.line))
+        TimelineView(.animation(minimumInterval: self.minimumFrameInterval, paused: !self.isLive)) { timeline in
+            self.content(self.position(at: timeline.date))
         }
+    }
+
+    /// The playback position to render at: the clock while the row is live, and the
+    /// settled frame — fully sung for a line that has finished, untouched for one that has
+    /// not started — once it is not.
+    private func position(at date: Date) -> Double {
+        guard self.isLive else {
+            return KaraokeFillModel.staticTimeMs(for: self.status, words: self.words, line: self.line)
+        }
+        return self.clock.advance(to: date)
     }
 }
 
@@ -335,9 +410,6 @@ struct KaraokeTimeSource<Content: View>: View {
 struct SyncedPauseDotsLineView: View {
     let dotStatuses: [SyncedLyrics.PauseDotStatus]
     let status: SyncedLyrics.LineStatus
-    /// Whether the panel is still opening, in which case the highlight is applied without
-    /// a spring rather than animating through the sheet's most expensive frame.
-    var isSettling: Bool = false
     /// The bouncing dot is the only thing here that redraws; it shares the karaoke
     /// frame budget rather than running at the display's refresh rate.
     var minimumFrameInterval: Double?
@@ -354,7 +426,7 @@ struct SyncedPauseDotsLineView: View {
         .opacity(self.lineOpacity(for: self.status))
         .scaleEffect(self.lineScale(for: self.status), anchor: .leading)
         .animation(.easeInOut(duration: 0.35), value: self.dotStatuses)
-        .animation(self.isSettling ? nil : AppAnimation.lyricLine, value: self.status)
+        .animation(AppAnimation.lyricLine, value: self.status)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
@@ -431,10 +503,6 @@ struct SyncedLineView: View {
     let clock: LyricsPlaybackClock
     /// Measured line layouts, so a re-render of the sheet never measures a line again.
     let layoutCache: KaraokeLayoutCache
-    /// Whether the panel is still opening: the line's emphasis is then applied without a
-    /// spring, because a spring running through the sheet's first paint is what made the
-    /// panel's opening look choppy and its scaling look like it jumped.
-    var isSettling: Bool = false
     let minimumFrameInterval: Double?
     let emphasis: Double
     let onTap: () -> Void
@@ -461,7 +529,10 @@ struct SyncedLineView: View {
         .scaleEffect(self.scale(for: self.status), anchor: .leading)
         .offset(y: self.drift(for: self.status))
         .padding(.vertical, 5)
-        .animation(self.isSettling ? nil : AppAnimation.lyricLine, value: self.status)
+        // Always animated, including the line that is leaving. A line change is the panel's
+        // most visible piece of motion and it must never be conditional — see the panel's
+        // initializer for the bug that a conditional here caused.
+        .animation(AppAnimation.lyricLine, value: self.status)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
