@@ -409,4 +409,78 @@ struct PlaylistDetailViewModelTests {
         // Should use original playlist title "Test Playlist" instead of "Unknown Playlist"
         #expect(self.viewModel.playlistDetail?.title == "Test Playlist")
     }
+
+    // MARK: - Artist Tests
+
+    @Test("Album tracks without bylines inherit the album's artists")
+    func albumTracksInheritAlbumArtists() async {
+        let artists = [
+            Artist(id: "UC-shakira", name: "Shakira"),
+            Artist(id: "UC-burna", name: "Burna Boy"),
+        ]
+        let album = Playlist(
+            id: "MPREb-dai-dai",
+            title: "Dai Dai",
+            description: nil,
+            thumbnailURL: URL(string: "https://example.com/album.jpg"),
+            trackCount: 2,
+            author: "Shakira, Burna Boy"
+        )
+        // Album pages list their tracks without a byline column, so these arrive artist-less.
+        let tracks = ["video-1", "video-2"].map { id in
+            Song(
+                id: id,
+                title: "Track \(id)",
+                artists: [],
+                duration: 200,
+                videoId: id
+            )
+        }
+        self.mockClient.playlistDetails["MPREb-dai-dai"] = PlaylistDetail(
+            playlist: album,
+            tracks: tracks,
+            duration: "7 minutes",
+            artists: artists
+        )
+
+        let viewModel = PlaylistDetailViewModel(playlist: album, client: self.mockClient)
+        viewModel.prefetchesFollowingPage = false
+        await viewModel.load()
+
+        let detail = viewModel.playlistDetail
+        #expect(detail?.artists.map(\.name) == ["Shakira", "Burna Boy"])
+        #expect(detail?.tracks.allSatisfy { $0.artists.map(\.id) == ["UC-shakira", "UC-burna"] } == true)
+        #expect(detail?.tracks.allSatisfy { $0.album?.id == "MPREb-dai-dai" } == true)
+    }
+
+    @Test("Playlist creator is not stamped onto every track")
+    func playlistCreatorIsNotStampedOntoTracks() async {
+        let playlist = Playlist(
+            id: "VL-test-playlist",
+            title: "Test Playlist",
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: 1,
+            author: "Rock Bands"
+        )
+        let creator = Artist(id: "UC-rock-bands", name: "Rock Bands")
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: playlist,
+            tracks: [
+                Song(
+                    id: "video-1",
+                    title: "Track 1",
+                    artists: [],
+                    duration: 200,
+                    videoId: "video-1"
+                ),
+            ],
+            artists: [creator]
+        )
+
+        await self.viewModel.load()
+
+        #expect(self.viewModel.playlistDetail?.artists == [creator])
+        #expect(self.viewModel.playlistDetail?.tracks.first?.artists.isEmpty == true)
+    }
 }

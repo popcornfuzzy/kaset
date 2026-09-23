@@ -170,11 +170,68 @@ final class PlaylistDetailViewModel {
             detail = PlaylistDetail(
                 playlist: mergedPlaylist,
                 tracks: detail.tracks,
-                duration: detail.duration
+                duration: detail.duration,
+                artists: detail.artists
             )
         }
 
-        return (detail: detail, hasMore: hasMore)
+        return (detail: self.fillingArtistsFromAlbum(detail), hasMore: hasMore)
+    }
+
+    /// Album pages list their tracks without bylines, so a row would show no artist even though the
+    /// album header credits them. Filling those rows keeps the artist visible in the list and gives
+    /// playback and the row menu (Go to Artist) the album's artists.
+    private func fillingArtistsFromAlbum(_ detail: PlaylistDetail) -> PlaylistDetail {
+        guard detail.isAlbum,
+              !detail.artists.isEmpty,
+              detail.tracks.contains(where: { $0.artists.isEmpty })
+        else {
+            return detail
+        }
+
+        let album = Album(
+            id: detail.id,
+            title: detail.title,
+            artists: detail.artists,
+            thumbnailURL: detail.thumbnailURL,
+            year: nil,
+            trackCount: detail.trackCount
+        )
+
+        let tracks = detail.tracks.map { song -> Song in
+            guard song.artists.isEmpty else { return song }
+
+            return Song(
+                id: song.id,
+                title: song.title,
+                artists: detail.artists,
+                album: song.album ?? album,
+                duration: song.duration,
+                thumbnailURL: song.thumbnailURL,
+                videoId: song.videoId,
+                hasVideo: song.hasVideo,
+                musicVideoType: song.musicVideoType,
+                likeStatus: song.likeStatus,
+                isInLibrary: song.isInLibrary,
+                feedbackTokens: song.feedbackTokens
+            )
+        }
+
+        let playlist = Playlist(
+            id: detail.id,
+            title: detail.title,
+            description: detail.description,
+            thumbnailURL: detail.thumbnailURL,
+            trackCount: detail.trackCount,
+            author: detail.author
+        )
+
+        return PlaylistDetail(
+            playlist: playlist,
+            tracks: tracks,
+            duration: detail.duration,
+            artists: detail.artists
+        )
     }
 
     /// Loads more tracks via continuation.
@@ -268,11 +325,12 @@ final class PlaylistDetailViewModel {
                 trackCount: preservedTrackCount,
                 author: currentDetail.author
             )
-            self.playlistDetail = PlaylistDetail(
+            self.playlistDetail = self.fillingArtistsFromAlbum(PlaylistDetail(
                 playlist: updatedPlaylist,
                 tracks: allTracks,
-                duration: currentDetail.duration
-            )
+                duration: currentDetail.duration,
+                artists: currentDetail.artists
+            ))
             self.hasMore = response.hasMore
 
             let loadedTrackCount = allTracks.count

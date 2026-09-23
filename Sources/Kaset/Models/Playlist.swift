@@ -79,6 +79,9 @@ struct PlaylistDetail: Identifiable {
     let trackCount: Int?
     let tracks: [Song]
     let duration: String?
+    /// Artists credited on the album, or the playlist's creators. Carries channel IDs when the
+    /// response exposed them, which is what makes the names navigable to artist pages.
+    let artists: [Artist]
 
     /// Whether this is an album (vs a playlist).
     /// Albums have IDs starting with "OLAK" or "MPRE".
@@ -86,7 +89,7 @@ struct PlaylistDetail: Identifiable {
         self.id.hasPrefix("OLAK") || self.id.hasPrefix("MPRE")
     }
 
-    init(playlist: Playlist, tracks: [Song], duration: String? = nil) {
+    init(playlist: Playlist, tracks: [Song], duration: String? = nil, artists: [Artist] = []) {
         self.id = playlist.id
         self.title = playlist.title
         self.description = playlist.description
@@ -95,6 +98,7 @@ struct PlaylistDetail: Identifiable {
         self.trackCount = playlist.trackCount
         self.tracks = tracks
         self.duration = duration
+        self.artists = artists
     }
 
     /// Track count to show in the UI, preferring the API-reported total over the loaded row count.

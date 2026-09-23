@@ -381,7 +381,175 @@ struct PlaylistParserTests {
         #expect(playlist == nil)
     }
 
+    // MARK: - Header Artists
+
+    @Test("Parse album artists from the header strapline")
+    func parseAlbumArtistsFromStrapline() {
+        let data = self.makeAlbumDetailData(
+            title: "Dai Dai",
+            straplineRuns: [
+                ["text": "Shakira", "navigationEndpoint": ["browseEndpoint": ["browseId": "UC-shakira"]]],
+                ["text": " & "],
+                ["text": "Burna Boy", "navigationEndpoint": ["browseEndpoint": ["browseId": "UC-burna"]]],
+            ]
+        )
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "MPREb_dai-dai")
+
+        #expect(response.detail.isAlbum)
+        #expect(response.detail.artists.map(\.name) == ["Shakira", "Burna Boy"])
+        #expect(response.detail.artists.map(\.id) == ["UC-shakira", "UC-burna"])
+        #expect(response.detail.artists.allSatisfy { $0.hasNavigableId })
+        #expect(response.detail.author == "Shakira, Burna Boy")
+    }
+
+    @Test("Parse album artist without a channel link is displayable but not navigable")
+    func parseAlbumArtistWithoutChannelLink() {
+        let data = self.makeAlbumDetailData(
+            title: "Dai Dai en español shakiraa",
+            straplineRuns: [["text": "AT Musica"]]
+        )
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "MPREb_karaoke")
+
+        #expect(response.detail.artists.map(\.name) == ["AT Musica"])
+        #expect(response.detail.artists.allSatisfy { !$0.hasNavigableId })
+        #expect(response.detail.author == "AT Musica")
+    }
+
+    @Test("Album page-type keywords never become artists")
+    func parseAlbumPageTypeKeywordIsNotAnArtist() {
+        let data = self.makeAlbumDetailData(title: "No Recess", straplineRuns: [])
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "MPREb_no-recess")
+
+        #expect(response.detail.artists.isEmpty)
+        // The subtitle is "Single • 2026", which describes the release, not a credited artist.
+        #expect(response.detail.author == nil)
+    }
+
+    @Test("Parse playlist creator from the facepile owner link")
+    func parsePlaylistCreatorFromFacepile() {
+        let data: [String: Any] = [
+            "contents": [
+                "twoColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicResponsiveHeaderRenderer": [
+                                            "title": ["runs": [["text": "Bleach"]]],
+                                            "subtitle": ["runs": [["text": "Playlist"], ["text": " • "], ["text": "2025"]]],
+                                            "secondSubtitle": ["runs": [["text": "13 tracks"], ["text": " • "], ["text": "43 minutes"]]],
+                                            "facepile": [
+                                                "avatarStackViewModel": [
+                                                    "text": ["content": "Rock Bands"],
+                                                    "rendererContext": [
+                                                        "commandContext": [
+                                                            "onTap": [
+                                                                "innertubeCommand": [
+                                                                    "browseEndpoint": ["browseId": "UC-rock-bands"],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                    "secondaryContents": [
+                        "sectionListRenderer": [
+                            "contents": [[
+                                "musicPlaylistShelfRenderer": [
+                                    "contents": [
+                                        [
+                                            "musicResponsiveListItemRenderer": [
+                                                "playlistItemData": ["videoId": "track-1"],
+                                                "flexColumns": [
+                                                    [
+                                                        "musicResponsiveListItemFlexColumnRenderer": [
+                                                            "text": ["runs": [["text": "Blew"]]],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ]],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "PLbleach")
+
+        #expect(!response.detail.isAlbum)
+        #expect(response.detail.author == "Rock Bands")
+        #expect(response.detail.artists.map(\.name) == ["Rock Bands"])
+        #expect(response.detail.artists.map(\.id) == ["UC-rock-bands"])
+        #expect(response.detail.artists.allSatisfy { $0.hasNavigableId })
+    }
+
     // MARK: - Helpers
+
+    /// Builds an album page shaped like the real API response: the header (with the artist
+    /// strapline) lives in the tab, the track shelf in `secondaryContents`.
+    private func makeAlbumDetailData(title: String, straplineRuns: [[String: Any]]) -> [String: Any] {
+        var headerRenderer: [String: Any] = [
+            "title": ["runs": [["text": title]]],
+            "subtitle": ["runs": [["text": "Single"], ["text": " • "], ["text": "2026"]]],
+            "secondSubtitle": ["runs": [["text": "1 song"], ["text": " • "], ["text": "3 minutes, 44 seconds"]]],
+        ]
+
+        if !straplineRuns.isEmpty {
+            headerRenderer["straplineTextOne"] = ["runs": straplineRuns]
+        }
+
+        return [
+            "contents": [
+                "twoColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [["musicResponsiveHeaderRenderer": headerRenderer]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                    "secondaryContents": [
+                        "sectionListRenderer": [
+                            "contents": [[
+                                "musicShelfRenderer": [
+                                    "contents": [
+                                        [
+                                            "musicResponsiveListItemRenderer": [
+                                                "playlistItemData": ["videoId": "album-track-1"],
+                                                "flexColumns": [
+                                                    [
+                                                        "musicResponsiveListItemFlexColumnRenderer": [
+                                                            "text": ["runs": [["text": title]]],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ]],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
 
     private func makeLibraryResponseData(playlistCount: Int) -> [String: Any] {
         var items: [[String: Any]] = []

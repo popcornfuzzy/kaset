@@ -13,6 +13,9 @@ enum PlaylistParser {
         var description: String?
         var thumbnailURL: URL?
         var author: String?
+        /// Artists credited on the album (from the header's artist strapline) or the playlist's
+        /// creators (from the facepile owner). Empty when the header exposed none.
+        var artists: [Artist] = []
         var trackCount: Int?
         var duration: String?
     }
@@ -444,7 +447,12 @@ enum PlaylistParser {
             author: header.author
         )
 
-        return PlaylistDetail(playlist: playlist, tracks: tracks, duration: header.duration)
+        return PlaylistDetail(
+            playlist: playlist,
+            tracks: tracks,
+            duration: header.duration,
+            artists: header.artists
+        )
     }
 
     /// Parses playlist detail from browse response with pagination support.
@@ -464,7 +472,12 @@ enum PlaylistParser {
             author: header.author
         )
 
-        let detail = PlaylistDetail(playlist: playlist, tracks: tracks, duration: header.duration)
+        let detail = PlaylistDetail(
+            playlist: playlist,
+            tracks: tracks,
+            duration: header.duration,
+            artists: header.artists
+        )
         let continuationToken = Self.extractPlaylistContinuationToken(from: data)
 
         Self.logger.debug("parsePlaylistWithContinuation: tracks=\(tracks.count), hasToken=\(continuationToken != nil)")
@@ -955,7 +968,67 @@ enum PlaylistParser {
             Self.applyResponsiveHeaderRenderer(from: responsiveHeaderRenderer, to: &header)
         }
 
+        // Credited artists are the most reliable author string: album headers carry them in the
+        // artist strapline (with channel links), while the subtitle only says "Album"/"Single".
+        if !header.artists.isEmpty {
+            header.author = header.artists.map(\.name).joined(separator: ", ")
+        }
+
         return header
+    }
+
+    /// Artists credited by a run list. Separator runs (" & ", " • ") and blanks are dropped, and
+    /// runs without a channel link keep a stable synthetic ID so they still render.
+    /// - Parameter includeUnlinked: Whether names without a browse endpoint count as artists.
+    ///   Strapline runs always are artists; subtitle runs may be page-type keywords like "Album".
+    private static func creditedArtists(
+        fromRuns runs: [[String: Any]],
+        includeUnlinked: Bool
+    ) -> [Artist] {
+        var artists: [Artist] = []
+
+        for run in runs {
+            guard let rawName = run["text"] as? String else { continue }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !Self.isArtistSeparator(name) else { continue }
+
+            let browseId = (run["navigationEndpoint"] as? [String: Any])
+                .flatMap { $0["browseEndpoint"] as? [String: Any] }
+                .flatMap { $0["browseId"] as? String }
+            guard let id = browseId ?? (includeUnlinked ? ParsingHelpers.stableId(title: "artist", components: name) : nil) else {
+                continue
+            }
+            guard !artists.contains(where: { $0.id == id }) else { continue }
+
+            artists.append(Artist(id: id, name: name))
+        }
+
+        return artists
+    }
+
+    /// Whether a run only separates artist names (e.g. " & ", " • " for a trailing comma in a list).
+    private static func isArtistSeparator(_ text: String) -> Bool {
+        ["•", "&", ",", "/", "·", "x", "+"].contains(text)
+    }
+
+    /// Turns a facepile owner into a run-like dictionary so the owner flows through the same
+    /// credited-artist path as header straplines. The owner's channel lives in the avatar stack's
+    /// tap command (`rendererContext.commandContext.onTap.innertubeCommand`).
+    private static func facepileOwnerRun(_ avatarStackViewModel: [String: Any], name: String) -> [String: Any] {
+        var run: [String: Any] = ["text": name]
+
+        let browseId = (avatarStackViewModel["rendererContext"] as? [String: Any])
+            .flatMap { $0["commandContext"] as? [String: Any] }
+            .flatMap { $0["onTap"] as? [String: Any] }
+            .flatMap { $0["innertubeCommand"] as? [String: Any] }
+            .flatMap { $0["browseEndpoint"] as? [String: Any] }
+            .flatMap { $0["browseId"] as? String }
+
+        if let browseId {
+            run["navigationEndpoint"] = ["browseEndpoint": ["browseId": browseId]]
+        }
+
+        return run
     }
 
     private static func applyDetailHeaderRenderer(from headerDict: [String: Any], to header: inout HeaderData) {
@@ -979,6 +1052,9 @@ enum PlaylistParser {
         {
             header.author = runs.compactMap { $0["text"] as? String }.first
             Self.applyMetadata(from: runs, to: &header)
+            if header.artists.isEmpty {
+                header.artists = Self.creditedArtists(fromRuns: runs, includeUnlinked: false)
+            }
         }
 
         if let secondSubtitleData = renderer["secondSubtitle"] as? [String: Any],
@@ -1138,20 +1214,43 @@ enum PlaylistParser {
             header.description = runs.compactMap { $0["text"] as? String }.joined()
         }
 
-        if header.author == nil,
-           let facepile = renderer["facepile"] as? [String: Any],
+        // Album pages credit their artists in the strapline, each run linking to the channel.
+        if let strapline = renderer["straplineTextOne"] as? [String: Any],
+           let runs = strapline["runs"] as? [[String: Any]]
+        {
+            let credited = Self.creditedArtists(fromRuns: runs, includeUnlinked: true)
+            if header.artists.isEmpty, !credited.isEmpty {
+                header.artists = credited
+            }
+        }
+
+        // Playlist pages credit the creator in the facepile: the name is the stack's text and the
+        // channel behind it is the avatar stack's tap command.
+        if let facepile = renderer["facepile"] as? [String: Any],
            let avatarStackViewModel = facepile["avatarStackViewModel"] as? [String: Any],
            let text = avatarStackViewModel["text"] as? [String: Any],
            let content = text["content"] as? String,
            !content.isEmpty
         {
-            header.author = content
+            if header.author == nil {
+                header.author = content
+            }
+
+            if header.artists.isEmpty {
+                header.artists = Self.creditedArtists(
+                    fromRuns: [Self.facepileOwnerRun(avatarStackViewModel, name: content)],
+                    includeUnlinked: false
+                )
+            }
         }
 
         if let subtitleData = renderer["subtitle"] as? [String: Any],
            let runs = subtitleData["runs"] as? [[String: Any]]
         {
             Self.applyMetadata(from: runs, to: &header)
+            if header.artists.isEmpty {
+                header.artists = Self.creditedArtists(fromRuns: runs, includeUnlinked: false)
+            }
         }
 
         if let secondSubtitleData = renderer["secondSubtitle"] as? [String: Any],

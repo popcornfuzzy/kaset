@@ -242,11 +242,7 @@ struct PlaylistDetailView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
-                if let author = detail.author {
-                    Text(author)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                self.creditsView(detail)
 
                 Spacer()
 
@@ -260,11 +256,53 @@ struct PlaylistDetailView: View {
         Album(
             id: detail.id,
             title: detail.title,
-            artists: detail.author.map { [Artist(id: "unknown", name: $0)] },
+            // Prefer the credited artists so queued songs keep their channel links.
+            artists: detail.artists.isEmpty
+                ? detail.author.map { [Artist(id: "unknown", name: $0)] }
+                : detail.artists,
             thumbnailURL: detail.thumbnailURL,
             year: nil,
             trackCount: detail.trackCount ?? detail.tracks.count
         )
+    }
+
+    /// The playlist's creators or the album's artists. Names that carry a channel ID link to that
+    /// artist's page; the rest (and the whole line when no links were exposed) stay plain text.
+    @ViewBuilder
+    private func creditsView(_ detail: PlaylistDetail) -> some View {
+        if detail.artists.isEmpty {
+            if let author = detail.author, !author.isEmpty {
+                Text(author)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            HStack(spacing: 0) {
+                ForEach(Array(detail.artists.enumerated()), id: \.element.id) { index, artist in
+                    if index > 0 {
+                        Text(verbatim: ", ")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    self.artistLink(artist)
+                }
+            }
+            .font(.subheadline)
+        }
+    }
+
+    @ViewBuilder
+    private func artistLink(_ artist: Artist) -> some View {
+        if artist.hasNavigableId {
+            NavigationLink(value: artist) {
+                Text(artist.name)
+                    .fontWeight(.semibold)
+            }
+            .buttonStyle(.link)
+        } else {
+            Text(artist.name)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func headerButtons(_ detail: PlaylistDetail) -> some View {

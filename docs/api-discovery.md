@@ -848,6 +848,32 @@ let more = try await request("browse", body: body)
 | `musicResponsiveListItemRenderer` | Song row |
 | `playlistPanelVideoRenderer` | Queue/playlist item |
 
+### Header Credits (Album Artists / Playlist Creators)
+
+Playlist and album detail pages credit people in two different places, and the **artist links live in
+neither `subtitle` nor `secondSubtitle`** — those only carry page-type keywords ("Album", "Single",
+"Playlist") plus year/counts:
+
+| Header | Where the people are | Shape |
+|--------|----------------------|-------|
+| Album (`musicResponsiveHeaderRenderer`) | `straplineTextOne.runs` | One run per artist with `navigationEndpoint.browseEndpoint.browseId` = `UC…`; separator runs like `" & "` sit between them. A run without an endpoint is a credit with no channel (e.g. a karaoke label). |
+| Playlist (`musicResponsiveHeaderRenderer`) | `facepile.avatarStackViewModel` | `text.content` is the creator's name; the channel is in `rendererContext.commandContext.onTap.innertubeCommand.browseEndpoint.browseId`. |
+
+```jsonc
+// Album header (verified against MPREb_2DfQTkeyE0f)
+"subtitle": { "runs": [{ "text": "Single" }, { "text": " • " }, { "text": "2026" }] },
+"straplineTextOne": {
+  "runs": [
+    { "text": "Shakira", "navigationEndpoint": { "browseEndpoint": { "browseId": "UCo6JijJGA3IvIiPsawDK3Ww" } } },
+    { "text": " & " },
+    { "text": "Burna Boy", "navigationEndpoint": { "browseEndpoint": { "browseId": "UCr61sufuLt7_eB7ak1bXHIg" } } }
+  ]
+}
+```
+
+`PlaylistParser` reads both into `PlaylistDetail.artists` (which is what makes the names clickable) and
+uses the credited names as the header author.
+
 ### Navigation Extraction
 
 ```swift
