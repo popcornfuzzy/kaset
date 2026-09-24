@@ -1,35 +1,31 @@
+// CoreGraphics for `CGFloat`: splitting a word's fill window between its characters is
+// deliberately weighted by their measured widths, so the timings depend on the type face and
+// size the renderer will draw with, even though the model measures nothing itself.
+import CoreGraphics
 import Foundation
 
-// MARK: - KaraokeWord
+// MARK: - KaraokeFillUnit
 
-/// One rendered word of a karaoke line: the text to draw plus the window over which
-/// it fills with colour.
+/// A unit of lyric text that fills over its own window: a word, or one character within a
+/// word.
 ///
-/// Words come from word timings when the provider supplies them. A line without
-/// word timings is split into words whose fill windows sweep the line in reading
-/// order, so line-synced lyrics get the same progressive wipe.
-struct KaraokeWord: Equatable, Sendable {
-    /// Index of the word within its line.
-    let index: Int
-    /// The word's text, without surrounding whitespace. Gaps between words are laid
-    /// out by the renderer, so a word never carries padding of its own.
-    let text: String
-    /// Whether this word starts a new word rather than continuing the previous one.
-    ///
-    /// Providers signal a word boundary with a leading space and write the syllables
-    /// of one word as separate runs without one, so this is what keeps a syllable
-    /// split word rendered as a single word.
-    let isNewWord: Bool
+/// The envelopes live here rather than on either type, because the two units are the same
+/// animation at two scales. A word's window is sliced into one window per character
+/// (`KaraokeFillModel.characters(for:weightedBy:)`), and each slice drives exactly the fill,
+/// glow and lift the word used to drive as a whole.
+protocol KaraokeFillUnit {
     /// Start of the fill ramp, in milliseconds.
-    let fillStartMs: Double
+    var fillStartMs: Double { get }
     /// End of the fill ramp, in milliseconds.
-    let fillEndMs: Double
+    var fillEndMs: Double { get }
+}
 
+extension KaraokeFillUnit {
     var durationMs: Double {
         max(1, self.fillEndMs - self.fillStartMs)
     }
 
-    /// How much of the word is filled at a playback position: 0 is untouched, 1 is
+    /// How much of the unit is filled at a playback position: 0 is untouched, 1 is
     /// fully sung.
     func fill(at timeMs: Double) -> Double {
         KaraokeFillModel.ease(clamped: (timeMs - self.fillStartMs) / self.durationMs)
@@ -58,17 +54,17 @@ struct KaraokeWord: Equatable, Sendable {
         return rise * (1 - settle * 0.8)
     }
 
-    /// Strength of the glow on the word being sung, 0...1.
+    /// Strength of the glow on the unit being sung, 0...1.
     ///
-    /// The glow blooms in behind the leading edge and calms again as the word lands,
-    /// reaching **exactly zero** as the word completes. It used to be a function of the
+    /// The glow blooms in behind the leading edge and calms again as the unit lands,
+    /// reaching **exactly zero** as it completes. It used to be a function of the
     /// fill, which meant it was still at full strength on the frame the word finished and
     /// then vanished with it — a full-brightness halo disappearing in a single frame reads
     /// as the word jumping smaller, and on the last word of a line that lands while the
     /// line is scaling down, so the line looked like it jumped in place instead of easing
     /// out.
     ///
-    /// Both ends have zero slope and it ends with the word, so a word can be finished
+    /// Both ends have zero slope and it ends with the unit, so a word can be finished
     /// without anything on it changing — which is also what keeps the frame a row settles
     /// to identical to the one it was already showing.
     func glowStrength(at timeMs: Double, riseMs: Double = 130, fadeMs: Double = 170) -> Double {
@@ -82,12 +78,12 @@ struct KaraokeWord: Equatable, Sendable {
         return rise * fade
     }
 
-    /// How much the word being sung is lifted at a playback position, 0...1.
+    /// How much the unit being sung is lifted at a playback position, 0...1.
     ///
-    /// The word rises as it is sung and settles as it lands. The envelope is measured in
-    /// time rather than in fill, and both ends have zero slope, so a short word does not
+    /// The unit rises as it is sung and settles as it lands. The envelope is measured in
+    /// time rather than in fill, and both ends have zero slope, so a short window does not
     /// snap to full lift in its first frames. It is deliberately not a *size*: see the
-    /// renderer for why a word must not be scaled.
+    /// renderer for why a unit must not be scaled.
     func swell(at timeMs: Double, attackMs: Double = 130, releaseMs: Double = 170) -> Double {
         let elapsed = timeMs - self.fillStartMs
         guard elapsed > 0 else { return 0 }
@@ -99,6 +95,53 @@ struct KaraokeWord: Equatable, Sendable {
             KaraokeFillModel.smoothstep(remaining / min(releaseMs, self.durationMs / 2))
         )
     }
+}
+
+// MARK: - KaraokeWord
+
+/// One rendered word of a karaoke line: the text to draw plus the window over which
+/// it fills with colour.
+///
+/// Words come from word timings when the provider supplies them. A line without
+/// word timings is split into words whose fill windows sweep the line in reading
+/// order, so line-synced lyrics get the same progressive wipe.
+struct KaraokeWord: Equatable, Sendable, KaraokeFillUnit {
+    /// Index of the word within its line.
+    let index: Int
+    /// The word's text, without surrounding whitespace. Gaps between words are laid
+    /// out by the renderer, so a word never carries padding of its own.
+    let text: String
+    /// Whether this word starts a new word rather than continuing the previous one.
+    ///
+    /// Providers signal a word boundary with a leading space and write the syllables
+    /// of one word as separate runs without one, so this is what keeps a syllable
+    /// split word rendered as a single word.
+    let isNewWord: Bool
+    /// Start of the fill ramp, in milliseconds.
+    let fillStartMs: Double
+    /// End of the fill ramp, in milliseconds.
+    let fillEndMs: Double
+}
+
+// MARK: - KaraokeCharacter
+
+/// One character of a karaoke word: the text to draw plus its own slice of the word's fill
+/// window.
+///
+/// The character is the unit that lifts. A word's emphasis used to be one translation of
+/// the whole word; slicing the word's window per character turns it into a wave that follows
+/// the fill edge, so the character being sung rises and settles while the ones around it stay
+/// at rest. The slices tile the word's window exactly, so the word still fills over exactly
+/// the interval it always did.
+struct KaraokeCharacter: Equatable, Sendable, KaraokeFillUnit {
+    /// Index of the character within its word.
+    let index: Int
+    /// One grapheme cluster of the word, as the renderer draws it.
+    let text: String
+    /// Start of this character's slice of the word's fill ramp, in milliseconds.
+    let fillStartMs: Double
+    /// End of this character's slice of the word's fill ramp, in milliseconds.
+    let fillEndMs: Double
 }
 
 // MARK: - KaraokeFillModel
@@ -138,6 +181,45 @@ enum KaraokeFillModel {
         let timedWords = (line.words ?? []).filter { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !timedWords.isEmpty else { return self.lineWord(for: line, timing: timing) }
         return self.timedWords(timedWords, line: line, timing: timing)
+    }
+
+    /// A word split into its characters, each handed the slice of the word's fill window that
+    /// matches the share of the word's width it occupies.
+    ///
+    /// The edge therefore crosses the word at the speed of the text it is crossing — a wide
+    /// `m` holds it for longer than a narrow `i` — while the word as a whole still fills over
+    /// exactly the interval it always did: the slices tile the word's window, so the first
+    /// character starts where the word starts and the last ends where the word ends.
+    ///
+    /// `widths` are the measured advances of the characters, in order; the model measures
+    /// nothing itself. Text whose widths are missing or all zero falls back to one equal share
+    /// per character, which tiles the same way.
+    static func characters(for word: KaraokeWord, weightedBy widths: [CGFloat]) -> [KaraokeCharacter] {
+        let characters = Array(word.text)
+        guard !characters.isEmpty else { return [] }
+
+        let total = widths.reduce(0, +)
+        let shares: [Double] = if widths.count == characters.count, total > 0 {
+            widths.map { Double($0 / total) }
+        } else {
+            Array(repeating: 1 / Double(characters.count), count: characters.count)
+        }
+
+        var offset = 0.0
+        return characters.enumerated().map { index, character in
+            let start = offset
+            offset += shares[index]
+            return KaraokeCharacter(
+                index: index,
+                text: String(character),
+                fillStartMs: word.fillStartMs + word.durationMs * start,
+                // The last slice ends where the word does, so a clamp inside `durationMs`
+                // cannot leave a sliver of the word unfilled at its end.
+                fillEndMs: index == characters.count - 1
+                    ? word.fillEndMs
+                    : word.fillStartMs + word.durationMs * offset
+            )
+        }
     }
 
     /// The playback position to render a line at when it is not the line being sung.

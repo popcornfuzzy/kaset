@@ -112,7 +112,13 @@ struct KaraokeLyricsRenderTests {
         #expect(Self.haloReach(withGlow: withGlow, withoutGlow: withoutGlow) > 4)
     }
 
-    @Test("The glow blooms past the word's box instead of being cut off at it")
+    /// The halo is the word's, and it blooms past the word's box instead of being cut off at it.
+    ///
+    /// This is also what catches a halo that is not there at all, which is what a per-character halo
+    /// amounts to: a character's slice of a word's window is a fraction of the 130 ms its own bloom
+    /// takes to rise, so the glow never gets going, and the only ink it has to blur is one glyph's
+    /// half-filled sliver.
+    @Test("The halo blooms past the word's box instead of being cut off at it")
     func glowIsNotClippedToTheWordBox() throws {
         let line = SyncedLyricLine(
             timeInMs: 0,
@@ -186,26 +192,448 @@ struct KaraokeLyricsRenderTests {
         #expect(Self.meanChannelDelta(atCompletion, afterCompletion) == 0)
     }
 
-    /// The emphasis on the word being sung must not resize its text.
+    /// The emphasis on the character being sung must not resize its text.
     ///
-    /// A scale is the obvious way to express "this word is lifting", and it is the wrong one:
-    /// SwiftUI re-rasterizes scaled text on every frame, so a scaled word steps and then snaps as
-    /// it settles. The lift is a translation, so the glyphs keep their raster — which shows up
-    /// here as the word's ink covering exactly the same columns at full emphasis as at none.
-    @Test("The word being sung lifts instead of resizing")
+    /// A scale is the obvious way to express "this character is lifting", and it is the wrong one:
+    /// SwiftUI re-rasterizes scaled text on every frame, so a scaled character steps and then snaps as
+    /// it settles. The lift is a translation, so the glyph keeps its raster: the character's own ink is
+    /// the same height with the emphasis on as with it off, and only sits higher.
+    ///
+    /// The character's *own* cell is what is measured, at the alpha a lit glyph reaches and a halo does
+    /// not — the fill mask cuts the glyph in different places with the emphasis on (a feathered edge)
+    /// and off (a hard one), so the word's ink as a whole is not comparable between the two.
+    @Test("The character being sung lifts instead of resizing")
     func emphasisLiftsRatherThanScales() throws {
-        let raised = try Self.renderWord(fill: 0.5, swell: 1, glow: 1)
-        let resting = try Self.renderWord(fill: 0.5, swell: 0, glow: 1)
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: "MMMM",
+            words: [TimedWord(timeInMs: 0, word: "MMMM")]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 100)
+        let characters = try #require(layout.characters.first)
+        // The peak of the second character's own swell: it is the character the fill edge is crossing,
+        // and it is at full lift there.
+        let peak = (characters[1].fillStartMs + characters[1].fillEndMs) / 2
+        let cell = Self.cell(1, of: layout)
 
-        let raisedInk = try #require(Self.inkColumnRange(of: raised))
-        let restingInk = try #require(Self.inkColumnRange(of: resting))
-        #expect(abs(raisedInk.lowerBound - restingInk.lowerBound) <= 1)
-        #expect(abs(raisedInk.upperBound - restingInk.upperBound) <= 1)
+        let raised = try #require(Self.litRows(try Self.renderWord(line: line, at: peak, fontSize: 100), columns: cell))
+        let resting = try #require(Self.litRows(try Self.renderWord(line: line, at: peak, fontSize: 100, emphasis: 0), columns: cell))
 
-        // The lift does move the word, so the emphasis is still doing something.
-        let raisedRows = try #require(Self.inkRowRange(of: raised))
-        let restingRows = try #require(Self.inkRowRange(of: resting))
-        #expect(raisedRows.lowerBound < restingRows.lowerBound)
+        // A scale would show up as a taller glyph; a translation leaves the ink the same height.
+        #expect(abs(raised.count - resting.count) <= 1, "the emphasis resized the character (\(raised.count) rows against \(resting.count))")
+
+        // And the lift does move it, so the emphasis is still doing something.
+        let raisedTop = try #require(raised.first)
+        let restingTop = try #require(resting.first)
+        #expect(raisedTop < restingTop, "the character being sung did not rise")
+    }
+
+    /// The lift is a wave that travels through a word, not one translation of the whole word.
+    ///
+    /// Each character owns a slice of its word's fill window, so the character the fill edge is
+    /// crossing is the one the emphasis is on: it rises while the characters behind and ahead of it
+    /// stay at rest. Nothing offscreen can see the emphasis move through a row, so this follows the
+    /// pixels instead — the six characters are the same glyph, which makes the top row of a band the
+    /// only thing that can differ, and the lifted band is the one that sits higher.
+    ///
+    /// A band's top row is read at the alpha a fully lit glyph reaches and a halo does not: at this
+    /// font size the halo around the character being sung blurs further than a band is inset, so its
+    /// faint ink would otherwise be what the neighbouring band found.
+    @Test("The lift travels across a word one character at a time")
+    func liftTravelsAcrossTheWord() throws {
+        let text = "MMMMMM"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 100)
+        let characters = try #require(layout.characters.first)
+        #expect(characters.count == 6)
+
+        /// The top of each character's glyph at the peak of one character's own swell — the moment
+        /// the emphasis is on that character, with the ones before it already settled (their windows
+        /// have closed by then) and the ones after it not yet moving.
+        func glyphTops(moving index: Int) throws -> [Int?] {
+            let peak = (characters[index].fillStartMs + characters[index].fillEndMs) / 2
+            #expect(characters[index].swell(at: peak) > 0.9, "the character under the edge was not at its peak")
+            #expect(characters[index - 1].swell(at: peak) == 0, "the character before the edge was still moving")
+
+            let view = KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: layout.characterWidths[0],
+                isRightToLeft: false,
+                displayTimeMs: peak,
+                color: .black,
+                fontSize: layout.fontSize
+            )
+            // The font the row draws with, applied the way the line view applies it: the character
+            // widths are measured in this font, so a band of columns is one character's own slot.
+            .font(.system(size: layout.fontSize, weight: .bold))
+            .frame(width: 800, height: 200, alignment: .topLeading)
+            // Room above the row for a character to rise into, so the test measures a lifted glyph
+            // rather than a clipped one.
+            .padding(.top, 40)
+            let rendered = try Self.draw(view)
+
+            var pen: CGFloat = 0
+            return layout.characterWidths[0].map { width in
+                let start = Int(pen) + 4
+                pen += width
+                return Self.topInkRow(
+                    of: rendered,
+                    columns: start ..< max(start + 1, Int(pen) - 4),
+                    above: Self.litAlpha
+                )
+            }
+        }
+
+        // With the third character under the edge, the first two are fully sung: two characters at
+        // rest are level, and the one being sung sits above them.
+        let thirdMoving = try glyphTops(moving: 3)
+        let atRest = try #require(thirdMoving[1])
+        #expect(thirdMoving[2] == atRest, "two characters at rest did not sit level")
+        let raised = try #require(thirdMoving[3], "the character being sung was not lit")
+        #expect(atRest - raised >= 1, "the lift was under a pixel at \(layout.fontSize)pt")
+
+        // And the characters the edge has not reached are dim rather than lit, so the only bands
+        // that can be lifted are the ones behind and under the edge.
+        #expect(thirdMoving[4] == nil, "a character the fill had not reached was drawn fully lit")
+
+        // The same character, one frame with the edge on it and one with the edge already past it:
+        // the wave has moved on, which a single translation of the whole word could never do.
+        let firstMoving = try glyphTops(moving: 1)
+        let wasLifted = try #require(firstMoving[1])
+        #expect(wasLifted < atRest, "the character the edge had left was still lifted")
+    }
+
+    /// A word's character cells are where the text draws its characters.
+    ///
+    /// This pins the regression that made every character behind the fill edge twitch each time the
+    /// edge crossed one. The cells used to be the differences between the *bounding* widths of the
+    /// text's prefixes, and a bounding width carries the side bearings of its first and last glyph, so
+    /// those differences are not the advances the drawn text uses: `Vava wavy` at 20 pt puts its cells
+    /// at 13.77, 23.66, 34.37 … while its glyphs are drawn at 12.52, 23.42, 34.05 … A word is drawn in
+    /// pieces for the lift now, on these cells, so a cell that is not where the glyph is means a piece
+    /// boundary that drags the text behind it.
+    @Test("A word's character cells are where the text draws its characters")
+    func characterCellsAreWhereTheTextDraws() throws {
+        for text in ["Vava wavy", "MMMMMM", "To together", "Aa"] {
+            let line = SyncedLyricLine(
+                timeInMs: 0,
+                duration: 1000,
+                text: text,
+                words: [TimedWord(timeInMs: 0, word: text)]
+            )
+            let layout = KaraokeLineLayout(line: line, fontSize: 20)
+            let characters = try #require(layout.characters.first)
+            let drawn = CTLineCreateWithAttributedString(
+                NSAttributedString(
+                    string: text,
+                    attributes: [.font: NSFont.systemFont(ofSize: 20, weight: .bold)]
+                )
+            )
+
+            var pen: CGFloat = 0
+            var offset = 0
+            for (index, character) in characters.enumerated() {
+                let start = CGFloat(CTLineGetOffsetForStringIndex(drawn, offset, nil))
+                #expect(abs(pen - start) < 0.05, "cell \(index) of `\(text)` sits at \(pen); the glyph is drawn at \(start)")
+                pen += layout.characterWidths[0][index]
+                offset += character.text.utf16.count
+            }
+
+            // And the cells add up to the width the word is drawn across, which is the width the flow
+            // layout reserved for it.
+            let advance = CGFloat(CTLineGetTypographicBounds(drawn, nil, nil, nil))
+            #expect(abs(pen - advance) < 0.05, "the cells of `\(text)` span \(pen) of \(advance)")
+            #expect(abs(layout.textWidths[0] - advance) < 0.05, "the word's box is \(layout.textWidths[0]) of \(advance)")
+        }
+    }
+
+    /// Only the character the fill edge is crossing moves.
+    ///
+    /// A character behind the edge has been sung and one ahead of it has not been reached: neither may
+    /// take a different shape while the wave crosses the word, which is what the cells and the pieces
+    /// are arranged to guarantee. Read at 100 pt, where a lift is several pixels, so a stray half-pixel
+    /// is not what is being measured.
+    ///
+    /// The characters just behind the edge are left out: the fill's leading edge is a feathered ramp
+    /// almost a cell wide, so the two characters nearest it are still being lit up. The sung
+    /// characters that *are* read are read at the alpha a lit glyph reaches and a halo does not, and the
+    /// unsung ones are read two cells clear of the halo the edge casts.
+    @Test("The characters at rest do not move while the fill edge crosses the word")
+    func theWaveMovesNothingElse() throws {
+        let text = "MMMMMMMMMM"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 100)
+        let characters = try #require(layout.characters.first)
+        let cells = characters.indices.map { Self.cell($0, of: layout) }
+
+        var sung = [[Double]](repeating: [], count: characters.count)
+        var unsung = [[Double]](repeating: [], count: characters.count)
+
+        for step in stride(from: -200.0, through: 1500.0, by: 20) {
+            let rendered = try Self.renderWord(line: line, at: step, fontSize: 100, width: 1200)
+            let moving = characters.lastIndex { $0.fill(at: step) > 0 }
+
+            /// Where a cell's ink sits, in columns: its alpha-weighted centre. A character that has moved
+            /// has a centre that has moved — the drift this pins is over a point at 20 pt and several at
+            /// 100 pt — while a faint halo lying over it leaves the centre where it was. The halo over a
+            /// sung character is the blurred image of the whole sung part of the word, so it is there in
+            /// every frame, and a threshold on its own would read the halo rather than the glyph.
+            func centre(of cell: Range<Int>, above: UInt8) -> Double? {
+                let cell = cell.clamped(to: 0 ..< rendered.width)
+                var total = 0.0
+                var weighted = 0.0
+                for x in cell {
+                    let peak = (0 ..< rendered.height)
+                        .map { y in Double(rendered.pixels[(y * rendered.width + x) * 4 + 3]) }
+                        .max() ?? 0
+                    guard peak > Double(above) else { continue }
+                    total += peak
+                    weighted += Double(x) * peak
+                }
+                return total > 0 ? weighted / total : nil
+            }
+
+            for index in characters.indices {
+                if characters[index].fill(at: step) >= 1, let moving, index <= moving - 3,
+                   let centre = centre(of: cells[index], above: Self.litAlpha)
+                {
+                    sung[index].append(centre)
+                }
+                if characters[index].fill(at: step) == 0, let moving, index >= moving + 2,
+                   let centre = centre(of: cells[index], above: 8)
+                {
+                    unsung[index].append(centre)
+                }
+            }
+        }
+
+        for index in characters.indices {
+            for (kind, centres) in [("sung", sung[index]), ("unsung", unsung[index])] {
+                guard let first = centres.first else { continue }
+                let moved = centres.map { abs($0 - first) }.max() ?? 0
+                #expect(moved < 0.5, "the \(kind) character at \(index) moved \(moved.formatted(.number.precision(.fractionLength(2)))) columns while the edge crossed the word")
+            }
+        }
+    }
+
+    /// Alpha a fully lit glyph reaches and the halo around one does not: the halo is drawn at half
+    /// opacity and blurred, so its ink is faint even where it is densest, while a lit glyph's core is
+    /// opaque. Reading a band at this threshold reads glyphs rather than glows.
+    private static let litAlpha: UInt8 = 170
+
+    /// One character moves at a time, and a word nothing is happening to is one layer.
+    ///
+    /// The structural half of the frame budget (`KaraokeLyricsPerformanceTests` prices it): the lift is
+    /// timed per character now, so "a settled word is one layer" is a property the code has to be held
+    /// to rather than one it can be trusted to keep by accident. A row is mostly settled words, and it is
+    /// those that set what a frame costs. A lift is `nil` exactly when nothing is moving, which is when
+    /// the word is drawn as one layer with no mask over it.
+    @Test("A word lifts one character at a time, and is one layer at rest")
+    func theLiftMovesOneCharacterAtATime() throws {
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: "MMM MM",
+            words: [TimedWord(timeInMs: 0, word: "MMM"), TimedWord(timeInMs: 600, word: " MM")]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 16)
+        #expect(layout.words.count == 2)
+
+        for index in layout.words.indices {
+            var liftedInOrder: [Int] = []
+            var atRest = 0
+
+            for step in stride(from: -400, through: 1800, by: 10) {
+                let word = KaraokeWordView(
+                    word: layout.words[index],
+                    characters: layout.characters[index],
+                    characterWidths: layout.characterWidths[index],
+                    isRightToLeft: false,
+                    displayTimeMs: Double(step),
+                    fontSize: layout.fontSize
+                )
+
+                guard let lift = word.lift else {
+                    atRest += 1
+                    continue
+                }
+
+                // One character, and only ever one, at a lift the font size can make room for.
+                #expect(lift.amount > 0 && lift.amount <= 1, "the lift was \(lift.amount) at \(step)ms")
+                // And it is a cell of this word: the mask can only cut a word where the word is drawn.
+                let start = word.cellStart(of: lift.index)
+                #expect(start >= -0.01, "the lifted cell of `\(layout.words[index].text)` started at \(start)")
+                #expect(
+                    start + layout.characterWidths[index][lift.index] <= layout.textWidths[index] + 0.01,
+                    "the lifted cell of `\(layout.words[index].text)` ran past its box"
+                )
+
+                if liftedInOrder.last != lift.index { liftedInOrder.append(lift.index) }
+            }
+
+            // Before the fill arrives and after the word has settled, the word is one layer.
+            #expect(atRest > 0)
+            // The wave crosses the word one character at a time, in reading order, and touches every
+            // character of it.
+            #expect(liftedInOrder == liftedInOrder.sorted(), "the wave went backwards through `\(layout.words[index].text)`")
+            #expect(Set(liftedInOrder) == Set(layout.characters[index].indices), "the wave skipped a character of `\(layout.words[index].text)`")
+        }
+    }
+
+    /// The two halves of the cut word cover it exactly: what the lift takes out of the word is drawn
+    /// again above it, and nothing is left behind.
+    ///
+    /// A mask placed against the wrong part of the word takes ink away with it, and the word loses a band
+    /// of itself on every frame the wave is on it — a hole the width of a character, which is what a mask
+    /// left centred instead of led to its cell does. Read with the dim base opaque, so the word's ink is
+    /// as bright as it gets and the only thing that can change it is the cut: the character being lifted
+    /// is the same glyph moved up by a pixel.
+    @Test("Cutting the word for the lift takes nothing out of it")
+    func theCutTakesNothingOutOfTheWord() throws {
+        let text = "MMMMMM"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 60)
+        let characters = try #require(layout.characters.first)
+
+        for index in 1 ..< characters.count - 1 {
+            // Each character's own peak: the wave is on it, and the ones around it are at rest.
+            let peak = (characters[index].fillStartMs + characters[index].fillEndMs) / 2
+            let cut = try Self.columnAlphas(of: Self.renderWord(line: line, at: peak, fontSize: 60, dimOpacity: 1))
+            let whole = try Self.columnAlphas(of: Self.renderWord(line: line, at: peak, fontSize: 60, emphasis: 0, dimOpacity: 1))
+
+            let cutInk = cut.reduce(0) { $0 + Int($1) }
+            let wholeInk = whole.reduce(0) { $0 + Int($1) }
+            #expect(
+                abs(cutInk - wholeInk) < wholeInk / 20,
+                "the cut took \(wholeInk - cutInk) of the word's \(wholeInk) ink at \(index)"
+            )
+
+            // And no band of the word goes missing: the widest gap in the cut word is a gap the word
+            // itself has.
+            #expect(
+                Self.longestGap(in: cut) <= Self.longestGap(in: whole) + 2,
+                "the cut left a gap of \(Self.longestGap(in: cut)) columns in the word at \(index)"
+            )
+
+            // No column of the word loses its ink either. The two halves of the cut have to meet: a
+            // half a pixel apart leaves a hairline of background through the word, which is invisible
+            // where the cut falls on the gap between two glyphs and is a bright stripe through a
+            // character where it does not.
+            for x in 1 ..< min(cut.count, whole.count) - 1 where whole[x - 1] > 200 && whole[x + 1] > 200 {
+                #expect(cut[x] > 120, "the cut left a hairline at column \(x) of the word at \(index)")
+            }
+        }
+    }
+
+    /// A right-to-left word is still drawn from the edge it is read from.
+    ///
+    /// A word's cells are measured in reading order and drawn from the edge the word is read from, so an
+    /// RTL word's first character is at the *right* of its box and the wave crosses it right to left.
+    /// Cutting a word into cells for the lift must not quietly turn that around: a Hebrew or Arabic word
+    /// cut left-to-right is a word whose character lifts somewhere the fill edge is not.
+    @Test("A right-to-left word draws its cells from its trailing edge")
+    func rightToLeftWordDrawsTrailingFirst() throws {
+        let text = "אבג"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let characters = try #require(layout.characters.first)
+        let widths = layout.characterWidths[0]
+        let box = layout.textWidths[0]
+        #expect(characters.map(\.text) == ["א", "ב", "ג"])
+
+        func word(isRightToLeft: Bool) -> KaraokeWordView {
+            KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: widths,
+                isRightToLeft: isRightToLeft,
+                displayTimeMs: 0,
+                color: .black,
+                fontSize: layout.fontSize
+            )
+        }
+
+        let leftToRight = word(isRightToLeft: false)
+        let rightToLeft = word(isRightToLeft: true)
+
+        // The character read first starts the box left to right and ends it right to left...
+        #expect(abs(leftToRight.cellStart(of: 0)) < 0.01)
+        #expect(abs(rightToLeft.cellStart(of: 0) - (box - widths[0])) < 0.01)
+
+        // ...and the one read last ends it the other way round. The two are the same cells, mirrored.
+        #expect(abs(leftToRight.cellStart(of: 2) - (widths[0] + widths[1])) < 0.01)
+        #expect(abs(rightToLeft.cellStart(of: 2)) < 0.01)
+
+        // So the lift is on the same character either way, and it is the character the fill edge is
+        // crossing when that is the middle one of the word.
+        for index in characters.indices {
+            let peak = (characters[index].fillStartMs + characters[index].fillEndMs) / 2
+            let lifted = KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: widths,
+                isRightToLeft: true,
+                displayTimeMs: peak,
+                color: .black,
+                fontSize: layout.fontSize
+            ).lift
+            #expect(lifted?.index == index, "the wave was on character \(String(describing: lifted?.index)) of the edge over \(index)")
+        }
+    }
+
+    /// A right-to-left word fills from its trailing edge, and is read the other way round only in how its
+    /// characters are ordered inside the box.
+    @Test("A right-to-left word fills from its trailing edge")
+    func rightToLeftWordFillsFromItsTrailingEdge() throws {
+        let text = "אבג"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1000,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+
+        /// Mean alpha of the inked columns in each half of the word's ink, which is which side of the word
+        /// the fill has reached.
+        func halves(_ columns: [UInt8]) -> (leading: Int, trailing: Int) {
+            let ink = columns.indices.filter { columns[$0] > 20 }
+            guard let first = ink.first, let last = ink.last, last > first else { return (0, 0) }
+            let middle = (first + last) / 2
+            func mean(_ range: ClosedRange<Int>) -> Int {
+                let values = range.map { Int(columns[$0]) }
+                return values.reduce(0, +) / max(1, values.count)
+            }
+            return (mean(first ... middle), mean((middle + 1) ... last))
+        }
+
+        // Half way through the word: the half the word is read from is the half that has been sung.
+        let rightToLeft = halves(Self.columnAlphas(of: try Self.renderWord(line: line, at: 500, fontSize: 60, isRightToLeft: true)))
+        let leftToRight = halves(Self.columnAlphas(of: try Self.renderWord(line: line, at: 500, fontSize: 60, isRightToLeft: false)))
+
+        #expect(rightToLeft.trailing > rightToLeft.leading + 40, "a right-to-left word filled towards its leading edge")
+        #expect(leftToRight.leading > leftToRight.trailing + 40, "a left-to-right word filled towards its trailing edge")
     }
 
     @Test("Words keep the spacing between them")
@@ -416,35 +844,70 @@ struct KaraokeLyricsRenderTests {
         return Double(total) / Double(a.pixels.count)
     }
 
-    /// Renders one word of a karaoke line on its own, so the emphasis can be driven with the
-    /// fill held still.
+    /// Renders the first word of a line on its own, in the font the row draws it with, at a playback
+    /// position — so a word's layers can be driven by the clock while the rest of the line is left out.
     private static func renderWord(
-        fill: Double,
-        swell: Double,
-        glow: Double,
+        line: SyncedLyricLine,
+        at displayTimeMs: Double,
+        fontSize: CGFloat,
         emphasis: Double = 1,
-        fontSize: CGFloat = 40
+        isRightToLeft: Bool = false,
+        dimOpacity: Double = 0.32,
+        width: CGFloat = 800
     ) throws -> RenderedImage {
-        let text = "MMMM"
-        let line = SyncedLyricLine(timeInMs: 0, duration: 1000, text: text, words: [TimedWord(timeInMs: 0, word: text)])
-        let width = KaraokeLineLayout(line: line, fontSize: fontSize).textWidths[0]
+        let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
         let view = KaraokeWordView(
-            text: text,
-            width: width,
-            fill: fill,
-            swell: swell,
-            glow: glow,
+            word: layout.words[0],
+            characters: try #require(layout.characters.first),
+            characterWidths: try #require(layout.characterWidths.first),
+            isRightToLeft: isRightToLeft,
+            displayTimeMs: displayTimeMs,
             color: .black,
-            dimOpacity: 0.32,
+            dimOpacity: dimOpacity,
             fontSize: fontSize,
             emphasis: emphasis
         )
-        .frame(width: 320, height: 70, alignment: .topLeading)
-        // Room above the word for it to lift into, so the test can see the lift rather
-        // than a clipped glyph.
-        .padding(.top, 30)
+        // The font the row draws with, applied the way the line view applies it: the character cells
+        // are measured in this font, so a cell of columns is one character's own slot.
+        .font(.system(size: fontSize, weight: .bold))
+        .frame(width: width, height: 220, alignment: .topLeading)
+        // Room above the word for a character to lift into, so a test sees a lifted glyph rather than
+        // a clipped one.
+        .padding(.top, 40)
 
         return try Self.draw(view)
+    }
+
+    /// The columns one character of a word is drawn in, inset so that a neighbouring glyph's overhang
+    /// or the ink the halo spreads into the neighbouring cell cannot be read as part of it.
+    private static func cell(_ index: Int, of layout: KaraokeLineLayout) -> Range<Int> {
+        var pen: CGFloat = 0
+        for width in layout.characterWidths[0].prefix(index) { pen += width }
+        let start = Int(pen) + 2
+        let end = Int(pen + layout.characterWidths[0][index]) - 2
+        return start ..< max(start + 1, end)
+    }
+
+    /// The rows of lit ink inside a range of columns: the alpha a fully lit glyph reaches and a halo
+    /// does not, so a glow is never what is measured.
+    private static func litRows(_ image: RenderedImage, columns: Range<Int>) -> [Int]? {
+        let columns = columns.clamped(to: 0 ..< image.width)
+        let rows = (0 ..< image.height).filter { y in
+            columns.contains { x in image.pixels[(y * image.width + x) * 4 + 3] > Self.litAlpha }
+        }
+        return rows.isEmpty ? nil : rows
+    }
+
+    /// The highest alpha in each column, which is how a rendered row is read as a profile: the
+    /// glyphs' ink, the halo around it, and where each of them stops.
+    private static func columnAlphas(of image: RenderedImage) -> [UInt8] {
+        var alphas = [UInt8](repeating: 0, count: image.width)
+        for x in 0 ..< image.width {
+            for y in 0 ..< image.height {
+                alphas[x] = max(alphas[x], image.pixels[(y * image.width + x) * 4 + 3])
+            }
+        }
+        return alphas
     }
 
     /// The columns (`x`) and rows (`y`) carrying ink.
@@ -462,6 +925,20 @@ struct KaraokeLyricsRenderTests {
         }
         guard let first = rows.first, let last = rows.last else { return nil }
         return first ... last
+    }
+
+    /// The topmost row carrying ink inside a range of columns, so one band of a rendered row can be
+    /// asked how high its glyph sits. `above` is how much alpha counts as ink — raised above the
+    /// faint end for a band measured around a glowing character, where the halo reaches further than
+    /// the band is inset.
+    private static func topInkRow(of image: RenderedImage, columns: Range<Int>, above: UInt8 = 8) -> Int? {
+        let columns = columns.clamped(to: 0 ..< image.width)
+        for y in 0 ..< image.height {
+            for x in columns where image.pixels[(y * image.width + x) * 4 + 3] > above {
+                return y
+            }
+        }
+        return nil
     }
 
     private struct RenderedImage {

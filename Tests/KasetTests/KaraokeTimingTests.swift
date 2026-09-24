@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import Kaset
@@ -573,6 +574,114 @@ struct KaraokeFillModelTests {
 
         let samples = stride(from: 0.0, through: 1.0, by: 0.05).map { KaraokeFillModel.ease(clamped: $0) }
         #expect(samples == samples.sorted())
+    }
+}
+
+// MARK: - KaraokeCharacterTests
+
+/// A word's fill window is split between its characters, and that split is what makes the
+/// emphasis a wave travelling through the word instead of one lift of the whole word.
+@Suite(.tags(.model))
+struct KaraokeCharacterTests {
+    /// One word-timed word and its characters, with the widths the renderer would have measured.
+    private static func word(text: String, widths: [CGFloat]) -> (KaraokeWord, [KaraokeCharacter]) {
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1500,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let word = KaraokeFillModel.words(for: line)[0]
+        return (word, KaraokeFillModel.characters(for: word, weightedBy: widths))
+    }
+
+    @Test("Characters tile their word's fill window, in proportion to their widths")
+    func charactersTileTheWordWindow() {
+        let (word, characters) = Self.word(text: "wide", widths: [40, 10, 20, 30])
+
+        #expect(characters.map(\.text) == ["w", "i", "d", "e"])
+
+        // The slices meet: the first starts with the word, each one begins where the last ended,
+        // and the last ends with the word. A word's fill is therefore unchanged by the split.
+        #expect(characters[0].fillStartMs == word.fillStartMs)
+        #expect(characters[1].fillStartMs == characters[0].fillEndMs)
+        #expect(characters[2].fillStartMs == characters[1].fillEndMs)
+        #expect(characters[3].fillEndMs == word.fillEndMs)
+        #expect(abs(characters.map(\.durationMs).reduce(0, +) - word.durationMs) < 0.001)
+
+        // A wide character holds the edge for longer than a narrow one, so the edge crosses the
+        // word at the speed of the text it is crossing.
+        #expect(abs(characters[0].durationMs / characters[1].durationMs - 4) < 0.01)
+        #expect(abs(characters[2].durationMs / characters[1].durationMs - 2) < 0.01)
+
+        // And the word reads as it did: nothing filled before it, everything filled once the word
+        // is sung.
+        #expect(characters.allSatisfy { $0.fill(at: word.fillStartMs) == 0 })
+        #expect(characters.allSatisfy { $0.fill(at: word.fillEndMs) == 1 })
+    }
+
+    @Test("The emphasis travels through a word one character at a time")
+    func emphasisTravelsCharacterByCharacter() {
+        let (word, characters) = Self.word(text: "four", widths: [20, 20, 20, 20])
+
+        // Each character owns its slice, so its lift is spent within that slice: it is not moving
+        // before its own window opens or after it closes, whatever the rest of the word is doing.
+        for character in characters {
+            #expect(character.swell(at: character.fillStartMs) == 0)
+            #expect(character.swell(at: character.fillEndMs) == 0)
+            #expect(character.swell(at: character.fillStartMs - 300) == 0)
+            #expect(character.swell(at: character.fillEndMs + 300) == 0)
+        }
+
+        // Every character takes its turn at the head of the wave, in reading order — which is what
+        // a lift of the whole word could never produce.
+        var lifted: [Int] = []
+        var current: Int?
+        for step in stride(from: word.fillStartMs, through: word.fillEndMs, by: 5) {
+            let atEdge = characters.firstIndex { $0.swell(at: step) > 0.5 }
+            if let atEdge, atEdge != current {
+                lifted.append(atEdge)
+                current = atEdge
+            }
+        }
+        #expect(lifted == Array(characters.indices))
+    }
+
+    @Test("A finished word has finished lifting, character by character")
+    func aFinishedWordHasSettledEveryCharacter() {
+        let (word, characters) = Self.word(text: "done", widths: [30, 30, 30, 30])
+
+        // Every slice's envelopes are spent by the word's own end, so the frame a row settles to
+        // has nothing moving on it. That is what lets a completed character drop its extra layers
+        // invisibly, and what makes the settled frame the frame the row was already showing.
+        #expect(characters.allSatisfy { $0.fill(at: word.fillEndMs) == 1 })
+        #expect(characters.allSatisfy { $0.swell(at: word.fillEndMs) == 0 })
+        #expect(characters.allSatisfy { $0.glowStrength(at: word.fillEndMs) == 0 })
+    }
+
+    @Test("A word with no measured widths still splits, into equal slices")
+    func charactersFallBackToEqualSlices() {
+        let (word, characters) = Self.word(text: "ab", widths: [])
+
+        #expect(characters.map(\.text) == ["a", "b"])
+        #expect(abs(characters[0].durationMs - characters[1].durationMs) < 0.001)
+        #expect(characters[0].fillStartMs == word.fillStartMs)
+        #expect(characters[1].fillEndMs == word.fillEndMs)
+    }
+
+    @Test("A character is a grapheme cluster, not a code point")
+    func charactersAreGraphemeClusters() {
+        let (_, characters) = Self.word(text: "a🎸", widths: [20, 20])
+
+        // A character that is written with several scalars must stay one character, or its lift
+        // would cut it in half.
+        #expect(characters.map(\.text) == ["a", "🎸"])
+    }
+
+    @Test("A word with no text has nothing to lift")
+    func aBlankWordHasNoCharacters() {
+        let word = KaraokeWord(index: 0, text: "", isNewWord: true, fillStartMs: 0, fillEndMs: 100)
+        #expect(KaraokeFillModel.characters(for: word, weightedBy: []).isEmpty)
     }
 }
 

@@ -79,13 +79,22 @@ runs without one (`PaxsenixProvider.normalizeWordSpacing`). That distinction is 
 `isNewWord`, so a syllable-split word still renders as one word while every word boundary keeps the
 spacing a text layout would give it.
 
+A word's window is then **sliced per character** (`KaraokeFillModel.characters(for:weightedBy:)`), in
+proportion to the measured advance of each character, because the character is the unit the **lift** is
+timed by: the character whose slice the edge is inside is the one that rises. The slices **tile** the word's window — the first starts where the word starts
+and the last ends where the word ends — so the word still fills over exactly the interval it always did,
+while the emphasis travels through it one character at a time. The model measures nothing itself: the
+widths are handed in by the renderer, which has already measured the word for the flow layout, and a
+word whose widths are missing falls back to equal slices. A character is one *grapheme cluster*, not one
+code point, so a character written with several scalars is never cut in half by its own lift.
+
 **Lines without word timings stay whole.** A line the provider timed only as a whole yields a single
 unit covering the line, because word timings are never invented: a line-synced lyric is sung as a
 line, so it is treated as a line. This is not negotiable in the model — distributing a line's duration
 across its words was implemented first and reverted, since evenly spaced word boundaries that come
 from nothing read as word-synced karaoke with the wrong timings.
 
-That unit drives an **appear** animation rather than a fill: `KaraokeWord.appearProgress` ramps the
+That unit drives an **appear** animation rather than a fill: `KaraokeFillUnit.appearProgress` ramps the
 line from dim to fully lit over ~200 ms from its own start, and then holds at 1 for the rest of the
 line. Line-synced lyrics are read while they are sung, so a line that brightened gradually across its
 own duration would be dim exactly when the listener needs to read it. The unit also carries the halo,
@@ -99,47 +108,91 @@ is what confines the live clock to one line.
 
 `Sources/Kaset/Views/SharedViews/KaraokeLyricsLineView.swift`
 
-Each word is drawn twice in a `ZStack`: the dim base layer, and a full-brightness copy masked by a
-linear-gradient alpha ramp whose edge sits at that word's fill fraction. The ramp **overshoots the
-glyphs by its feather**, so a fully sung word reaches full brightness exactly at its end while the head
-still leads the edge mid-word; the feather is a fixed distance (`0.7 × font size`), so short and long
-words carry the same halo instead of the halo growing with the word.
+A word is drawn as a dim base under a full-brightness copy masked by a linear-gradient alpha ramp whose
+edge sits at the **word's** own fill fraction and whose box is the word's measured width. The ramp
+**overshoots the glyphs by its feather**, so a fully sung word reaches full brightness exactly at its end
+while the head still leads the edge mid-word; the feather is a fixed distance (`0.7 × font size`). The
+character slices tile the word's window, so the edge is continuous across the word: the character at it is
+the one mid-ramp, and the characters behind it are complete. (The ramp is clamped to the word's box, and
+its feather to half of it, so a word too narrow for its own feather is not cut off.)
+
+The fill, the mask and the halo are the **word's**; the emphasis is the only thing sliced per character. A
+per-character halo was implemented first and read as *no* halo at all: a character's slice of a word's
+window is a fraction of the 130 ms its own bloom takes to rise and the 170 ms it takes to fade, so the
+bloom never gets going, and all it has to blur is one glyph's half-filled sliver.
+
+**A word's text is drawn as one run, cut by a mask — never a run per character.** The character being sung
+has to be drawn apart from the text around it, since a lift is a translation of a raster and no glyph in a
+text layer can move without being pulled out of that layer. Drawing the runs either side of it as their own
+`Text` layers is the obvious way to do that, and it is the wrong one: a text layer's origin snaps to a
+whole pixel, so every time the boundary between two runs crossed a character, all the text behind the
+boundary stepped by a pixel — measured as a **1.00 px jump of every character after the edge**, and back
+again when the wave moved on. (The cells the runs were placed on were the differences between the
+*bounding* widths of the text's prefixes, which carry the side bearings of their first and last glyph and
+so are not the advances the text is drawn at: even a run per cell jittered by more than a point.
+`characterCellsAreWhereTheTextDraws` pins the measurement against `CTLineGetOffsetForStringIndex`.)
+
+So the word is drawn as the **whole word's text in every layer**, at one origin, and the lift is a
+**mask over it**: the text with the character's cell cut out, and the same text masked to *only* that cell
+and offset by the lift. Nothing is repositioned when the wave moves — only the mask changes — so the
+characters at rest cannot move. `theWaveMovesNothingElse` reads the alpha-weighted centre of every
+character's cell across a whole sweep of the word and holds each to under half a pixel of drift, and
+`theCutTakesNothingOutOfTheWord` holds the two halves of the cut to covering the word exactly, which is
+what a mask placed against the wrong cell of it (an `overlay` centres a fixed-width child) took away.
+
+That costs the word's text drawn twice while a character is lifting, once per half, against three narrow
+runs before. Drawing each character as its own layer is what per-character emphasis costs if it is taken
+literally, and it measured **4.65 ms per frame against 1.24 ms** for the same line drawn per word — 3.75×,
+because a row is mostly *settled* words and their characters were the ones being paid for. Runs brought that
+to 1.55 ms and the mask cut measures **1.87 ms** on the same line: the extra third of a millisecond is what
+it costs for the characters at rest to stay exactly where the word draws them, and it is paid only by the
+one word the edge is inside. `theLiftMovesOneCharacterAtATime` pins the structure that keeps it there (one
+character lifted at a time, and a word at rest one layer) so the cost cannot creep back in by accident.
 
 The halo is the **blurred image of the sung layer** — `masked.blur(radius:).opacity(…)`, blur applied
 *after* the mask — rather than a second blurred copy sharing the same mask. Blurring after masking
 lets the bloom spread past the word's own box and taper into the line, instead of ending on the edge
 of the text box.
 
-The halo's strength is its own **time** envelope (`KaraokeWord.glowStrength`), rising over 130 ms and
+The halo's strength is its own **time** envelope (`KaraokeFillUnit.glowStrength`), rising over 130 ms and
 fading back to *exactly zero* over the last 170 ms of the word, with zero slope at both ends. It was
 originally a function of the fill (`min(1, fill × 3)`), which meant it was still at full strength on the
 frame the word finished and then vanished with the word's mask — a full-brightness halo disappearing
 in a single frame, measured at 1.08 where an ordinary frame of the same wipe is 0.03. Ending the
-envelope with the word means a finished word is a word nothing is happening to, which is also what
-lets the completed-word layer reduction above be invisible.
+envelope with the unit means a finished unit is a unit nothing is happening to, which is also what
+lets the completed-unit layer reduction above be invisible — a word whose ramp is over drops its mask and
+its halo.
 
-The word being sung **lifts, and is never scaled**, by `fontSize × 0.02` at the peak — a fraction of a
-pixel at 16 pt, deliberately: it exists to keep the sung word from being perfectly static, not to be
-read as movement. The glow is what marks the word. (It was first written at `fontSize × 0.06`, which
+The character being sung **lifts, and is never scaled**, by `fontSize × 0.02` at the peak — a fraction of
+a pixel at 16 pt, deliberately: it exists to keep the character being sung from being perfectly static,
+not to be read as movement. The glow is what marks it. (It was first written at `fontSize × 0.06`, which
 was visible enough to be distracting.) That envelope is likewise measured in time
-(`KaraokeWord.swell`, rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than
-in fill, so a short word no longer reaches full lift within its first few frames. Scaling a word was
+(`KaraokeFillUnit.swell`, rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than
+in fill, so a short window no longer reaches full lift within its first few frames. Scaling was
 implemented first and reverted: SwiftUI rasterizes text at the scale it is asked for, so a scale driven
-frame by frame re-rasterizes the word's anti-aliasing on nearly every frame (measured steps of
+frame by frame re-rasterizes the text's anti-aliasing on nearly every frame (measured steps of
 0.1–0.6 alternating, against 0.03 for the fill alone) and snaps hardest on the frame it returns to its
 resting size — a 1.05 step, the largest single-frame change in the whole animation. That frame lands
 40 ms before the line ends, in the middle of the line's own scale-down, and read as the word (and so
 the line) jumping in place. Scaling a *line* is fine because that animation is Core Animation's, not a
 per-frame redraw. A sub-pixel translation is a transform of an unchanged raster, so the lift steps
-cleanly; `emphasisLiftsRatherThanScales` pins it by asserting the word's ink covers exactly the same
-columns at full emphasis as at none.
+cleanly; `emphasisLiftsRatherThanScales` pins it by asserting that the character being sung covers the same
+rows of its own cell at full emphasis as it does with the emphasis off, and sits higher.
+
+The lift is also the reason the emphasis had to become per *character* rather than per word: a lift is a
+translation of a raster, so one glyph of a text layer cannot move without being pulled out of that layer
+and cut out of the text around it. The effect is small on purpose — a lift is there so the character under the edge is
+not perfectly static — but it is the wave that follows the fill edge, and `liftTravelsAcrossTheWord`
+follows it through the pixels: the same character is a pixel or two higher on the frame the edge is on it
+than on the frame the edge has passed it.
 
 A line a provider timed only as a whole takes the other path in the same view (`lineSyncedText`): the
 whole line is one `Text` under the dim layer, the lit copy's opacity is its appear progress, and the
 halo is that lit copy blurred. There is no fill mask, no word boundary, and no swell.
 
 Words are laid out by a small `Layout` (`KaraokeWordFlowLayout`) that wraps them at the container
-width and keeps each word its own view, which is what makes per-word masking possible. Greedy
+width and keeps each word its own view, which is what makes per-word masking possible — and, inside a
+word, the mask that cuts the character being sung out of the word's own text. Greedy
 first-fit wrapping mirrors what `Text` does with the same words as one string, the gap a word asks for
 is carried as a layout value (so syllable runs stay glued), and a wrapped row starts at the margin
 instead of inheriting the gap of its first word. Fill direction is per word: a right-to-left word fills
@@ -313,9 +366,9 @@ row therefore rebuilds for each of the 10 Hz playback samples. The cache is what
 dictionary lookup, and handing every frame the same `Equatable` layout is what lets SwiftUI skip a
 settled row's drawing entirely.
 
-**A fully sung word costs one layer, not three.** Once a word is complete its dim base and its fill
-mask are dropped: the lit copy covers the base exactly, so most of a line is single-layer words, and
-only the word actually being sung carries a mask and the halo blur.
+**A fully sung word costs one layer.** Once a word is complete its dim base, its fill mask and the cut for
+the lift are all dropped: the lit copy covers the base exactly, so most of a line is single-layer words,
+and only the word actually being sung carries a mask and the halo blur.
 
 **Rows redraw at the rate they need** (`KaraokeFrameBudget`): the line being sung at 60 Hz; the line
 after it at 30 Hz (nothing on it is moving — its transitions are Core Animation's, not redraws of its
@@ -357,7 +410,8 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
   (monotone, no jumps, frame-rate independent, snaps on seek, and a swell that is zero before a word
   and zero again by its end), and the rendering is covered by offscreen pixel tests
   (`KaraokeLyricsRenderTests`) that assert fill position, dim-vs-sung alpha, edge feathering, a halo
-  that blooms past the text box instead of being cut off at it, word gaps, and wrapping.
+  that blooms past the text box instead of being cut off at it, character cells landing where the text
+  draws them, the characters at rest not moving while the edge crosses the word, word gaps, and wrapping.
 - A line that has finished is sung to the end of its own content *before* it starts to leave, and it
   leaves on a frozen raster in a subtree that keeps its identity — the two halves of the hand-off are
   covered by `KaraokeRowHandoffTests` and the panel-level `LyricsEmphasisAnimationTests`.
@@ -365,9 +419,9 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
 
 ### Negative
 
-- **Per-frame cost is real, though bounded**: one animating line measures ~1.7 ms/frame in
+- **Per-frame cost is real, though bounded**: one animating line measures ~1.9 ms/frame in
   `KaraokeLyricsPerformanceTests` (construction, layout, masking, blur and rasterization into a bitmap
-  — the part the app does on the GPU), which is roughly 10% of one core per surface at 60 Hz plus ~4%
+  — the part the app does on the GPU), which is roughly 11% of one core per surface at 60 Hz plus ~3.5%
   for the armed line. It remains the most expensive per-frame work in the app, and the frame budgets
   and the measured-layout cache are what keep it from growing; the harness test fails if a frame's
   cost regresses past its (loose) budget.
