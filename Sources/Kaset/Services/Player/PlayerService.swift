@@ -221,6 +221,17 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether we're currently fetching more mix songs.
     var isFetchingMoreMixSongs: Bool = false
 
+    /// Tuning row the server supplied for the current automix queue.
+    /// Empty for queues the server does not tune (playlists, albums, local queues).
+    /// Managed by `setQueueTunerChips(_:)` / `markQueueTunerChipSelected(_:)`.
+    var queueTunerChips: [QueueTunerChip] = []
+
+    /// Identifier of the tuning currently applied to the queue, when the server offers a row.
+    var activeQueueTunerId: String?
+
+    /// Whether a tuning request is in flight; the tuning row disables itself meanwhile.
+    var isApplyingQueueTuner = false
+
     /// UserDefaults key for persisting queue display mode.
     static let queueDisplayModeKey = "kaset.queue.displayMode"
 

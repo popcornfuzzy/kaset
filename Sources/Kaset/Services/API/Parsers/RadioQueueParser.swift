@@ -7,6 +7,9 @@ struct RadioQueueResult {
     let songs: [Song]
     /// Continuation token for fetching more songs (infinite mix).
     let continuationToken: String?
+    /// Server-provided tuning row for automix queues. Empty for queues the server does not tune
+    /// (and for re-tuned responses, which omit the row).
+    var tunerChips: [QueueTunerChip] = []
 }
 
 // MARK: - RadioQueueParser
@@ -47,7 +50,8 @@ enum RadioQueueParser {
         }
 
         let songs = Self.parseSongs(from: playlistContents)
-        return RadioQueueResult(songs: songs, continuationToken: continuationToken)
+        let tunerChips = Self.parseTunerChips(from: musicQueueRenderer)
+        return RadioQueueResult(songs: songs, continuationToken: continuationToken, tunerChips: tunerChips)
     }
 
     /// Parses a continuation response for more queue items.
@@ -120,6 +124,83 @@ enum RadioQueueParser {
         }
 
         return songs
+    }
+
+    /// Parses the server-provided automix tuning row from `musicQueueRenderer`.
+    ///
+    /// Only chips that carry a complete tune request are kept, so the UI never renders an option
+    /// it cannot apply.
+    /// - Parameter musicQueueRenderer: The queue renderer from the "next" response.
+    /// - Returns: The tuning chips, in server order; empty when the queue has no tuning row.
+    static func parseTunerChips(from musicQueueRenderer: [String: Any]) -> [QueueTunerChip] {
+        guard let chipCloud = musicQueueRenderer["subHeaderChipCloud"] as? [String: Any],
+              let chipCloudRenderer = chipCloud["chipCloudRenderer"] as? [String: Any],
+              let chips = chipCloudRenderer["chips"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        return chips.compactMap { item -> QueueTunerChip? in
+            guard let chip = item["chipCloudChipRenderer"] as? [String: Any],
+                  let label = Self.parseTunerChipLabel(from: chip),
+                  let tuneRequest = Self.parseTunerChipRequest(from: chip)
+            else {
+                return nil
+            }
+
+            return QueueTunerChip(
+                id: Self.parseTunerChipId(from: chip, fallback: label),
+                label: label,
+                isSelected: chip["isSelected"] as? Bool ?? false,
+                playlistId: tuneRequest.playlistId,
+                params: tuneRequest.params
+            )
+        }
+    }
+
+    /// Parses the chip's visible label, falling back to its accessibility label.
+    private static func parseTunerChipLabel(from chip: [String: Any]) -> String? {
+        if let text = chip["text"] as? [String: Any],
+           let runs = text["runs"] as? [[String: Any]],
+           let label = runs.first?["text"] as? String,
+           !label.isEmpty
+        {
+            return label
+        }
+
+        guard let accessibility = chip["accessibilityData"] as? [String: Any],
+              let inner = accessibility["accessibilityData"] as? [String: Any],
+              let label = inner["label"] as? String,
+              !label.isEmpty
+        else {
+            return nil
+        }
+
+        return label
+    }
+
+    /// Parses the chip's server identifier, falling back to its label.
+    private static func parseTunerChipId(from chip: [String: Any], fallback: String) -> String {
+        guard let uniqueId = chip["uniqueId"] as? String, !uniqueId.isEmpty else {
+            return fallback
+        }
+
+        return uniqueId
+    }
+
+    /// Parses the tune request a chip issues (`queueUpdateCommand.fetchContentsCommand.watchEndpoint`).
+    private static func parseTunerChipRequest(from chip: [String: Any]) -> (playlistId: String, params: String?)? {
+        guard let navigationEndpoint = chip["navigationEndpoint"] as? [String: Any],
+              let queueUpdateCommand = navigationEndpoint["queueUpdateCommand"] as? [String: Any],
+              let fetchContentsCommand = queueUpdateCommand["fetchContentsCommand"] as? [String: Any],
+              let watchEndpoint = fetchContentsCommand["watchEndpoint"] as? [String: Any],
+              let playlistId = watchEndpoint["playlistId"] as? String,
+              !playlistId.isEmpty
+        else {
+            return nil
+        }
+
+        return (playlistId, watchEndpoint["params"] as? String)
     }
 
     /// Parses the song title from the panel video renderer.

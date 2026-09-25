@@ -255,8 +255,9 @@ protocol YTMusicClientProtocol: Sendable {
     func getSong(videoId: String) async throws -> Song
 
     /// Fetches a radio queue (similar songs) based on a video ID.
-    /// Returns an array of songs that form a "radio" playlist based on the seed track.
-    func getRadioQueue(videoId: String) async throws -> [Song]
+    /// - Returns: RadioQueueResult with songs, an infinite-radio continuation token, and the
+    ///   server's automix tuning row when the queue has one.
+    func getRadioQueue(videoId: String) async throws -> RadioQueueResult
 
     /// Fetches a mix queue from a playlist ID (e.g., artist mix "RDEM...").
     /// - Parameters:
@@ -264,6 +265,13 @@ protocol YTMusicClientProtocol: Sendable {
     ///   - startVideoId: Optional starting video ID
     /// - Returns: RadioQueueResult with songs and continuation token for infinite mix
     func getMixQueue(playlistId: String, startVideoId: String?) async throws -> RadioQueueResult
+
+    /// Fetches an automix queue re-tuned by one of the queue's `QueueTunerChip` options.
+    /// - Parameters:
+    ///   - playlistId: The tuned mix playlist ID from the chip.
+    ///   - params: The chip's opaque tuning params.
+    ///   - videoId: The video to seed the tuned mix from.
+    func getTunedMixQueue(playlistId: String, params: String?, videoId: String?) async throws -> RadioQueueResult
 
     /// Fetches more songs for a mix queue using a continuation token.
     /// - Parameter continuationToken: The continuation token from a previous getMixQueue call

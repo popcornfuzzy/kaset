@@ -9,6 +9,101 @@ extension PlayerService {
         return songs.filter { seenVideoIds.insert($0.videoId).inserted }
     }
 
+    // MARK: - Automix Tuning
+
+    /// Replaces the queue's tuning row with the chips the server sent for this queue.
+    /// - Parameter chips: The parsed `subHeaderChipCloud` chips, in server order.
+    func setQueueTunerChips(_ chips: [QueueTunerChip]) {
+        self.queueTunerChips = chips
+        self.activeQueueTunerId = chips.first(where: { $0.isSelected })?.id
+        if !chips.isEmpty {
+            self.logger.debug("Queue tuning row available with \(chips.count) chips")
+        }
+    }
+
+    /// Marks one chip as the active tuning while keeping the rest of the row.
+    ///
+    /// A re-tuned response does not repeat the chip row, so the row from the previous response is
+    /// kept and only the selection is moved.
+    /// - Parameter chipId: Identifier of the chip the user picked.
+    func markQueueTunerChipSelected(_ chipId: String) {
+        guard !self.queueTunerChips.isEmpty else { return }
+        self.queueTunerChips = self.queueTunerChips.map { $0.selecting($0.id == chipId) }
+        self.activeQueueTunerId = chipId
+    }
+
+    /// Re-tunes the current automix queue using one of the server's tuning chips.
+    ///
+    /// A tuned variant is a different mix playlist, so the upcoming songs are replaced while the
+    /// track that is playing keeps playing. The current track stays at the front of the queue so
+    /// "next" walks the newly tuned songs.
+    /// - Parameter chip: The chip the user selected.
+    func applyQueueTunerChip(_ chip: QueueTunerChip) async {
+        guard !chip.isSelected else { return }
+        guard !self.isApplyingQueueTuner else {
+            self.logger.debug("Ignoring tuning request while another is in flight")
+            return
+        }
+        guard let client = self.ytMusicClient else {
+            self.logger.warning("No YTMusicClient available for tuning the queue")
+            return
+        }
+
+        // Move the selection immediately so the tap feels instant. It is reverted if the tuning
+        // cannot be applied, so the row never claims a mix the queue is not playing.
+        let previousChips = self.queueTunerChips
+        self.markQueueTunerChipSelected(chip.id)
+
+        self.isApplyingQueueTuner = true
+        defer {
+            self.isApplyingQueueTuner = false
+        }
+
+        self.logger.info("Applying queue tuning '\(chip.label)'")
+
+        do {
+            let result = try await client.getTunedMixQueue(
+                playlistId: chip.playlistId,
+                params: chip.params,
+                videoId: self.currentTrack?.videoId
+            )
+
+            let tunedSongs = self.deduplicatedSongsByVideoId(result.songs)
+            guard !tunedSongs.isEmpty else {
+                self.setQueueTunerChips(previousChips)
+                self.logger.warning("Tuning '\(chip.label)' returned no songs; keeping the current queue")
+                return
+            }
+
+            // Replacing the upcoming songs is an undoable queue change, but it must not restart
+            // playback, so unlike `playWithMix` this does not touch the player.
+            self.clearForwardSkipNavigationStack()
+            self.recordQueueStateForUndo()
+
+            var newQueue = tunedSongs
+            if let current = self.currentTrack {
+                newQueue.removeAll { $0.videoId == current.videoId }
+                newQueue.insert(current, at: 0)
+            }
+
+            self.queue = newQueue
+            self.currentIndex = 0
+            self.mixContinuationToken = result.continuationToken
+
+            if result.tunerChips.isEmpty {
+                self.markQueueTunerChipSelected(chip.id)
+            } else {
+                self.setQueueTunerChips(result.tunerChips)
+            }
+
+            self.saveQueueForPersistence()
+            self.logger.info("Tuned queue '\(chip.label)' applied with \(newQueue.count) songs")
+        } catch {
+            self.setQueueTunerChips(previousChips)
+            self.logger.warning("Failed to apply queue tuning '\(chip.label)': \(error.localizedDescription)")
+        }
+    }
+
     /// At the end of an infinite mix queue, fetches the next batch and replaces the old queue.
     /// Returns true when playback was advanced to a new batch.
     func rolloverMixQueueAtEndIfNeeded() async -> Bool {
@@ -64,6 +159,7 @@ extension PlayerService {
         self.currentIndex = safeIndex
         // Clear mix continuation since this is not a mix queue
         self.mixContinuationToken = nil
+        self.setQueueTunerChips([])
         if let song = songs[safe: safeIndex] {
             await self.play(song: song)
         }
@@ -80,6 +176,7 @@ extension PlayerService {
 
         // Clear mix continuation since this is a song radio, not a mix
         self.mixContinuationToken = nil
+        self.setQueueTunerChips([])
 
         // Start with just this song in the queue
         self.queue = [song]
@@ -118,6 +215,7 @@ extension PlayerService {
 
             // Store continuation token for infinite mix
             self.mixContinuationToken = result.continuationToken
+            self.setQueueTunerChips(result.tunerChips)
 
             // Shuffle the queue to get a different order each time
             // YouTube's API returns a personalized but consistent order per session,
@@ -195,7 +293,8 @@ extension PlayerService {
         }
 
         do {
-            let radioSongs = try await client.getRadioQueue(videoId: videoId)
+            let radioResult = try await client.getRadioQueue(videoId: videoId)
+            let radioSongs = radioResult.songs
             guard !radioSongs.isEmpty else {
                 self.logger.info("No radio songs returned")
                 return
@@ -235,6 +334,7 @@ extension PlayerService {
             self.recordQueueStateForUndo()
             self.queue = newQueue
             self.currentIndex = 0
+            self.setQueueTunerChips(radioResult.tunerChips)
             self.logger.info("Radio queue updated with \(newQueue.count) songs (current song at front)")
             self.saveQueueForPersistence()
         } catch {
@@ -248,6 +348,7 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         self.mixContinuationToken = nil
+        self.setQueueTunerChips([])
         self.queue = []
         self.currentIndex = 0
         self.logger.info("Queue cleared entirely")
@@ -261,6 +362,7 @@ extension PlayerService {
         self.recordQueueStateForUndo()
         // Clear mix continuation since queue is being manually cleared
         self.mixContinuationToken = nil
+        self.setQueueTunerChips([])
 
         guard let currentTrack else {
             self.queue = []
