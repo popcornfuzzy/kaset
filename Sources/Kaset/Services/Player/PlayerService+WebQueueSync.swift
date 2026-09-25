@@ -329,7 +329,7 @@ extension PlayerService {
         }
 
         do {
-            let seededQueue = try await client.getRadioQueue(videoId: observedVideoId)
+            let seededQueue = try await client.getRadioQueue(videoId: observedVideoId).songs
 
             guard self.isYouTubeAutoplayActive,
                   self.youTubeAutoplaySeedVideoId == observedVideoId
@@ -359,6 +359,8 @@ extension PlayerService {
             self.currentTrack = self.queue[safe: syncedIndex] ?? autoplaySong
             self.pendingPlayVideoId = self.currentTrack?.videoId ?? observedVideoId
             self.mixContinuationToken = nil
+            // YouTube's own autoplay replaced the queue, so any automix tuning row no longer applies.
+            self.setQueueTunerChips([])
             self.saveQueueForPersistence()
             self.deactivateYouTubeAutoplayOutsideQueueState()
             self.logger.info("Synced seed-based autoplay queue with \(self.queue.count) songs")

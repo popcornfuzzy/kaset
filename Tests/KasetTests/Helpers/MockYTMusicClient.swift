@@ -68,7 +68,11 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     /// Per-episode latency, so tests can make one episode's transcript arrive after another's.
     var podcastTranscriptDelays: [String: Duration] = [:]
     var radioQueueSongs: [String: [Song]] = [:]
+    /// Tuning row returned alongside `radioQueueSongs`.
+    var radioQueueTunerChips: [QueueTunerChip] = []
     var mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
+    /// Result returned by `getTunedMixQueue`, keyed by the chip's playlist ID.
+    var tunedMixQueueResults: [String: RadioQueueResult] = [:]
     var mixQueueContinuationResults: [RadioQueueResult] = []
     var songResponses: [String: Song] = [:]
     var accountsListResponse: AccountsListResponse = .init(googleEmail: "test@gmail.com", accounts: [])
@@ -207,6 +211,10 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     private(set) var getRadioQueueCalled = false
     private(set) var getRadioQueueVideoIds: [String] = []
     private(set) var getMixQueueCalled = false
+    private(set) var getTunedMixQueueCalled = false
+    private(set) var getTunedMixQueuePlaylistIds: [String] = []
+    private(set) var getTunedMixQueueParams: [String?] = []
+    private(set) var getTunedMixQueueVideoIds: [String?] = []
     private(set) var getMixQueueContinuationCalled = false
     private(set) var getMixQueueContinuationTokens: [String] = []
     private(set) var moodCategoryCalled = false
@@ -858,17 +866,30 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         )
     }
 
-    func getRadioQueue(videoId: String) async throws -> [Song] {
+    func getRadioQueue(videoId: String) async throws -> RadioQueueResult {
         self.getRadioQueueCalled = true
         self.getRadioQueueVideoIds.append(videoId)
         if let error = shouldThrowError { throw error }
-        return self.radioQueueSongs[videoId] ?? []
+        return RadioQueueResult(
+            songs: self.radioQueueSongs[videoId] ?? [],
+            continuationToken: nil,
+            tunerChips: self.radioQueueTunerChips
+        )
     }
 
     func getMixQueue(playlistId _: String, startVideoId _: String?) async throws -> RadioQueueResult {
         self.getMixQueueCalled = true
         if let error = shouldThrowError { throw error }
         return self.mixQueueResult
+    }
+
+    func getTunedMixQueue(playlistId: String, params: String?, videoId: String?) async throws -> RadioQueueResult {
+        self.getTunedMixQueueCalled = true
+        self.getTunedMixQueuePlaylistIds.append(playlistId)
+        self.getTunedMixQueueParams.append(params)
+        self.getTunedMixQueueVideoIds.append(videoId)
+        if let error = shouldThrowError { throw error }
+        return self.tunedMixQueueResults[playlistId] ?? RadioQueueResult(songs: [], continuationToken: nil)
     }
 
     func getMixQueueContinuation(continuationToken: String) async throws -> RadioQueueResult {
@@ -980,9 +1001,15 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         self.getRadioQueueCalled = false
         self.getRadioQueueVideoIds = []
         self.getMixQueueCalled = false
+        self.getTunedMixQueueCalled = false
+        self.getTunedMixQueuePlaylistIds = []
+        self.getTunedMixQueueParams = []
+        self.getTunedMixQueueVideoIds = []
         self.getMixQueueContinuationCalled = false
         self.getMixQueueContinuationTokens = []
         self.mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
+        self.tunedMixQueueResults = [:]
+        self.radioQueueTunerChips = []
         self.mixQueueContinuationResults = []
         self.addToPlaylistEntries = []
         self.createPlaylistResult = nil

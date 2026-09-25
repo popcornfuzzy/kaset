@@ -131,12 +131,105 @@ struct RadioQueueParserTests {
         #expect(result.continuationToken == nil)
     }
 
+    // MARK: - Tuner Chip Tests
+
+    @Test("Parse radio queue without a tuning row exposes no chips")
+    func parseRadioQueueWithoutTunerChips() {
+        let data = Self.makeRadioQueueResponse(songCount: 2)
+        let result = RadioQueueParser.parse(from: data)
+
+        #expect(result.tunerChips.isEmpty)
+    }
+
+    @Test("Parse radio queue exposes tuning chips in server order")
+    func parseRadioQueueExposesTunerChips() {
+        let data = Self.makeRadioQueueResponse(
+            songCount: 1,
+            tunerChips: [
+                Self.makeTunerChip(
+                    label: "All",
+                    uniqueId: "All",
+                    selected: true,
+                    playlistId: "RDAMVMseed",
+                    params: "params-all"
+                ),
+                Self.makeTunerChip(
+                    label: "Deep cuts",
+                    uniqueId: "Deep cuts",
+                    selected: false,
+                    playlistId: "RDATdeep",
+                    params: "params-deep"
+                ),
+            ]
+        )
+
+        let result = RadioQueueParser.parse(from: data)
+
+        #expect(result.tunerChips.count == 2)
+        #expect(result.tunerChips[0].id == "All")
+        #expect(result.tunerChips[0].label == "All")
+        #expect(result.tunerChips[0].isSelected)
+        #expect(result.tunerChips[0].playlistId == "RDAMVMseed")
+        #expect(result.tunerChips[0].params == "params-all")
+        #expect(result.tunerChips[1].id == "Deep cuts")
+        #expect(!result.tunerChips[1].isSelected)
+        #expect(result.tunerChips[1].playlistId == "RDATdeep")
+    }
+
+    @Test("Parse radio queue drops chips that carry no tune request")
+    func parseRadioQueueDropsUntunableChips() {
+        // A chip without a queueUpdateCommand watch endpoint cannot be applied, so the UI must not
+        // offer it.
+        let untunableChip: [String: Any] = [
+            "text": ["runs": [["text": "Save"]]],
+            "uniqueId": "Save",
+            "isSelected": false,
+        ]
+        let tunableChip = Self.makeTunerChip(
+            label: "Discover",
+            uniqueId: "Discover",
+            selected: false,
+            playlistId: "RDATdiscover"
+        )
+
+        let data = Self.makeRadioQueueResponse(songCount: 1, tunerChips: [untunableChip, tunableChip])
+        let result = RadioQueueParser.parse(from: data)
+
+        #expect(result.tunerChips.count == 1)
+        #expect(result.tunerChips[0].label == "Discover")
+    }
+
+    @Test("Parse radio queue falls back to accessibility label and label id")
+    func parseRadioQueueFallsBackToAccessibilityLabel() {
+        // Some chip clouds omit `text`/`uniqueId`; the accessibility label is then the only label.
+        let chip: [String: Any] = [
+            "accessibilityData": ["accessibilityData": ["label": "Party"]],
+            "isSelected": false,
+            "navigationEndpoint": [
+                "queueUpdateCommand": [
+                    "fetchContentsCommand": [
+                        "watchEndpoint": ["playlistId": "RDATparty"],
+                    ],
+                ],
+            ],
+        ]
+
+        let data = Self.makeRadioQueueResponse(songCount: 1, tunerChips: [chip])
+        let result = RadioQueueParser.parse(from: data)
+
+        #expect(result.tunerChips.count == 1)
+        #expect(result.tunerChips[0].label == "Party")
+        #expect(result.tunerChips[0].id == "Party")
+        #expect(result.tunerChips[0].params == nil)
+    }
+
     // MARK: - Test Helpers
 
     /// Creates a mock radio queue response with the specified number of songs.
     private static func makeRadioQueueResponse(
         songCount: Int,
-        continuationToken: String? = nil
+        continuationToken: String? = nil,
+        tunerChips: [[String: Any]]? = nil
     ) -> [String: Any] {
         var playlistContents: [[String: Any]] = []
         for i in 0 ..< songCount {
@@ -157,6 +250,20 @@ struct RadioQueueParserTests {
             ]
         }
 
+        var musicQueueRenderer: [String: Any] = [
+            "content": [
+                "playlistPanelRenderer": playlistPanelRenderer,
+            ],
+        ]
+
+        if let tunerChips {
+            musicQueueRenderer["subHeaderChipCloud"] = [
+                "chipCloudRenderer": [
+                    "chips": tunerChips.map { ["chipCloudChipRenderer": $0] },
+                ],
+            ]
+        }
+
         return [
             "contents": [
                 "singleColumnMusicWatchNextResultsRenderer": [
@@ -166,11 +273,7 @@ struct RadioQueueParserTests {
                                 [
                                     "tabRenderer": [
                                         "content": [
-                                            "musicQueueRenderer": [
-                                                "content": [
-                                                    "playlistPanelRenderer": playlistPanelRenderer,
-                                                ],
-                                            ],
+                                            "musicQueueRenderer": musicQueueRenderer,
                                         ],
                                     ],
                                 ],
@@ -180,6 +283,37 @@ struct RadioQueueParserTests {
                 ],
             ],
         ]
+    }
+
+    /// Creates a tuning chip shaped like the ones YouTube Music sends in `subHeaderChipCloud`.
+    private static func makeTunerChip(
+        label: String,
+        uniqueId: String?,
+        selected: Bool,
+        playlistId: String,
+        params: String? = nil
+    ) -> [String: Any] {
+        var watchEndpoint: [String: Any] = ["playlistId": playlistId]
+        if let params {
+            watchEndpoint["params"] = params
+        }
+
+        var chip: [String: Any] = [
+            "text": ["runs": [["text": label]]],
+            "accessibilityData": ["accessibilityData": ["label": label]],
+            "isSelected": selected,
+            "navigationEndpoint": [
+                "queueUpdateCommand": [
+                    "queueUpdateSection": "QUEUE_UPDATE_SECTION_QUEUE",
+                    "fetchContentsCommand": ["watchEndpoint": watchEndpoint],
+                ],
+            ],
+        ]
+        if let uniqueId {
+            chip["uniqueId"] = uniqueId
+        }
+
+        return chip
     }
 
     /// Creates a minimal radio queue response with just videoId.

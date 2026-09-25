@@ -27,6 +27,22 @@ struct QueueView: View {
                 Divider()
                     .opacity(0.3)
 
+                // Automix tuning row, when the server offers tunings for the playing queue
+                if !self.playerService.queueTunerChips.isEmpty {
+                    QueueTunerChipsView(
+                        chips: self.playerService.queueTunerChips,
+                        isLoading: self.playerService.isApplyingQueueTuner,
+                        onSelect: { chip in
+                            Task {
+                                await self.playerService.applyQueueTunerChip(chip)
+                            }
+                        }
+                    )
+
+                    Divider()
+                        .opacity(0.3)
+                }
+
                 // Content
                 self.contentView
             }

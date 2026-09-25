@@ -509,6 +509,79 @@ let body: [String: Any] = [
 - `getSong(videoId:)` - Gets full song metadata with tokens
 - `getRadioQueue(videoId:)` - Gets radio mix (with `playlistId: "RDAMVM{videoId}"`)
 - `getMixQueue(playlistId:)` - Gets artist mix (with `playlistId: "RDEM..."`)
+- `getTunedMixQueue(playlistId:params:videoId:)` - Gets a re-tuned automix (a `QueueTunerChip`)
+
+##### Queue tuning row (automix filters)
+
+Automix queues carry a server-provided filter row — the same "All / Popular / Discover / Deep cuts /
+Party / genre" chips YouTube Music shows above its queue (the Android app words its own set
+differently, e.g. "Explore" / "Listen again"). The labels, the chip set, and the tuned playlists
+are all server data, so they must be rendered rather than hard-coded.
+
+**Path** (present for `RDAMVM…` automix queues, absent for playlists/albums and for re-tuned
+responses):
+```
+contents.singleColumnMusicWatchNextResultsRenderer.tabbedRenderer
+  .watchNextTabbedResultsRenderer.tabs[0].tabRenderer.content
+  .musicQueueRenderer.subHeaderChipCloud.chipCloudRenderer.chips[]
+    .chipCloudChipRenderer
+```
+
+`selectionBehavior` is `CHIP_CLOUD_SELECTION_BEHAVIOR_SINGLE_SELECT_ALWAYS_SELECTED`; exactly one
+chip per response has `isSelected: true`.
+
+**Chip shape** (verified 2026-09-25, signed out, `playlistId: "RDAMVMdQw4w9WgXcQ"`):
+```json
+{
+  "chipCloudChipRenderer": {
+    "text": { "runs": [{ "text": "Discover" }] },
+    "accessibilityData": { "accessibilityData": { "label": "Discover" } },
+    "uniqueId": "Discover",
+    "isSelected": false,
+    "navigationEndpoint": {
+      "queueUpdateCommand": {
+        "queueUpdateSection": "QUEUE_UPDATE_SECTION_QUEUE",
+        "fetchContentsCommand": {
+          "watchEndpoint": {
+            "playlistId": "RDATiXvdQw4w9WgXcQ",
+            "params": "ggU2Q2hKU1JFRlVhVmgyWkZGM05IYzVWMmRZWTFFWUN5SU9DZ2hFYVhOamIzWmxjaG9DWlc0JTNE"
+          }
+        },
+        "dedupeAgainstLocalQueue": true,
+        "syncMode": "QUEUE_UPDATE_SYNC_MODE_DEDUPE_AGAINST_LOCAL"
+      }
+    }
+  }
+}
+```
+
+Every chip carries its own tune request, including the selected default ("All" →
+`RDAMVM{videoId}`), so selecting "All" restores the untuned mix. Chips without a
+`queueUpdateCommand.fetchContentsCommand.watchEndpoint.playlistId` cannot be applied and are
+dropped by the parser.
+
+**Applying a chip** — re-issue `next` with the chip's `playlistId` and `params`, seeded by the
+playing video:
+```swift
+let body: [String: Any] = [
+    "videoId": "dQw4w9WgXcQ",
+    "playlistId": "RDATiXvdQw4w9WgXcQ",
+    "params": "ggU2Q2hKU1JFRlVhVmgyWkZGM05IYzVWMmRZWTFFWUN5SU9DZ2hFYVhOamIzWmxjaG9DWlc0JTNE",
+    "enablePersistentPlaylistPanel": true,
+    "isAudioOnly": true,
+    "tunerSettingValue": "AUTOMIX_SETTING_NORMAL"
+]
+```
+
+**Observed behaviour**:
+- The tuned queue is a different mix (`… Mix` → `… Mix • Discover`) with different songs, and it
+  still returns a `nextRadioContinuationData` continuation token.
+- The tuned response does **not** repeat `subHeaderChipCloud`, so the client keeps the row it
+already has and moves the selection to the tuned chip.
+- `tunerSettingValue` alone does not enable the row — the `RDAMVM…` playlist ID does.
+- Personalization requires auth; the signed-out probe returns generic results.
+
+**Parser**: `RadioQueueParser.parseTunerChips(from:)` → `RadioQueueResult.tunerChips`
 
 **Continuation (Infinite Mix)**:
 

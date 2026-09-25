@@ -1148,8 +1148,9 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Fetches a radio queue (similar songs) based on a video ID.
     /// Uses the "next" endpoint with a radio playlist ID (RDAMVM prefix).
     /// - Parameter videoId: The seed video ID to base the radio on
-    /// - Returns: An array of songs forming the radio queue
-    func getRadioQueue(videoId: String) async throws -> [Song] {
+    /// - Returns: RadioQueueResult with the songs, an infinite-radio continuation token, and the
+    ///   server's automix tuning row when it sends one
+    func getRadioQueue(videoId: String) async throws -> RadioQueueResult {
         self.logger.info("Fetching radio queue for: \(videoId)")
 
         // Use RDAMVM prefix to request a radio mix based on the song
@@ -1163,8 +1164,44 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         let data = try await request("next", body: body)
         let result = RadioQueueParser.parse(from: data)
-        self.logger.info("Fetched radio queue with \(result.songs.count) songs")
-        return result.songs
+        self.logger.info(
+            "Fetched radio queue with \(result.songs.count) songs, \(result.tunerChips.count) tuner chips"
+        )
+        return result
+    }
+
+    /// Fetches an automix queue with the tuning described by one of the queue's tuner chips.
+    ///
+    /// The chip's watch endpoint names a different mix playlist plus opaque params; asking for it
+    /// with the currently playing video seeds the tuned variant from the same track.
+    /// - Parameters:
+    ///   - playlistId: The tuned mix playlist ID from the chip.
+    ///   - params: The chip's opaque tuning params.
+    ///   - videoId: The video to seed the tuned mix from.
+    /// - Returns: RadioQueueResult for the tuned queue.
+    func getTunedMixQueue(playlistId: String, params: String?, videoId: String?) async throws -> RadioQueueResult {
+        self.logger.info("Fetching tuned mix queue for playlist: \(playlistId)")
+
+        var body: [String: Any] = [
+            "playlistId": playlistId,
+            "enablePersistentPlaylistPanel": true,
+            "isAudioOnly": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+        ]
+
+        if let params {
+            body["params"] = params
+        }
+
+        if let videoId {
+            body["videoId"] = videoId
+        }
+
+        // No caching: each tuning is a fresh mix.
+        let data = try await request("next", body: body, ttl: nil)
+        let result = RadioQueueParser.parse(from: data)
+        self.logger.info("Fetched tuned mix queue with \(result.songs.count) songs")
+        return result
     }
 
     /// Fetches a mix queue from a playlist ID (e.g., artist mix "RDEM...").

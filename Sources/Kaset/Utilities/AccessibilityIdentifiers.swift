@@ -60,9 +60,14 @@ enum AccessibilityID {
         static let emptyState = "queueView.emptyState"
         static let refineButton = "queueView.refineButton"
         static let suggestionButton = "queueView.suggestionButton"
+        static let tunerRow = "queueView.tunerRow"
 
         static func row(index: Int) -> String {
             "queueView.row.\(index)"
+        }
+
+        static func tunerChip(_ id: String) -> String {
+            "queueView.tunerChip.\(id)"
         }
     }
 

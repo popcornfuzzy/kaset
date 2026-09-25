@@ -474,6 +474,9 @@
 /* Button to retry failed playback */
 "Retry" = "Retry";
 
+/* Accessibility hint on a queue tuning chip */
+"Retune the mix" = "Retune the mix";
+
 "Save playlists and subscribe to podcasts on YouTube Music to see them here." = "Save playlists and subscribe to podcasts on YouTube Music to see them here.";
 
 "Save playlists, follow artists, and subscribe to podcasts on YouTube Music to see them here." = "Save playlists, follow artists, and subscribe to podcasts on YouTube Music to see them here.";
@@ -568,6 +571,9 @@
 "Try commands like:" = "Try commands like:";
 
 "Try searching for something else" = "Try searching for something else";
+
+/* Accessibility label for the queue tuning row's progress indicator */
+"Tuning mix" = "Tuning mix";
 
 "Unable to determine availability" = "Unable to determine availability";
 

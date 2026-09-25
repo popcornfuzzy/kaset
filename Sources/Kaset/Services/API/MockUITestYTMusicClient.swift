@@ -434,10 +434,10 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         )
     }
 
-    func getRadioQueue(videoId: String) async throws -> [Song] {
+    func getRadioQueue(videoId: String) async throws -> RadioQueueResult {
         try? await Task.sleep(for: .milliseconds(100))
         // Return a radio queue based on the seed song
-        return (0 ..< 25).map { index in
+        let songs = (0 ..< 25).map { index in
             Song(
                 id: "radio-\(videoId)-\(index)",
                 title: "Radio Song \(index + 1)",
@@ -448,6 +448,43 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
                 videoId: "radio-video-\(videoId)-\(index)"
             )
         }
+        return RadioQueueResult(songs: songs, continuationToken: nil, tunerChips: Self.mockTunerChips)
+    }
+
+    /// Tuning row used by UI tests, mirroring the shape YouTube Music sends for an automix.
+    private static let mockTunerChips: [QueueTunerChip] = [
+        QueueTunerChip(
+            id: "All",
+            label: "All",
+            isSelected: true,
+            playlistId: "RDAMVMmock",
+            params: "mock-all"
+        ),
+        QueueTunerChip(
+            id: "Discover",
+            label: "Discover",
+            isSelected: false,
+            playlistId: "RDATmock-discover",
+            params: "mock-discover"
+        ),
+    ]
+
+    func getTunedMixQueue(playlistId: String, params _: String?, videoId: String?) async throws -> RadioQueueResult {
+        try? await Task.sleep(for: .milliseconds(100))
+        let seedVideoId = videoId ?? "seed"
+        let songs = (0 ..< 25).map { index in
+            Song(
+                id: "tuned-\(playlistId)-\(index)",
+                title: "Tuned Song \(index + 1)",
+                artists: [Artist(id: "tuned-artist-\(index % 5)", name: "Tuned Artist \(index % 5 + 1)")],
+                album: nil,
+                duration: TimeInterval(180 + index * 5),
+                thumbnailURL: nil,
+                videoId: "tuned-video-\(seedVideoId)-\(index)"
+            )
+        }
+        // Re-tuned responses do not repeat the tuning row, matching YouTube Music.
+        return RadioQueueResult(songs: songs, continuationToken: "mock-tuned-continuation")
     }
 
     func getMixQueue(playlistId: String, startVideoId _: String?) async throws -> RadioQueueResult {
