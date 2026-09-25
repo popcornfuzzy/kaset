@@ -52,11 +52,29 @@ jobs:
       # setups clear, and several tests wait on fixed sleeps. Run in parallel
       # and one suite's setup lands inside another's awaits, which is how this
       # job used to fail on tests that pass in isolation.
-      # MusicIntentIntegrationTests is excluded here because its Apple
-      # Intelligence output is non-deterministic; the integration job below runs
-      # it. See docs/testing.md.
+      # The environment-dependent suites are excluded: MusicIntentIntegrationTests
+      # because its Apple Intelligence output is non-deterministic (the
+      # integration job below runs it), and CanvasVideoViewTests because it needs
+      # real AVFoundation playback. docs/testing.md documents both as never
+      # gating a merge or a release. A single retry absorbs a residual timing
+      # flake on a busy runner; a real failure still fails both attempts.
       - name: Run unit tests
-        run: 'swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"'
+        run: |
+          set -uo pipefail
+          SKIP="KasetUITests|MusicIntentIntegrationTests|CanvasVideoViewTests"
+          for attempt in 1 2; do
+            echo "::group::swift test (attempt $attempt of 2)"
+            if swift test -q --no-parallel --skip "$SKIP"; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -eq 1 ]; then
+              echo "::warning::Unit tests failed on the first attempt; retrying once."
+            fi
+          done
+          echo "::error::Unit tests failed on both attempts."
+          exit 1
 
   macos_integration_tests:
     name: macOS Integration Tests

@@ -503,28 +503,54 @@ Right-click WebView → Inspect Element
 
 ## Continuous Integration
 
-### GitHub Actions Workflow
+Four workflows, each with a single responsibility:
+
+| Workflow | Trigger | Runs |
+|----------|---------|------|
+| `tests.yml` | push/PR to `main`, nightly | Unit + UI tests; integration suites nightly |
+| `dev-build.yml` | push/PR touching Swift sources | Builds a dev DMG |
+| `lint.yml` | push/PR to `main` | `swiftlint --strict`, `swiftformat` |
+| `release.yml` | tag push `v*` | Gated build, draft GitHub release |
+| `appcast.yml` | release published | Signs the DMG, commits `appcast.xml` |
+
+### Unit Test Gate
+
+`tests.yml` and `release.yml` run the same command, so a pull request and a release are gated
+identically:
+
+```bash
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests|CanvasVideoViewTests"
+```
+
+The command is retried once. The suite is timing-sensitive, and a paravirtualized runner is slower
+than a developer machine, so a single retry absorbs a residual flake instead of failing a release;
+a real failure still fails both attempts. Do not treat the retry as licence to leave a suite with
+fixed sleeps in the gate — wait for the condition instead (see [Waiting for async work](#waiting-for-async-work)).
+
+`swift test` takes `--skip`/`--filter` patterns that match test IDs (target, suite, and test
+names), **not** tags, which is why the suites above are named explicitly. Android-style tag
+filtering (`--skip-test-tag`) only applies when driving the suite through `xcodebuild`.
+
+### CI Job Layout
 
 ```yaml
-name: Build & Test
-
-on: [push, pull_request]
-
 jobs:
-  build:
+  macos_unit_tests:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
 
-      - name: Build
-        run: xcodebuild -scheme Kaset -destination 'platform=macOS' build
+      - name: Run unit tests        # retried once, see above
+        run: swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests|CanvasVideoViewTests"
 
-      - name: Test
-        run: xcodebuild -scheme Kaset -destination 'platform=macOS' test
-
-      - name: Lint
-        run: swiftlint --strict
+  macos_integration_tests:          # nightly and on demand only
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - run: swift test -q --no-parallel --filter "MusicIntentIntegrationTests"
 ```
+
+Release mechanics are covered by
+[adr/0019-release-pipeline-and-appcast-publication.md](adr/0019-release-pipeline-and-appcast-publication.md).

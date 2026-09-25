@@ -1,0 +1,183 @@
+name: Update Appcast
+
+# Sparkle can only use an update once its download URL is public, so the feed is
+# updated when the release is published rather than when it is built. That is also
+# what keeps the appcast from ever advertising a draft (whose asset URLs 404).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to sign into the feed (default: latest published release)"
+        required: false
+        type: string
+      include_prerelease:
+        description: "Allow a prerelease into the stable feed"
+        type: boolean
+        default: false
+
+concurrency:
+  group: appcast
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  appcast:
+    name: Sign and publish the feed
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Resolve the release to publish
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INCLUDE_PRERELEASE: ${{ inputs.include_prerelease }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$RELEASE_TAG" ]; then
+            TAG="$RELEASE_TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG=$(gh release view --json tagName --jq .tagName)
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)? ]]; then
+            echo "::error::'$TAG' is not a release tag."
+            exit 1
+          fi
+
+          IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$IS_DRAFT" = "true" ]; then
+            # Draft assets need authentication, so a feed entry pointing at one is
+            # a 404 for every user.
+            echo "::error::Release $TAG is still a draft; its asset URLs are not public yet."
+            exit 1
+          fi
+
+          # A prerelease is built later than the last stable release, so every
+          # stable client would be offered it.
+          IS_PRERELEASE=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
+          if [ "$IS_PRERELEASE" = "true" ] && [ "$INCLUDE_PRERELEASE" != "true" ]; then
+            echo "Release $TAG is a prerelease; leaving the stable feed alone."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Plain jq plus greps, so an empty release yields an empty variable
+          # rather than a literal "null" that would be downloaded as a file name.
+          # Prefer the asset named after this tag: earlier releases carry a stray
+          # kaset-main.dmg from the manual runs that used the branch name as the
+          # version, and picking it would sign the wrong download.
+          NAMES=$(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
+          ASSET=$(printf '%s\n' "$NAMES" | grep -Fx "kaset-$TAG.dmg" | head -1 || true)
+          if [ -z "$ASSET" ]; then
+            ASSET=$(printf '%s\n' "$NAMES" | grep -E '\.dmg$' | head -1 || true)
+          fi
+
+          if [ -z "$ASSET" ]; then
+            echo "::error::Release $TAG has no .dmg asset to sign."
+            exit 1
+          fi
+
+          {
+            echo "skip=false"
+            echo "tag=$TAG"
+            echo "asset=$ASSET"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Updating the feed for $TAG from $ASSET"
+
+      - name: Make Sparkle's tools available
+        if: steps.release.outputs.skip != 'true'
+        run: |
+          set -uo pipefail
+          # Sparkle's command line tools are binary artifacts of the SwiftPM
+          # package, so resolving fetches them. A build is the fallback for
+          # layouts that only materialise them during compilation.
+          swift package resolve
+          if ! Scripts/generate-appcast.sh --check >/dev/null; then
+            echo "generate_appcast is missing after resolve; building the package."
+            swift build -c release --arch "$(uname -m)"
+          fi
+          Scripts/generate-appcast.sh --check
+
+      - name: Download the published DMG
+        if: steps.release.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ASSET: ${{ steps.release.outputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" --pattern "$ASSET" --dir "$RUNNER_TEMP/release" --clobber
+          ls -l "$RUNNER_TEMP/release"
+
+      - name: Regenerate and verify the feed
+        if: steps.release.outputs.skip != 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ASSET: ${{ steps.release.outputs.asset }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            # generate_appcast would otherwise fall back to the keychain, find no
+            # key on a clean runner, and write an unsigned item that every
+            # installed copy rejects.
+            echo "::error::SPARKLE_PRIVATE_KEY is not set. The feed would be published without a signature."
+            exit 1
+          fi
+
+          # The feed already in the repository is the base, so existing items keep
+          # their signatures and history is never rewritten.
+          Scripts/generate-appcast.sh \
+            --tag "$TAG" \
+            --dmg "$RUNNER_TEMP/release/$ASSET" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Commit the feed
+        if: steps.release.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- appcast.xml; then
+            echo "appcast.xml already lists $TAG; nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "Update appcast to $TAG"
+
+          # Another push to the default branch can land while this job runs.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:$DEFAULT_BRANCH"; then
+              echo "Pushed appcast.xml to $DEFAULT_BRANCH."
+              exit 0
+            fi
+            echo "Push rejected; rebasing onto origin/$DEFAULT_BRANCH and retrying."
+            git pull --rebase origin "$DEFAULT_BRANCH"
+          done
+
+          echo "::error::Could not push appcast.xml after 3 attempts."
+          exit 1

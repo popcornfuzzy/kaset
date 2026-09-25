@@ -21,8 +21,10 @@ xcuserdata/
 /.swiftpm
 Packages/
 Package.pins
-Package.resolved
 .netrc
+# Package.resolved is deliberately tracked: this is an app, not a library, and
+# CI must resolve the same Sparkle version it ships. A floating Sparkle also
+# floats the generate_appcast/sign_update behaviour used to sign the appcast.
 
 # CocoaPods (if ever used)
 Pods/

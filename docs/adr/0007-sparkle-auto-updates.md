@@ -87,12 +87,16 @@ We integrate [Sparkle 2.x](https://sparkle-project.org/) for automatic update ch
 
 ### Release Process
 
+> The concrete pipeline is defined by [ADR-0019](0019-release-pipeline-and-appcast-publication.md),
+> which keeps the feed out of the tag-push job: a release is built into a draft, and the feed is
+> signed once that release is published, so an update is never advertised before its download URL
+> is public.
+
 1. Tag new version: `git tag v1.2.3`
-2. CI builds, archives, and creates DMG
-3. CI signs DMG with EdDSA key
-4. CI updates `appcast.xml` with new entry
-5. CI uploads DMG to GitHub Releases
-6. Users receive update on next check
+2. CI builds, archives, and creates DMG, then opens a draft release with it
+3. The release is published, which signs the DMG with the EdDSA key
+4. CI updates `appcast.xml` with the new entry and commits it
+5. Users receive the update on their next check
 
 ## Consequences
 

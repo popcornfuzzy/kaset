@@ -1,197 +1,300 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# generate-appcast.sh - Generates/updates appcast.xml from signed releases
+# generate-appcast.sh - Regenerates appcast.xml with Sparkle's generate_appcast.
 #
 # Usage:
-#   ./Scripts/generate-appcast.sh [releases-directory]
+#   # Add one published release to the feed (used by the release pipeline):
+#   Scripts/generate-appcast.sh --tag v0.8.0 --dmg path/to/kaset-v0.8.0.dmg
 #
-# This script uses Sparkle's generate_appcast tool to automatically create
-# or update the appcast.xml file based on signed release archives.
+#   # Regenerate from a local directory of archives (manual release prep):
+#   Scripts/generate-appcast.sh --releases-dir releases
 #
-# Prerequisites:
-#   1. Sparkle must be added as a Swift Package dependency
-#   2. Build the project at least once to download Sparkle artifacts
-#   3. Have signed DMG/ZIP files in the releases directory
+#   # Report whether Sparkle's tools are available:
+#   Scripts/generate-appcast.sh --check
 #
-# The releases directory should contain:
-#   - Signed .dmg or .zip files for each version
-#   - The private EdDSA key (or set SPARKLE_PRIVATE_KEY env var)
+# Options:
+#   --tag <tag>            Release tag the DMG belongs to (e.g. v0.8.0)
+#   --dmg <path>           DMG of the release being published
+#   --releases-dir <dir>   Directory of archives to generate from instead
+#   --repo <owner/name>    Repository for download URLs (default: $GITHUB_REPOSITORY)
+#   --output <path>        Feed to update in place (default: ./appcast.xml)
+#   --key-file <path>      Sparkle EdDSA private key file
+#   --check                Exit 0 if Sparkle's tools can be found, 1 otherwise
+#
+# The private key is read from --key-file, else from $SPARKLE_PRIVATE_KEY (passed
+# to Sparkle over stdin), else from the login keychain.
+#
+# History is preserved: the feed already in the repository is used as the base, so
+# existing items keep their signatures and are never dropped.
 
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
+# A key exported by the caller (CI, or a one-off run) has to win over the local
+# .env file, whose whole purpose is to make runs work without exporting anything.
+CALLER_SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY:-}"
+
 # Load optional local environment overrides (kept out of git).
 if [[ -f "$ROOT/Scripts/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$ROOT/Scripts/.env"
-    set +a
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/Scripts/.env"
+  set +a
 fi
 
-# Load version info when available (used for URL defaults).
-if [[ -f "$ROOT/version.env" ]]; then
-    # shellcheck disable=SC1091
-    source "$ROOT/version.env"
+if [[ -n "$CALLER_SPARKLE_PRIVATE_KEY" ]]; then
+  SPARKLE_PRIVATE_KEY="$CALLER_SPARKLE_PRIVATE_KEY"
 fi
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-print_error() {
-    echo -e "${RED}Error:${NC} $1" >&2
-}
+log() { echo -e "$1"; }
+print_error() { echo -e "${RED}Error:${NC} $1" >&2; }
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_warning() { echo -e "${YELLOW}Warning:${NC} $1"; }
 
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}Warning:${NC} $1"
-}
-
-# Find Sparkle's generate_appcast binary
+# Sparkle ships generate_appcast/sign_update as binary artifacts of the SwiftPM
+# Sparkle package, so the tools only exist once the package has been resolved or
+# built. SwiftPM has moved them between layouts over time, hence the search.
 find_sparkle_bin() {
-    local derived_data_paths=(
-        "$HOME/Library/Developer/Xcode/DerivedData"
-        "./DerivedData"
-        "../DerivedData"
-    )
-    
-    for base in "${derived_data_paths[@]}"; do
-        if [[ -d "$base" ]]; then
-            local found
-            found=$(find "$base" -path "*/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_appcast" -type f 2>/dev/null | head -1)
-            if [[ -n "$found" && -x "$found" ]]; then
-                echo "$found"
-                return 0
-            fi
-        fi
-    done
-
-    # SwiftPM places Sparkle artifacts under .build/ (used by CI and local
-    # `swift build` runs). Check there too.
-    local build_paths=(
-        "$ROOT/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
-        "$ROOT/.build/checkouts"
-        "$ROOT/.build/index-build"
-    )
-    for path in "${build_paths[@]}"; do
-        if [[ -f "$path" && -x "$path" ]]; then
-            echo "$path"
-            return 0
-        fi
-        if [[ -d "$path" ]]; then
-            local found
-            found=$(find "$path" -path "*/artifacts/sparkle/Sparkle/bin/generate_appcast" -type f 2>/dev/null | head -1)
-            if [[ -n "$found" && -x "$found" ]]; then
-                echo "$found"
-                return 0
-            fi
-        fi
-    done
-
-    # Check if installed via Homebrew
-    if command -v generate_appcast &>/dev/null; then
-        echo "generate_appcast"
-        return 0
+  local candidates=(
+    "$ROOT/.build/artifacts/sparkle/Sparkle/bin/$1"
+    "$ROOT/.build/index-build/artifacts/sparkle/Sparkle/bin/$1"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
     fi
-    
-    return 1
+  done
+
+  local search_roots=(
+    "$ROOT/.build/artifacts"
+    "$ROOT/.build/index-build"
+    "$HOME/Library/Developer/Xcode/DerivedData"
+  )
+  for root in "${search_roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    local found
+    found=$(find "$root" -name "$1" -type f -perm -u+x 2>/dev/null | head -1)
+    if [[ -n "$found" ]]; then
+      echo "$found"
+      return 0
+    fi
+  done
+
+  if command -v "$1" >/dev/null 2>&1; then
+    command -v "$1"
+    return 0
+  fi
+
+  return 1
 }
 
-# Main
-main() {
-    local releases_dir="${1:-./releases}"
-    local release_version="${APPCAST_VERSION:-${MARKETING_VERSION:-}}"
-    local feed_link="${APPCAST_LINK:-https://github.com/popcornfuzzy/kaset/releases}"
-    local download_prefix="${APPCAST_DOWNLOAD_URL_PREFIX:-}"
-    local release_notes_url="${APPCAST_RELEASE_NOTES_URL:-}"
-
-    if [[ -z "$download_prefix" && -n "$release_version" ]]; then
-        download_prefix="https://github.com/popcornfuzzy/kaset/releases/download/v${release_version}/"
-    fi
-
-    if [[ -n "$download_prefix" && "$download_prefix" != */ ]]; then
-        download_prefix="${download_prefix}/"
-    fi
-
-    if [[ -z "$release_notes_url" && -n "$release_version" ]]; then
-        release_notes_url="https://github.com/popcornfuzzy/kaset/releases/tag/v${release_version}"
-    fi
-    
-    # Validate releases directory exists
-    if [[ ! -d "$releases_dir" ]]; then
-        print_warning "Releases directory not found: $releases_dir"
-        echo "Creating directory..."
-        mkdir -p "$releases_dir"
-        echo ""
-        echo "Please add your signed release archives to: $releases_dir"
-        echo "Then run this script again."
-        exit 0
-    fi
-    
-    # Check for release files
-    local release_count
-    release_count=$(find "$releases_dir" -maxdepth 1 \( -name "*.dmg" -o -name "*.zip" \) 2>/dev/null | wc -l | tr -d ' ')
-    
-    if [[ "$release_count" -eq 0 ]]; then
-        print_error "No release archives found in: $releases_dir"
-        echo ""
-        echo "Please add .dmg or .zip files to the releases directory."
-        exit 1
-    fi
-    
-    print_success "Found $release_count release archive(s)"
-    
-    # Find generate_appcast binary
-    local generate_appcast_bin
-    if ! generate_appcast_bin=$(find_sparkle_bin); then
-        print_error "Could not find Sparkle's generate_appcast binary."
-        echo ""
-        echo "Please ensure:"
-        echo "  1. Sparkle is added as a Swift Package dependency"
-        echo "  2. Build the project at least once: xcodebuild -scheme Kaset build"
-        echo ""
-        echo "Alternatively, install Sparkle via Homebrew:"
-        echo "  brew install sparkle"
-        exit 1
-    fi
-    
-    print_success "Found generate_appcast: $generate_appcast_bin"
-    
-    echo ""
-    echo "Generating appcast.xml..."
-    echo ""
-    
-    # Run generate_appcast
-    # Output goes to the releases directory, then we copy to repo root
-    local generate_args=("$releases_dir")
-    if [[ -n "$download_prefix" ]]; then
-        generate_args=(--download-url-prefix "$download_prefix" "${generate_args[@]}")
-    fi
-    if [[ -n "$release_notes_url" ]]; then
-        generate_args=(--full-release-notes-url "$release_notes_url" "${generate_args[@]}")
-    fi
-    if [[ -n "$feed_link" ]]; then
-        generate_args=(--link "$feed_link" "${generate_args[@]}")
-    fi
-
-    "$generate_appcast_bin" "${generate_args[@]}"
-    
-    # Copy generated appcast to repo root if it was created in releases dir
-    if [[ -f "$releases_dir/appcast.xml" ]]; then
-        cp "$releases_dir/appcast.xml" ./appcast.xml
-        print_success "Copied appcast.xml to repository root"
-    fi
-    
-    echo ""
-    print_success "Appcast generation complete!"
-    echo ""
-    echo "Review appcast.xml and commit the changes."
+missing_tools_message() {
+  print_error "Could not find Sparkle's generate_appcast tool."
+  echo "" >&2
+  echo "Sparkle's command line tools ship inside the Sparkle SwiftPM artifact, so" >&2
+  echo "resolve or build the package first:" >&2
+  echo "" >&2
+  echo "  swift package resolve    # downloads the artifact (fast)" >&2
+  echo "  swift build              # fallback when resolve does not fetch it" >&2
 }
 
-main "$@"
+# --- Argument parsing -------------------------------------------------------
+
+TAG=""
+DMG=""
+RELEASES_DIR=""
+REPO="${GITHUB_REPOSITORY:-popcornfuzzy/kaset}"
+OUTPUT="$ROOT/appcast.xml"
+KEY_FILE=""
+CHECK_ONLY=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tag) TAG="${2:-}"; shift 2 ;;
+    --dmg) DMG="${2:-}"; shift 2 ;;
+    --releases-dir) RELEASES_DIR="${2:-}"; shift 2 ;;
+    --repo) REPO="${2:-}"; shift 2 ;;
+    --output) OUTPUT="${2:-}"; shift 2 ;;
+    --key-file) KEY_FILE="${2:-}"; shift 2 ;;
+    --check) CHECK_ONLY=1; shift ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -*) print_error "Unknown option: $1"; exit 64 ;;
+    *) RELEASES_DIR="$1"; shift ;;
+  esac
+done
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  tool=$(find_sparkle_bin generate_appcast) || { missing_tools_message; exit 1; }
+  echo "$tool"
+  exit 0
+fi
+
+GENERATE=$(find_sparkle_bin generate_appcast) || { missing_tools_message; exit 1; }
+print_success "Using generate_appcast: $GENERATE"
+
+# --- Staging ----------------------------------------------------------------
+
+if [[ -n "$DMG" ]]; then
+  if [[ -z "$TAG" ]]; then
+    print_error "--dmg requires --tag so the download URL can be built."
+    exit 64
+  fi
+  if [[ ! -f "$DMG" ]]; then
+    print_error "DMG not found: $DMG"
+    exit 1
+  fi
+
+  VERSION="${TAG#v}"
+  STAGING=$(mktemp -d "${TMPDIR:-/tmp}/kaset-appcast.XXXXXX")
+  trap 'rm -rf "$STAGING"' EXIT
+
+  # generate_appcast updates an appcast.xml found beside the archives, which is
+  # how the existing feed (and its signatures) survives regeneration.
+  if [[ -f "$OUTPUT" ]]; then
+    cp "$OUTPUT" "$STAGING/appcast.xml"
+  else
+    print_warning "No existing feed at $OUTPUT; generating a fresh one."
+  fi
+
+  # The archive filename becomes the download URL, so it must match the name the
+  # release actually publishes.
+  cp "$DMG" "$STAGING/$(basename "$DMG")"
+  ARCHIVES_DIR="$STAGING"
+
+  DOWNLOAD_PREFIX="https://github.com/$REPO/releases/download/$TAG/"
+  RELEASE_NOTES_URL="https://github.com/$REPO/releases/tag/$TAG"
+elif [[ -n "$RELEASES_DIR" ]]; then
+  if [[ ! -d "$RELEASES_DIR" ]]; then
+    print_error "Releases directory not found: $RELEASES_DIR"
+    exit 1
+  fi
+  if [[ -z "$TAG" ]]; then
+    print_error "--releases-dir requires --tag so the download URLs can be built."
+    exit 64
+  fi
+
+  VERSION="${TAG#v}"
+  ARCHIVES_DIR="$RELEASES_DIR"
+  DOWNLOAD_PREFIX="https://github.com/$REPO/releases/download/$TAG/"
+  RELEASE_NOTES_URL="https://github.com/$REPO/releases/tag/$TAG"
+else
+  print_error "Nothing to do: pass --dmg <path> --tag <tag>, or --releases-dir <dir> --tag <tag>."
+  exit 64
+fi
+
+# --- Generate ---------------------------------------------------------------
+
+GENERATE_ARGS=(
+  --maximum-versions 0
+  --download-url-prefix "$DOWNLOAD_PREFIX"
+  --full-release-notes-url "$RELEASE_NOTES_URL"
+  --link "https://github.com/$REPO/releases"
+  "$ARCHIVES_DIR"
+)
+
+log ""
+log "Generating appcast for $TAG (version $VERSION)..."
+log ""
+
+if [[ -n "$KEY_FILE" ]]; then
+  if [[ ! -f "$KEY_FILE" ]]; then
+    print_error "Key file not found: $KEY_FILE"
+    exit 1
+  fi
+  "$GENERATE" --ed-key-file "$KEY_FILE" "${GENERATE_ARGS[@]}"
+elif [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+  # Sparkle reads '-' from stdin, which keeps the key out of the process table
+  # and off the filesystem.
+  printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$GENERATE" --ed-key-file - "${GENERATE_ARGS[@]}"
+else
+  print_warning "No SPARKLE_PRIVATE_KEY set; falling back to the login keychain."
+  "$GENERATE" "${GENERATE_ARGS[@]}"
+fi
+
+GENERATED="$ARCHIVES_DIR/appcast.xml"
+if [[ ! -f "$GENERATED" ]]; then
+  print_error "generate_appcast did not produce an appcast."
+  exit 1
+fi
+
+# --- Verify -----------------------------------------------------------------
+#
+# A feed that parses but advertises an unsigned or missing enclosure is worse
+# than a failed run: Sparkle refuses the update and every installed copy silently
+# stops updating. Every check below is a hard failure.
+
+if command -v xmllint >/dev/null 2>&1; then
+  if ! xmllint --noout "$GENERATED" 2>/dev/null; then
+    print_error "Generated appcast is not valid XML."
+    exit 1
+  fi
+fi
+
+ITEM=$(awk -v want="$VERSION" '
+  BEGIN { RS = "</item>" }
+  $0 ~ ("<sparkle:shortVersionString>" want "</sparkle:shortVersionString>") { print; exit }
+' "$GENERATED")
+
+if [[ -z "$ITEM" ]]; then
+  print_error "The generated feed has no item for version $VERSION."
+  echo "  Sparkle only adds an item when its CFBundleVersion is newer than the" >&2
+  echo "  newest item already in $OUTPUT. Check version.env/BUILD_NUMBER." >&2
+  exit 1
+fi
+
+if [[ "$ITEM" != *"download/$TAG/"* ]]; then
+  print_error "The item for $VERSION does not point at the $TAG release."
+  exit 1
+fi
+
+SIGNATURE=$(printf '%s' "$ITEM" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+if [[ -z "$SIGNATURE" ]]; then
+  print_error "The item for $VERSION has no sparkle:edSignature."
+  echo "  Sparkle only signs an archive when the app inside it declares" >&2
+  echo "  SUPublicEDKey matching the supplied private key." >&2
+  exit 1
+fi
+
+LENGTH=$(printf '%s' "$ITEM" | sed -n 's/.*length="\([0-9]*\)".*/\1/p' | head -1)
+print_success "Signed item for $VERSION ($LENGTH bytes)"
+
+# Verify the signature against the archive we are about to publish. Sparkle
+# derives the appcast signature from the key the app itself declares, so a
+# mismatch here means every installed copy would reject the update.
+if [[ -n "$DMG" ]]; then
+  SIGN_UPDATE=$(find_sparkle_bin sign_update || true)
+  KEY_AVAILABLE=0
+  if [[ -n "$KEY_FILE" ]]; then
+    KEY_AVAILABLE=1
+  elif [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+    KEY_AVAILABLE=2
+  fi
+
+  if [[ -z "$SIGN_UPDATE" ]]; then
+    print_warning "sign_update not found; signature left unverified."
+  elif [[ "$KEY_AVAILABLE" -eq 1 ]]; then
+    "$SIGN_UPDATE" --ed-key-file "$KEY_FILE" --verify "$DMG" "$SIGNATURE" \
+      || { print_error "The generated signature does not verify against $DMG."; exit 1; }
+    print_success "Signature verified against the archive"
+  elif [[ "$KEY_AVAILABLE" -eq 2 ]]; then
+    printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - --verify "$DMG" "$SIGNATURE" \
+      || { print_error "The generated signature does not verify against $DMG."; exit 1; }
+    print_success "Signature verified against the archive"
+  else
+    print_warning "No key material available; signature left unverified."
+  fi
+fi
+
+if [[ "$GENERATED" != "$OUTPUT" ]]; then
+  cp "$GENERATED" "$OUTPUT"
+fi
+
+COUNT=$(grep -c '<item>' "$OUTPUT" || true)
+print_success "Wrote $OUTPUT with $COUNT item(s)"

@@ -54,3 +54,4 @@ What becomes easier or more difficult because of this change?
 | [0016](0016-strings-files-as-localization-source-of-truth.md) | `.lproj` String Files as the Localization Source of Truth | Accepted |
 | [0017](0017-podcast-fullscreen-transcript.md) | Fullscreen Podcast Experience with YouTube Transcript | Accepted |
 | [0018](0018-karaoke-lyrics-animation.md) | Karaoke Lyrics Animation (Word-by-Word Fill) | Accepted |
+| [0019](0019-release-pipeline-and-appcast-publication.md) | Release Pipeline and Appcast Publication | Accepted |
