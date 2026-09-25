@@ -126,6 +126,37 @@ struct KuGoProviderTests {
         #expect(KuGoProvider.processContent(garbage) == .unavailable)
     }
 
+    // MARK: - Candidate decoding
+
+    @Test("candidate decoding accepts an id sent as a JSON string")
+    func decodesStringCandidateID() throws {
+        // The lyrics search endpoint started quoting the id: decoding it as an
+        // Int64-only field failed the whole response, so KuGo reported "no
+        // lyrics" for every song.
+        let json = #"[{"id":"209655425","accesskey":"test-access-key"}]"#
+        let candidates = try JSONDecoder().decode([KuGoLyricsCandidate].self, from: Data(json.utf8))
+        #expect(candidates.count == 1)
+        #expect(candidates.first?.id == 209_655_425)
+        #expect(candidates.first?.accesskey == "test-access-key")
+    }
+
+    @Test("candidate decoding accepts an id sent as a JSON number")
+    func decodesNumericCandidateID() throws {
+        let json = #"[{"id":209655425,"accesskey":"test-access-key"}]"#
+        let candidates = try JSONDecoder().decode([KuGoLyricsCandidate].self, from: Data(json.utf8))
+        #expect(candidates.first?.id == 209_655_425)
+    }
+
+    @Test("candidate decoding tolerates a missing or unusable id")
+    func decodesCandidateWithoutID() throws {
+        let json = #"[{"accesskey":"test-access-key"},{"id":"not-a-number"}]"#
+        let candidates = try JSONDecoder().decode([KuGoLyricsCandidate].self, from: Data(json.utf8))
+        #expect(candidates.count == 2)
+        #expect(candidates[0].id == nil)
+        #expect(candidates[0].accesskey == "test-access-key")
+        #expect(candidates[1].id == nil)
+    }
+
     // MARK: - Candidate matching
 
     @Test("isSongAcceptable applies the duration tolerance")

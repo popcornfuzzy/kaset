@@ -291,6 +291,27 @@ struct KuGoSongInfo: Decodable, Sendable, Equatable {
 struct KuGoLyricsCandidate: Decodable, Sendable, Equatable {
     let id: Int64?
     let accesskey: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case accesskey
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // KuGou has served `id` both as a JSON number and as a quoted number.
+        // Accept either: a type change on their side must not fail the whole
+        // response, which would leave the provider reporting "no lyrics" for
+        // every song.
+        if let number = try? container.decode(Int64.self, forKey: .id) {
+            self.id = number
+        } else if let text = try? container.decode(String.self, forKey: .id) {
+            self.id = Int64(text)
+        } else {
+            self.id = nil
+        }
+        self.accesskey = try? container.decode(String.self, forKey: .accesskey)
+    }
 }
 
 private struct KuGoSongSearchResponse: Decodable {
