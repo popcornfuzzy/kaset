@@ -64,9 +64,19 @@ final class PaxsenixProvider: LyricsProvider {
 
         guard !scoredTracks.isEmpty else { return .unavailable }
 
+        // The first candidate is the best match by title/artist/duration. A
+        // later candidate may only upgrade fidelity when it is the *same song*
+        // (a duplicate/deluxe release); once the primary song has produced any
+        // lyrics, a different song's higher-fidelity result must never win.
+        // Different-song candidates remain fallbacks only while nothing has
+        // been found (the song may simply be missing from the catalog).
+        let primaryTitle = Self.normalizedMatchTitle(scoredTracks[0].name)
         var bestResult: LyricResult = .unavailable
         var bestRank = -1
-        for track in scoredTracks.prefix(10) {
+        for (index, track) in scoredTracks.prefix(10).enumerated() {
+            let isPrimarySong = Self.normalizedMatchTitle(track.name) == primaryTitle
+            if index > 0, bestResult.isAvailable, !isPrimarySong { break }
+
             guard let response = try await self.fetchLyricsResponse(trackID: track.id) else { continue }
             let result = Self.parse(response, source: self.name)
             guard result.isAvailable else { continue }
@@ -76,7 +86,7 @@ final class PaxsenixProvider: LyricsProvider {
                 bestResult = result
             }
             // Word-synced is the best fidelity available — stop early.
-            if rank >= LyricsCapability.word.rawValue { break }
+            if bestRank >= LyricsCapability.word.rawValue { break }
         }
         return bestResult
     }
@@ -210,12 +220,14 @@ final class PaxsenixProvider: LyricsProvider {
             }
         }
 
-        if bestRank < 2,
+        // Only fall back to plain text when no synced representation was found;
+        // a line-synced result must not be downgraded to plain.
+        if bestRank < LyricsCapability.line.rawValue,
            let plain = response.plain,
            !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             bestResult = .plain(Lyrics(text: plain, source: source))
-            bestRank = 0
+            bestRank = LyricsCapability.plain.rawValue
         }
 
         if bestRank < 2, let content = response.content, !content.isEmpty {
@@ -354,7 +366,7 @@ final class PaxsenixProvider: LyricsProvider {
         artist: String,
         duration: TimeInterval?
     ) -> [PaxsenixTrack] {
-        let cleanupRegex = #"\s*\(.*?\)|\s*\[.*?\]"#
+        let cleanupRegex = Self.parentheticalCleanupRegex
         let cleanedTitle = Self.scoringClean(title, cleanupRegex: cleanupRegex)
         let cleanedArtist = Self.cleanArtist(artist).lowercased()
         let targetIsMixed = title.lowercased().contains("mixed")
@@ -405,11 +417,20 @@ final class PaxsenixProvider: LyricsProvider {
             .map(\.0)
     }
 
+    /// Normalized title used to decide whether two catalog tracks represent the
+    /// same song (duplicate/deluxe releases) when falling back through
+    /// candidates; strips parenthetical/bracket suffixes and lowercases.
+    static func normalizedMatchTitle(_ name: String) -> String {
+        Self.scoringClean(name, cleanupRegex: Self.parentheticalCleanupRegex)
+    }
+
     private static func scoringClean(_ text: String, cleanupRegex: String) -> String {
         text.replacingOccurrences(of: cleanupRegex, with: "", options: .regularExpression)
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private static let parentheticalCleanupRegex = #"\s*\(.*?\)|\s*\[.*?\]"#
 
     // MARK: - ELRC helpers
 

@@ -12,6 +12,7 @@ struct LyricsSettingsView: View {
     @State private var settings = SettingsManager.shared
     @State private var statusService = LyricsProviderStatusService()
     @State private var showStatusCard = false
+    @State private var isClearingLyricsCache = false
     /// The provider currently being dragged. Set on drag start and cleared on
     /// drop so the drop delegate can resolve the live reorder.
     @State private var draggingProvider: SettingsManager.LyricsProviderID?
@@ -83,6 +84,27 @@ struct LyricsSettingsView: View {
                 Text("Drag to reorder. All enabled providers are searched at once; the highest-fidelity result wins, and ties favor the higher position.")
             }
 
+            // MARK: - Cache
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Lyrics Cache")
+                        Text("Clears cached lyrics for previously played songs.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(self.isClearingLyricsCache ? String(localized: "Clearing...") : String(localized: "Clear Cache")) {
+                        self.clearLyricsCache()
+                    }
+                    .disabled(self.isClearingLyricsCache)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Cache")
+            }
+
             // MARK: - Hidden status card
 
             Section {
@@ -145,6 +167,12 @@ struct LyricsSettingsView: View {
 
     private func reload() {
         self.syncedLyricsService.reloadProviderFromSettings()
+    }
+
+    private func clearLyricsCache() {
+        self.isClearingLyricsCache = true
+        self.syncedLyricsService.clearCache(keepCurrent: true)
+        self.isClearingLyricsCache = false
     }
 }
 

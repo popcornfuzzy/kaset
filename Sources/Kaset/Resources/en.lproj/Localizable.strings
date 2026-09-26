@@ -328,6 +328,12 @@
 
 "Lyrics" = "Lyrics";
 
+"Lyrics Cache" = "Lyrics Cache";
+
+"Cache" = "Cache";
+
+"Clears cached lyrics for previously played songs." = "Clears cached lyrics for previously played songs.";
+
 /* Lyrics settings */
 "Apple Music TTML · word-synced" = "Apple Music TTML · word-synced";
 

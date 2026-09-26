@@ -398,14 +398,14 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            LyricsSettingsView()
-                .tabItem {
-                    Label("Lyrics", systemImage: "music.note")
-                }
-
             GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gearshape")
+                }
+
+            LyricsSettingsView()
+                .tabItem {
+                    Label("Lyrics", systemImage: "music.note")
                 }
 
             IntelligenceSettingsView()
@@ -416,7 +416,15 @@ struct SettingsView: View {
             ScrobblingSettingsView()
                 .environment(self.scrobblingCoordinator)
                 .tabItem {
-                    Label("Scrobbling", systemImage: "music.note.list")
+                    Label {
+                        Text("Scrobbling")
+                    } icon: {
+                        Image("LastFM", bundle: PackageResourceLookup.bundle(forImageNamed: "LastFM"))
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 12)
+                            .accessibilityHidden(true)
+                    }
                 }
 
             AboutSettingsView(updaterService: self.updaterService)
