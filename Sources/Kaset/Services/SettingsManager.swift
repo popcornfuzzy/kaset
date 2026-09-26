@@ -20,7 +20,10 @@ final class SettingsManager {
         static let scrobbleMinSeconds = "settings.scrobbleMinSeconds"
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
+        /// Legacy single-choice preset, kept only to migrate into the per-provider model.
         static let lyricsProvider = "settings.lyricsProvider"
+        static let lyricsProviderOrder = "settings.lyricsProviderOrder"
+        static let lyricsDisabledProviders = "settings.lyricsDisabledProviders"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
     }
@@ -89,23 +92,40 @@ final class SettingsManager {
         }
     }
 
-    // MARK: - Lyrics Provider
+    // MARK: - Lyrics Providers
 
-    enum LyricsProviderChoice: String, CaseIterable, Identifiable {
-        case paxsenixAndLRCLib
-        case kugouAndLRCLib
+    /// A lyrics source the user can enable, disable, and reorder. Position in
+    /// the order defines priority when capabilities tie.
+    enum LyricsProviderID: String, CaseIterable, Identifiable, Codable, Sendable {
+        case betterLyrics
+        case paxsenix
+        case kugou
         case lrclib
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .paxsenixAndLRCLib: "Paxsenix + KuGo + LRCLIB"
-            case .kugouAndLRCLib: "KuGo + LRCLIB"
+            case .betterLyrics: "BetterLyrics"
+            case .paxsenix: "Paxsenix"
+            case .kugou: "KuGo"
             case .lrclib: "LRCLIB"
             }
         }
+
+        /// Short description shown beneath the provider name in settings.
+        var detail: String {
+            switch self {
+            case .betterLyrics: String(localized: "Apple Music TTML · word-synced")
+            case .paxsenix: String(localized: "Apple Music · word-synced")
+            case .kugou: String(localized: "KuGou · line-synced")
+            case .lrclib: String(localized: "Community · line-synced")
+            }
+        }
     }
+
+    /// The default priority order, highest first.
+    static let defaultLyricsProviderOrder: [LyricsProviderID] = [.betterLyrics, .paxsenix, .kugou, .lrclib]
 
     // MARK: - Settings Properties
 
@@ -195,11 +215,104 @@ final class SettingsManager {
     /// The last page the user was on (for "Last Used" option).
     var lastUsedPage: LaunchPage = .home
 
-    /// The source used for synced lyrics.
-    var lyricsProvider: LyricsProviderChoice {
+    /// Priority order of the lyrics providers, highest first.
+    private(set) var lyricsProviderOrder: [LyricsProviderID] {
         didSet {
-            UserDefaults.standard.set(self.lyricsProvider.rawValue, forKey: Keys.lyricsProvider)
+            UserDefaults.standard.set(self.lyricsProviderOrder.map(\.rawValue), forKey: Keys.lyricsProviderOrder)
         }
+    }
+
+    /// Providers the user switched off. Stored separately from the order so
+    /// re-enabling a provider restores it to its previous priority.
+    private(set) var disabledLyricsProviders: Set<LyricsProviderID> {
+        didSet {
+            UserDefaults.standard.set(self.disabledLyricsProviders.map(\.rawValue), forKey: Keys.lyricsDisabledProviders)
+        }
+    }
+
+    /// Enabled providers in priority order — exactly what the lyrics service searches.
+    var enabledLyricsProviders: [LyricsProviderID] {
+        Self.enabledLyricsProviders(
+            order: self.lyricsProviderOrder,
+            disabled: self.disabledLyricsProviders
+        )
+    }
+
+    nonisolated static func enabledLyricsProviders(
+        order: [LyricsProviderID],
+        disabled: Set<LyricsProviderID>
+    ) -> [LyricsProviderID] {
+        order.filter { !disabled.contains($0) }
+    }
+
+    func isLyricsProviderEnabled(_ id: LyricsProviderID) -> Bool {
+        !self.disabledLyricsProviders.contains(id)
+    }
+
+    func setLyricsProvider(_ id: LyricsProviderID, enabled: Bool) {
+        if enabled {
+            self.disabledLyricsProviders.remove(id)
+        } else {
+            self.disabledLyricsProviders.insert(id)
+        }
+    }
+
+    /// Reorders the provider list, e.g. from a drag operation. Mirrors SwiftUI's
+    /// `move(fromOffsets:toOffset:)` semantics without importing SwiftUI here.
+    func moveLyricsProviders(fromOffsets source: IndexSet, toOffset destination: Int) {
+        self.lyricsProviderOrder = Self.reorderedLyricsProviders(
+            self.lyricsProviderOrder,
+            from: source,
+            to: destination
+        )
+    }
+
+    nonisolated static func reorderedLyricsProviders(
+        _ order: [LyricsProviderID],
+        from source: IndexSet,
+        to destination: Int
+    ) -> [LyricsProviderID] {
+        let moving = source.compactMap { order.indices.contains($0) ? order[$0] : nil }
+        var remaining = order
+        for index in source.sorted(by: >) where order.indices.contains(index) {
+            remaining.remove(at: index)
+        }
+        let insertIndex = destination - source.filter { $0 < destination }.count
+        remaining.insert(contentsOf: moving, at: max(0, min(insertIndex, remaining.count)))
+        return remaining
+    }
+
+    /// Moves a single provider one slot up (`offset` = -1) or down (`offset` = 1).
+    func moveLyricsProvider(_ id: LyricsProviderID, by offset: Int) {
+        guard let index = self.lyricsProviderOrder.firstIndex(of: id) else { return }
+        let target = index + offset
+        guard self.lyricsProviderOrder.indices.contains(target) else { return }
+        var order = self.lyricsProviderOrder
+        order.swapAt(index, target)
+        self.lyricsProviderOrder = order
+    }
+
+    /// Drops `id` onto `target`, landing at `target`'s position and shifting the
+    /// providers in between. Used by drag-and-drop reordering.
+    func moveLyricsProvider(_ id: LyricsProviderID, to target: LyricsProviderID) {
+        self.lyricsProviderOrder = Self.reorderedLyricsProviders(
+            self.lyricsProviderOrder,
+            moving: id,
+            onto: target
+        )
+    }
+
+    nonisolated static func reorderedLyricsProviders(
+        _ order: [LyricsProviderID],
+        moving id: LyricsProviderID,
+        onto target: LyricsProviderID
+    ) -> [LyricsProviderID] {
+        guard id != target,
+              let from = order.firstIndex(of: id),
+              let to = order.firstIndex(of: target)
+        else { return order }
+        let destination = from < to ? to + 1 : to
+        return Self.reorderedLyricsProviders(order, from: IndexSet(integer: from), to: destination)
     }
 
     /// Whether synced lyrics are preferred.
@@ -243,15 +356,22 @@ final class SettingsManager {
         self.scrobblePercentThreshold = UserDefaults.standard.object(forKey: Keys.scrobblePercentThreshold) as? Double ?? 0.5
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
-        if let rawValue = UserDefaults.standard.string(forKey: Keys.lyricsProvider),
-           let provider = LyricsProviderChoice(rawValue: rawValue)
-        {
-            self.lyricsProvider = provider
+        if let storedOrder = UserDefaults.standard.stringArray(forKey: Keys.lyricsProviderOrder) {
+            let storedIDs = storedOrder.compactMap(LyricsProviderID.init(rawValue:))
+            // Append providers added since the order was saved so new sources
+            // become available without a migration.
+            let missing = LyricsProviderID.allCases.filter { !storedIDs.contains($0) }
+            self.lyricsProviderOrder = storedIDs + missing
         } else {
-            self.lyricsProvider = .paxsenixAndLRCLib
-            UserDefaults.standard.set(
-                LyricsProviderChoice.paxsenixAndLRCLib.rawValue,
-                forKey: Keys.lyricsProvider
+            self.lyricsProviderOrder = Self.defaultLyricsProviderOrder
+        }
+
+        if let storedDisabled = UserDefaults.standard.stringArray(forKey: Keys.lyricsDisabledProviders) {
+            self.disabledLyricsProviders = Set(storedDisabled.compactMap(LyricsProviderID.init(rawValue:)))
+        } else {
+            // Migrate the legacy single-choice preset into the per-provider model.
+            self.disabledLyricsProviders = Self.disabledProvidersForLegacyChoice(
+                UserDefaults.standard.string(forKey: Keys.lyricsProvider)
             )
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
@@ -279,6 +399,19 @@ final class SettingsManager {
         {
             UserDefaults.standard.set(self.enabledServices, forKey: Keys.enabledServices)
             UserDefaults.standard.removeObject(forKey: Keys.lastFMEnabled)
+        }
+    }
+
+    // MARK: - Migration
+
+    /// Maps the legacy single-choice preset to the disabled-provider set of the
+    /// new per-provider model.
+    nonisolated static func disabledProvidersForLegacyChoice(_ rawValue: String?) -> Set<LyricsProviderID> {
+        switch rawValue {
+        case "betterLyrics": [.paxsenix, .kugou, .lrclib]
+        case "kugouAndLRCLib": [.betterLyrics, .paxsenix]
+        case "lrclib": [.betterLyrics, .paxsenix, .kugou]
+        default: [] // "paxsenixAndLRCLib" (or never configured): everything enabled
         }
     }
 

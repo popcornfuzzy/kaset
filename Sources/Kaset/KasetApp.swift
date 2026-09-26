@@ -398,6 +398,11 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            LyricsSettingsView()
+                .tabItem {
+                    Label("Lyrics", systemImage: "music.note")
+                }
+
             GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gearshape")

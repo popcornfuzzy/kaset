@@ -4,12 +4,10 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct GeneralSettingsView: View {
     @Environment(AuthService.self) private var authService
-    @Environment(SyncedLyricsService.self) private var syncedLyricsService
     @Environment(CanvasService.self) private var canvasService
     @State private var settings = SettingsManager.shared
     @State private var cacheSize: String = .init(localized: "Calculating...")
     @State private var isClearing = false
-    @State private var isClearingLyricsCache = false
     @State private var canvasCacheSize: String = .init(localized: "Calculating...")
     @State private var isClearingCanvasCache = false
 
@@ -43,37 +41,6 @@ struct GeneralSettingsView: View {
                 // Haptic Feedback
                 Toggle("Haptic Feedback", isOn: self.$settings.hapticFeedbackEnabled)
                     .help("Provide tactile feedback for actions on Force Touch trackpads")
-
-                // Synced Lyrics
-                Toggle("Enable Synced Lyrics", isOn: self.$settings.syncedLyricsEnabled)
-                    .help("Fetch and display real-time synced lyrics when available")
-
-                Picker("Synced Lyrics Source", selection: self.$settings.lyricsProvider) {
-                    ForEach(SettingsManager.LyricsProviderChoice.allCases) { provider in
-                        Text(provider.displayName).tag(provider)
-                    }
-                }
-                .help("Search Paxsenix, KuGo, and LRCLIB concurrently; word-synced results upgrade line-synced ones.")
-                .onChange(of: self.settings.lyricsProvider) { _, _ in
-                    self.syncedLyricsService.reloadProviderFromSettings()
-                }
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Lyrics Cache")
-                        Text("Clears cached lyrics for previously played songs.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(self.isClearingLyricsCache ? String(localized: "Clearing...") : String(localized: "Clear Cache")) {
-                        Task {
-                            await self.clearLyricsCache()
-                        }
-                    }
-                    .disabled(self.isClearingLyricsCache)
-                }
-                .padding(.vertical, 4)
 
                 // Safe Ad Blocking
                 Toggle("Enable Ad Blocking", isOn: self.$settings.safeAdBlockingEnabled)
@@ -182,12 +149,6 @@ struct GeneralSettingsView: View {
         await ImageCache.shared.clearAllCaches()
         await self.updateCacheSize()
         self.isClearing = false
-    }
-
-    private func clearLyricsCache() async {
-        self.isClearingLyricsCache = true
-        self.syncedLyricsService.clearCache(keepCurrent: true)
-        self.isClearingLyricsCache = false
     }
 
     private func updateCanvasCacheSize() async {

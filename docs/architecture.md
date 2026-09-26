@@ -289,6 +289,10 @@ Manages user preferences persisted via `UserDefaults`:
 | `hapticFeedbackEnabled` | `Bool` | `true` | Force Touch feedback |
 | `rememberPlaybackSettings` | `Bool` | `false` | Persist shuffle/repeat state |
 | `syncedLyricsEnabled` | `Bool` | `true` | Enable synced lyrics provider lookup before plain lyrics fallback |
+| `lyricsProviderOrder` | `[LyricsProviderID]` | BetterLyrics, Paxsenix, KuGo, LRCLIB | Priority order for lyrics providers |
+| `disabledLyricsProviders` | `Set<LyricsProviderID>` | `[]` | Providers switched off in Lyrics settings |
+
+**Lyrics Providers** are configured per-provider in the dedicated **Lyrics** settings tab (`LyricsSettingsView`): each source can be toggled independently and dragged to set priority. A hidden **Provider Status** card probes each provider's host and shows a red/green LED. The legacy single-choice preset (`settings.lyricsProvider`) is migrated into this model on first launch.
 
 **LaunchPage Options**: Home, Explore, Charts, Moods & Genres, New Releases, Liked Music, Playlists, Last Used
 
@@ -305,8 +309,8 @@ Coordinates synced and plain lyrics resolution for the current track:
 | `isLoading` | `Bool` | Whether synced provider search is currently running |
 
 **Key Behaviors**:
-- Searches all registered `LyricsProvider` implementations concurrently using `LyricsSearchInfo`
-- Ships with `LRCLibProvider` as the default synced lyrics source and parses LRC payloads with `LRCParser`
+- Searches all enabled `LyricsProvider` implementations concurrently using `LyricsSearchInfo`; the enabled set and its priority come from `SettingsManager`
+- Ships with `BetterLyricsProvider`, `PaxsenixProvider`, `KuGoProvider`, and `LRCLibProvider`; the highest-fidelity result across them wins (word > line > plain)
 - Caches results in memory by `videoId` and can upgrade cached plain lyrics when synced lyrics become available later
 - Persists each resolved result to one file per song via `LyricsCacheStore` (`~/Library/Application Support/Kaset/LyricsCache/<videoId>.json`) when a store is injected
 - Resolves the real home directory (via `getpwuid`) instead of the sandbox container; `Kaset.entitlements` grants the sandboxed app a home-relative temporary exception for `~/Library/Application Support/Kaset/`
@@ -316,8 +320,14 @@ Coordinates synced and plain lyrics resolution for the current track:
 
 **Related Files**:
 - `Sources/Kaset/Services/Lyrics/LyricsProvider.swift` — Provider protocol and search model
+- `Sources/Kaset/Services/Lyrics/LyricsProviderStatusService.swift` — Host reachability probe for the status card
+- `Sources/Kaset/Views/LyricsSettingsView.swift` — Lyrics settings tab (toggles, priority, status card)
+- `Sources/Kaset/Services/Lyrics/Providers/BetterLyricsProvider.swift` — Apple Music TTML via `lyrics-api.boidu.dev`
+- `Sources/Kaset/Services/Lyrics/Providers/PaxsenixProvider.swift` — Apple Music TTML/LRC via `lyrics.paxsenix.org`
+- `Sources/Kaset/Services/Lyrics/Providers/KuGoProvider.swift` — Line-synced LRC via KuGou
 - `Sources/Kaset/Services/Lyrics/Providers/LRCLibProvider.swift` — External synced lyrics provider
 - `Sources/Kaset/Services/API/Parsers/LRCParser.swift` — LRC to `SyncedLyrics` parser
+- `Sources/Kaset/Services/API/Parsers/TTMLParser.swift` — Apple Music TTML to `SyncedLyrics` parser
 
 **Integration**: Created once in `KasetApp` and injected through the SwiftUI environment for lyrics views.
 
