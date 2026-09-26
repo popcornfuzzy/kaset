@@ -56,3 +56,5 @@ What becomes easier or more difficult because of this change?
 | [0018](0018-karaoke-lyrics-animation.md) | Karaoke Lyrics Animation (Word-by-Word Fill) | Accepted |
 | [0019](0019-release-pipeline-and-appcast-publication.md) | Release Pipeline and Appcast Publication | Accepted |
 | [0020](0020-queue-automix-tuning-chips.md) | Server-Driven Automix Tuning Row in the Queue | Accepted |
+| [0021](0021-betterlyrics-provider.md) | BetterLyrics Provider and Shared TTML Parser | Accepted |
+| [0022](0022-per-provider-lyrics-settings.md) | Per-Provider Lyrics Settings with Priority and Status | Accepted |

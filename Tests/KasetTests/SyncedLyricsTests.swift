@@ -328,10 +328,6 @@ struct SyncedLyricsServiceTests {
 
     @Test("a word-synced result replaces an earlier line-synced result, shows the shimmer, and is cached")
     func wordSyncedResultReplacesEarlierLineResult() async throws {
-        let previous = SettingsManager.shared.lyricsProvider
-        SettingsManager.shared.lyricsProvider = .paxsenixAndLRCLib
-        defer { SettingsManager.shared.lyricsProvider = previous }
-
         let dir = try FileManager.default.temporaryDirectory
             .appendingPathComponent("SyncedLyricsReplacementTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -410,10 +406,6 @@ struct SyncedLyricsServiceTests {
 
     @Test("opening another view for the same track does not re-search an LRCLIB result")
     func loadedLRCLIBResultIsNotResearched() async {
-        let previous = SettingsManager.shared.lyricsProvider
-        SettingsManager.shared.lyricsProvider = .paxsenixAndLRCLib
-        defer { SettingsManager.shared.lyricsProvider = previous }
-
         let lrclibLyrics = Self.makeSyncedLyrics(source: "LRCLIB", lineText: "Line-only result")
         let paxsenixLyrics = Self.makeWordSyncedLyrics(source: "Paxsenix", lineText: "Word-synced result")
         let paxsenixState = LyricResultBox(.unavailable)
@@ -449,10 +441,6 @@ struct SyncedLyricsServiceTests {
 
     @Test("combined mode serves a cached LRCLIB result from disk without re-searching")
     func combinedModeServesCachedLRCLIBResultFromDisk() async throws {
-        let previous = SettingsManager.shared.lyricsProvider
-        SettingsManager.shared.lyricsProvider = .paxsenixAndLRCLib
-        defer { SettingsManager.shared.lyricsProvider = previous }
-
         let dir = try FileManager.default.temporaryDirectory
             .appendingPathComponent("SyncedLyricsCombinedCacheTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -484,10 +472,6 @@ struct SyncedLyricsServiceTests {
 
     @Test("LRCLIB-only mode serves a cached LRCLIB result without refetching")
     func lrclibOnlyModeServesCachedResult() async {
-        let previous = SettingsManager.shared.lyricsProvider
-        SettingsManager.shared.lyricsProvider = .lrclib
-        defer { SettingsManager.shared.lyricsProvider = previous }
-
         let lrclibLyrics = Self.makeSyncedLyrics(source: "LRCLIB", lineText: "Line-only result")
         let provider = MockLyricsProvider(name: "LRCLIB", result: .synced(lrclibLyrics))
         let service = SyncedLyricsService(providers: [provider])

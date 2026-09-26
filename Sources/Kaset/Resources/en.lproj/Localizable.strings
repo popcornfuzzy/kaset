@@ -328,6 +328,47 @@
 
 "Lyrics" = "Lyrics";
 
+"Lyrics Cache" = "Lyrics Cache";
+
+"Cache" = "Cache";
+
+"Clears cached lyrics for previously played songs." = "Clears cached lyrics for previously played songs.";
+
+/* Lyrics settings */
+"Apple Music TTML · word-synced" = "Apple Music TTML · word-synced";
+
+"Apple Music · word-synced" = "Apple Music · word-synced";
+
+"Community · line-synced" = "Community · line-synced";
+
+"KuGou · line-synced" = "KuGou · line-synced";
+
+"Provider Status" = "Provider Status";
+
+"No providers enabled — lyrics lookups are off." = "No providers enabled — lyrics lookups are off.";
+
+"No lyrics providers are enabled." = "No lyrics providers are enabled.";
+
+"Hidden diagnostics. Click to check whether each provider's server is reachable." = "Hidden diagnostics. Click to check whether each provider's server is reachable.";
+
+"Reachability check for each provider's server — green means the host responded." = "Reachability check for each provider's server — green means the host responded.";
+
+"Drag to reorder. All enabled providers are searched at once; the highest-fidelity result wins, and ties favor the higher position." = "Drag to reorder. All enabled providers are searched at once; the highest-fidelity result wins, and ties favor the higher position.";
+
+"Synced lyrics highlight each line as the song plays. Higher-fidelity providers also light up words individually." = "Synced lyrics highlight each line as the song plays. Higher-fidelity providers also light up words individually.";
+
+"Not checked" = "Not checked";
+
+"Checking…" = "Checking…";
+
+"Unreachable" = "Unreachable";
+
+"Last checked %@" = "Last checked %@";
+
+"Move Up" = "Move Up";
+
+"Move Down" = "Move Down";
+
 "Media Keys" = "Media Keys";
 
 "Mix" = "Mix";

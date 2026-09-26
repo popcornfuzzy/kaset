@@ -226,11 +226,66 @@ final class KuGoProvider: LyricsProvider {
             return .unavailable
         }
 
-        let normalized = Self.normalize(decoded)
+        // KuGou occasionally serves its LRC payload with XML entities left in the
+        // text (e.g. `This isn&apos;t home`), so decode them before parsing rather
+        // than showing the raw entity in the lyrics display.
+        let normalized = Self.normalize(Self.decodingEntities(decoded))
         guard !normalized.isEmpty, let parsed = LRCParser.parse(normalized) else {
             return .unavailable
         }
         return .synced(SyncedLyrics(lines: parsed.lines, source: source))
+    }
+
+    /// Decodes XML/HTML entities KuGou leaves in its LRC text.
+    ///
+    /// A single pass over the string keeps an escaped entity such as
+    /// `&amp;apos;` decoding to the literal text `&apos;` (its correct meaning)
+    /// instead of being decoded twice into `'`.
+    static func decodingEntities(_ raw: String) -> String {
+        let pattern = #"&(#x[0-9A-Fa-f]+|#[0-9]+|[A-Za-z]+);"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return raw }
+
+        let nsRaw = raw as NSString
+        let matches = regex.matches(in: raw, range: NSRange(location: 0, length: nsRaw.length))
+        guard !matches.isEmpty else { return raw }
+
+        var decoded = ""
+        decoded.reserveCapacity(raw.count)
+        var cursor = 0
+        for match in matches {
+            decoded += nsRaw.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+            let name = nsRaw.substring(with: match.range(at: 1))
+            decoded += Self.entityValue(name) ?? nsRaw.substring(with: match.range)
+            cursor = match.range.location + match.range.length
+        }
+        decoded += nsRaw.substring(from: cursor)
+        return decoded
+    }
+
+    /// Resolves the body of an entity (`amp`, `#39`, `#x27`, …) to its character,
+    /// or `nil` when it is not a recognized entity.
+    private static func entityValue(_ name: String) -> String? {
+        if name.hasPrefix("#x") || name.hasPrefix("#X") {
+            guard let value = UInt32(name.dropFirst(2), radix: 16),
+                  let scalar = Unicode.Scalar(value)
+            else { return nil }
+            return String(Character(scalar))
+        }
+        if name.hasPrefix("#") {
+            guard let value = UInt32(name.dropFirst()),
+                  let scalar = Unicode.Scalar(value)
+            else { return nil }
+            return String(Character(scalar))
+        }
+        switch name.lowercased() {
+        case "apos": return "'"
+        case "quot": return "\""
+        case "amp": return "&"
+        case "lt": return "<"
+        case "gt": return ">"
+        case "nbsp": return " "
+        default: return nil
+        }
     }
 
     /// Keeps only LRC timestamped lines and trims metadata blocks (lines whose

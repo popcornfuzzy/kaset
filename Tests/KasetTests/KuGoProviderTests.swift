@@ -108,6 +108,33 @@ struct KuGoProviderTests {
         #expect(lyrics.lines[2].timeInMs == 16500)
     }
 
+    @Test("decodingEntities decodes named, decimal, and hex entities in one pass")
+    func decodesEntities() {
+        #expect(KuGoProvider.decodingEntities("This isn&apos;t home") == "This isn't home")
+        #expect(KuGoProvider.decodingEntities("a &quot;b&quot; &amp; c") == #"a "b" & c"#)
+        #expect(KuGoProvider.decodingEntities("1 &lt; 2 &gt; 0") == "1 < 2 > 0")
+        #expect(KuGoProvider.decodingEntities("it&#39;s") == "it's")
+        #expect(KuGoProvider.decodingEntities("it&#x27;s") == "it's")
+        #expect(KuGoProvider.decodingEntities("a&nbsp;b") == "a b")
+        // An escaped entity is literal text, so it must not be decoded twice.
+        #expect(KuGoProvider.decodingEntities("&amp;apos;") == "&apos;")
+        // Unknown or entity-free text is left untouched.
+        #expect(KuGoProvider.decodingEntities("plain lyric") == "plain lyric")
+        #expect(KuGoProvider.decodingEntities("&bogus;") == "&bogus;")
+    }
+
+    @Test("processContent decodes entities before parsing")
+    func processesBase64WithEntities() {
+        let lrc = "[00:12.34]This isn&apos;t home for me"
+        let base64 = Data(lrc.utf8).base64EncodedString()
+        let result = KuGoProvider.processContent(base64)
+        guard case let .synced(lyrics) = result else {
+            Issue.record("Expected synced result")
+            return
+        }
+        #expect(lyrics.lines.map(\.text).contains("This isn't home for me"))
+    }
+
     @Test("processContent handles base64 with embedded newlines")
     func processesBase64WithNewlines() {
         let lrc = "[00:01.00]Line"

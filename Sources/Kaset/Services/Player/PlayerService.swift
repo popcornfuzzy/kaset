@@ -53,6 +53,22 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Currently playing track.
     var currentTrack: Song?
 
+    /// The title and (separator-normalized) artist the WebView last observed for the
+    /// playing track.
+    ///
+    /// `play(videoId:)` seeds `currentTrack` with "Loading...", and a queue entry can
+    /// carry a title/artist YouTube later refines (a different edit label, a localized
+    /// artist byline, missing artists). A consumer that needs the authoritative
+    /// metadata — the lyrics pipeline — waits for this observation instead of searching
+    /// against the placeholder or the un-refined queue entry.
+    struct ObservedWebMetadata: Sendable, Equatable {
+        let videoId: String
+        let title: String
+        let artist: String
+    }
+
+    var observedWebMetadata: ObservedWebMetadata?
+
     /// Artist-page episode backing the current playback, when applicable.
     var currentEpisode: ArtistEpisode?
 
@@ -584,6 +600,35 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Sets the YTMusicClient for API calls (dependency injection).
     func setYTMusicClient(_ client: any YTMusicClientProtocol) {
         self.ytMusicClient = client
+    }
+
+    /// Whether the WebView has reported observed (and normalized) metadata for `videoId`.
+    func hasObservedWebMetadata(for videoId: String) -> Bool {
+        self.observedWebMetadata?.videoId == videoId
+    }
+
+    /// Title and artist the lyrics search should run with for `videoId`.
+    ///
+    /// Prefers the WebView's observed, normalized metadata — that is what the user sees
+    /// on the player bar — and falls back to the current track only so a slow or silent
+    /// WebView cannot leave the lyrics panel permanently empty. Returns `nil` while the
+    /// metadata is still a placeholder.
+    func lyricsSearchMetadata(for videoId: String) -> (title: String, artist: String)? {
+        if let observed = self.observedWebMetadata,
+           observed.videoId == videoId,
+           !observed.title.isEmpty,
+           !observed.artist.isEmpty
+        {
+            return (observed.title, observed.artist)
+        }
+
+        guard let track = self.currentTrack,
+              track.videoId == videoId,
+              !track.title.isEmpty,
+              track.title != "Loading...",
+              !track.artistsDisplay.isEmpty
+        else { return nil }
+        return (track.title, track.artistsDisplay)
     }
 
     // MARK: - Public Methods

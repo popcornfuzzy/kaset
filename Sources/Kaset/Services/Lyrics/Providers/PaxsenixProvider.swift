@@ -64,9 +64,19 @@ final class PaxsenixProvider: LyricsProvider {
 
         guard !scoredTracks.isEmpty else { return .unavailable }
 
+        // The first candidate is the best match by title/artist/duration. A
+        // later candidate may only upgrade fidelity when it is the *same song*
+        // (a duplicate/deluxe release); once the primary song has produced any
+        // lyrics, a different song's higher-fidelity result must never win.
+        // Different-song candidates remain fallbacks only while nothing has
+        // been found (the song may simply be missing from the catalog).
+        let primaryTitle = Self.normalizedMatchTitle(scoredTracks[0].name)
         var bestResult: LyricResult = .unavailable
         var bestRank = -1
-        for track in scoredTracks.prefix(10) {
+        for (index, track) in scoredTracks.prefix(10).enumerated() {
+            let isPrimarySong = Self.normalizedMatchTitle(track.name) == primaryTitle
+            if index > 0, bestResult.isAvailable, !isPrimarySong { break }
+
             guard let response = try await self.fetchLyricsResponse(trackID: track.id) else { continue }
             let result = Self.parse(response, source: self.name)
             guard result.isAvailable else { continue }
@@ -76,7 +86,7 @@ final class PaxsenixProvider: LyricsProvider {
                 bestResult = result
             }
             // Word-synced is the best fidelity available — stop early.
-            if rank >= LyricsCapability.word.rawValue { break }
+            if bestRank >= LyricsCapability.word.rawValue { break }
         }
         return bestResult
     }
@@ -210,12 +220,14 @@ final class PaxsenixProvider: LyricsProvider {
             }
         }
 
-        if bestRank < 2,
+        // Only fall back to plain text when no synced representation was found;
+        // a line-synced result must not be downgraded to plain.
+        if bestRank < LyricsCapability.line.rawValue,
            let plain = response.plain,
            !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             bestResult = .plain(Lyrics(text: plain, source: source))
-            bestRank = 0
+            bestRank = LyricsCapability.plain.rawValue
         }
 
         if bestRank < 2, let content = response.content, !content.isEmpty {
@@ -273,12 +285,7 @@ final class PaxsenixProvider: LyricsProvider {
     /// Parses Apple Music TTML: `<p begin end>` blocks whose `<span>` children
     /// may carry per-word `begin` timings.
     static func parseTTML(_ raw: String, source: String = "Paxsenix") -> SyncedLyrics? {
-        guard let data = raw.data(using: .utf8) else { return nil }
-        let delegate = TTMLParserDelegate()
-        let parser = XMLParser(data: data)
-        parser.delegate = delegate
-        guard parser.parse(), !delegate.lines.isEmpty else { return nil }
-        return SyncedLyrics(lines: delegate.lines, source: source)
+        TTMLParser.parse(raw, source: source)
     }
 
     /// Builds a result from the structured `content` array: word-synced when the
@@ -359,7 +366,7 @@ final class PaxsenixProvider: LyricsProvider {
         artist: String,
         duration: TimeInterval?
     ) -> [PaxsenixTrack] {
-        let cleanupRegex = #"\s*\(.*?\)|\s*\[.*?\]"#
+        let cleanupRegex = Self.parentheticalCleanupRegex
         let cleanedTitle = Self.scoringClean(title, cleanupRegex: cleanupRegex)
         let cleanedArtist = Self.cleanArtist(artist).lowercased()
         let targetIsMixed = title.lowercased().contains("mixed")
@@ -410,11 +417,20 @@ final class PaxsenixProvider: LyricsProvider {
             .map(\.0)
     }
 
+    /// Normalized title used to decide whether two catalog tracks represent the
+    /// same song (duplicate/deluxe releases) when falling back through
+    /// candidates; strips parenthetical/bracket suffixes and lowercases.
+    static func normalizedMatchTitle(_ name: String) -> String {
+        Self.scoringClean(name, cleanupRegex: Self.parentheticalCleanupRegex)
+    }
+
     private static func scoringClean(_ text: String, cleanupRegex: String) -> String {
         text.replacingOccurrences(of: cleanupRegex, with: "", options: .regularExpression)
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private static let parentheticalCleanupRegex = #"\s*\(.*?\)|\s*\[.*?\]"#
 
     // MARK: - ELRC helpers
 
@@ -582,134 +598,3 @@ private actor PaxsenixTokenStore {
 }
 
 private struct AppleMusicAuthError: Error {}
-
-// MARK: - TTML parsing
-
-private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
-    var lines: [SyncedLyricLine] = []
-
-    private var lineBeginMs: Int?
-    private var lineEndMs: Int?
-    private var plainText = ""
-    private var spanJoinedText = ""
-    private var hasSpan = false
-    private var pendingWords: [TimedWord] = []
-    private var inLine = false
-    private var inSpan = false
-    private var spanBeginMs: Int?
-    private var spanText = ""
-    private var spansSeen = 0
-    /// Set when whitespace-only text sits between two spans — Apple's Word
-    /// timing format marks word boundaries that way. Syllable continuations
-    /// have no inter-span whitespace and are glued together.
-    private var pendingSpaceBetweenSpans = false
-    /// Whether the span currently being closed begins a new word (so it needs
-    /// a leading space unless it already has one).
-    private var needsLeadingSpace = false
-
-    func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?,
-        attributes attributeDict: [String: String] = [:]
-    ) {
-        switch elementName.lowercased() {
-        case "p":
-            inLine = true
-            plainText = ""
-            spanJoinedText = ""
-            hasSpan = false
-            pendingWords.removeAll()
-            spansSeen = 0
-            pendingSpaceBetweenSpans = false
-            needsLeadingSpace = false
-            lineBeginMs = Self.timeToMs(attributeDict["begin"])
-            lineEndMs = Self.timeToMs(attributeDict["end"])
-        case "span":
-            hasSpan = true
-            inSpan = true
-            spanText = ""
-            spanBeginMs = Self.timeToMs(attributeDict["begin"])
-            // Whitespace between the previous span and this one marks a word
-            // boundary; syllable continuations have no inter-span whitespace.
-            needsLeadingSpace = pendingSpaceBetweenSpans && spansSeen > 0
-            pendingSpaceBetweenSpans = false
-        default:
-            break
-        }
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
-        if inSpan {
-            spanText += string
-        } else if inLine {
-            if string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // Whitespace-only text between spans (or around them) marks a
-                // word boundary rather than contributing to the line text.
-                pendingSpaceBetweenSpans = true
-            } else {
-                plainText += string
-            }
-        }
-    }
-
-    func parser(
-        _ parser: XMLParser,
-        didEndElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?
-    ) {
-        switch elementName.lowercased() {
-        case "span":
-            var text = spanText
-            if needsLeadingSpace, !text.hasPrefix(" "), !text.hasPrefix("\t") {
-                text = " " + text
-            }
-            if let begin = spanBeginMs,
-               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                pendingWords.append(TimedWord(timeInMs: begin, word: text))
-            }
-            spanJoinedText += text
-            spansSeen += 1
-            inSpan = false
-            spanBeginMs = nil
-            needsLeadingSpace = false
-        case "p":
-            guard inLine else { break }
-            inLine = false
-            // When a line has word spans, its text comes only from the spans;
-            // inter-span formatting whitespace is ignored.
-            let text = (hasSpan ? spanJoinedText : plainText)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else {
-                pendingWords.removeAll()
-                return
-            }
-            let begin = lineBeginMs ?? (pendingWords.first?.timeInMs ?? 0)
-            let end = lineEndMs ?? (begin + 4_000)
-            // Word spacing comes from the source (inter-span whitespace and
-            // span text) — never inject spaces between syllable parts.
-            let words = pendingWords.isEmpty ? nil : pendingWords
-            lines.append(SyncedLyricLine(timeInMs: begin, duration: max(1, end - begin), text: text, words: words))
-            pendingWords.removeAll()
-        default:
-            break
-        }
-    }
-
-    /// Parses TTML times: `HH:MM:SS.mmm`, `MM:SS.mmm`, or `SS.mmm`.
-    private static func timeToMs(_ value: String?) -> Int? {
-        guard let value, !value.isEmpty else { return nil }
-        let parts = value.split(separator: ":")
-        guard let last = parts.last, let seconds = Double(last) else { return nil }
-        var total = seconds
-        var multiplier = 1.0
-        for part in parts.dropLast().reversed() {
-            multiplier *= 60
-            total += (Double(part) ?? 0) * multiplier
-        }
-        return Int(total * 1000)
-    }
-}

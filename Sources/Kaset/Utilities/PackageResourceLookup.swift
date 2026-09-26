@@ -21,6 +21,22 @@ enum PackageResourceLookup {
         return Color(red: 1.0, green: 0.0, blue: 0.337)
     }()
 
+    /// Resolves the bundle whose compiled asset catalog contains `name`, so
+    /// brand images load whether they ship in `Bundle.main` or the SwiftPM
+    /// resource bundle. Returns `Bundle.main` when the asset isn't found.
+    static func bundle(forImageNamed name: String) -> Bundle {
+        let resource = NSImage.Name(name)
+        if Bundle.main.image(forResource: resource) != nil {
+            return Bundle.main
+        }
+
+        for bundle in candidateBundles where bundle.image(forResource: resource) != nil {
+            return bundle
+        }
+
+        return Bundle.main
+    }
+
     private static let bundleSearchRoots: [Bundle] = {
         var bundles: [Bundle] = [Bundle.main]
         bundles.append(contentsOf: Bundle.allBundles)

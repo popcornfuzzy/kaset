@@ -159,15 +159,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- appcast.xml; then
-            echo "appcast.xml already lists $TAG; nothing to commit."
+          # version.env is regenerated alongside the feed by generate-appcast.sh so a
+          # local build does not sit below the released version and nag for an update.
+          if git diff --quiet -- appcast.xml version.env; then
+            echo "appcast.xml and version.env already reflect $TAG; nothing to commit."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add appcast.xml
-          git commit -m "Update appcast to $TAG"
+          git add appcast.xml version.env
+          git commit -m "Update appcast and version.env to $TAG"
 
           # Another push to the default branch can land while this job runs.
           for attempt in 1 2 3; do

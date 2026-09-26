@@ -33,13 +33,15 @@ final class SyncedLyricsService {
     }
 
     private static func providersForCurrentSettings() -> [LyricsProvider] {
-        switch SettingsManager.shared.lyricsProvider {
-        case .paxsenixAndLRCLib:
-            [PaxsenixProvider(), KuGoProvider(), LRCLibProvider()]
-        case .kugouAndLRCLib:
-            [KuGoProvider(), LRCLibProvider()]
-        case .lrclib:
-            [LRCLibProvider()]
+        SettingsManager.shared.enabledLyricsProviders.map(Self.makeProvider)
+    }
+
+    private static func makeProvider(for id: SettingsManager.LyricsProviderID) -> LyricsProvider {
+        switch id {
+        case .betterLyrics: BetterLyricsProvider()
+        case .paxsenix: PaxsenixProvider()
+        case .kugou: KuGoProvider()
+        case .lrclib: LRCLibProvider()
         }
     }
 
@@ -78,6 +80,17 @@ final class SyncedLyricsService {
     }
 
     func fetchLyrics(for info: LyricsSearchInfo, forceRefresh: Bool = false) async {
+        guard !self.providers.isEmpty else {
+            self.currentLyrics = .unavailable
+            self.activeProvider = nil
+            self.loadingProvider = nil
+            self.currentLyricsVideoId = info.videoId
+            self.errorMessage = String(localized: "No lyrics providers are enabled.")
+            self.isLoading = false
+            self.searchingForBetterLyrics = false
+            return
+        }
+
         // A presentation transition can make fullscreen and sidebar request the
         // same track at nearly the same time. Share that search rather than
         // letting one view invalidate the other with a second request.
