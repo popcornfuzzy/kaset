@@ -784,6 +784,20 @@ extension PlayerService {
         let displayArtist = Self.commaSeparatedArtistDisplay(artist)
         let artistObj = Artist(id: "unknown", name: displayArtist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+
+        // Record the metadata the WebView just observed for this track, with the artist
+        // separators normalized. The lyrics pipeline waits for this and searches with it,
+        // so it never runs against the "Loading..." placeholder or a queue entry with a
+        // title/artist YouTube has since refined. Set before the divergence handlers
+        // below, since any of them can reconcile or early-return; only a complete
+        // observation counts, so a half-rendered player bar cannot satisfy the gate.
+        if !title.isEmpty, !displayArtist.isEmpty {
+            self.observedWebMetadata = ObservedWebMetadata(
+                videoId: resolvedVideoId,
+                title: title,
+                artist: displayArtist
+            )
+        }
         if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
             self.updateCurrentPlaybackKind(using: queuedSong)
         } else if self.currentTrack?.videoId == resolvedVideoId {

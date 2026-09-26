@@ -298,3 +298,38 @@ fi
 
 COUNT=$(grep -c '<item>' "$OUTPUT" || true)
 print_success "Wrote $OUTPUT with $COUNT item(s)"
+
+# --- Sync version.env -------------------------------------------------------
+#
+# The feed is what installed copies check for updates, but a local build stamps
+# the app with version.env. Left untouched, version.env keeps advertising the
+# previous release, so building locally pops a persistent "update available"
+# prompt that an older local build can never satisfy. Mirror the release into it:
+# the marketing version from the tag and the build number Sparkle actually
+# recorded (the DMG's CFBundleVersion). A local build then compares equal to the
+# published feed — never older — and stops being told to update.
+VERSION_ENV="$ROOT/version.env"
+if [[ -f "$VERSION_ENV" ]]; then
+  APPCAST_BUILD=$(printf '%s' "$ITEM" | sed -n 's/.*<sparkle:version>\([^<]*\)<\/sparkle:version>.*/\1/p')
+  if [[ -z "$APPCAST_BUILD" ]]; then
+    print_warning "Could not read sparkle:version from the generated item; leaving version.env unchanged."
+  elif grep -qx "MARKETING_VERSION=$VERSION" "$VERSION_ENV" \
+    && grep -qx "BUILD_NUMBER=$APPCAST_BUILD" "$VERSION_ENV"; then
+    print_success "version.env already at $VERSION ($APPCAST_BUILD)"
+  else
+    TMP_VERSION_ENV=$(mktemp)
+    MARKETING_SEEN=0
+    BUILD_SEEN=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        MARKETING_VERSION=*) printf 'MARKETING_VERSION=%s\n' "$VERSION"; MARKETING_SEEN=1 ;;
+        BUILD_NUMBER=*) printf 'BUILD_NUMBER=%s\n' "$APPCAST_BUILD"; BUILD_SEEN=1 ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done < "$VERSION_ENV" > "$TMP_VERSION_ENV"
+    [[ "$MARKETING_SEEN" -eq 1 ]] || printf 'MARKETING_VERSION=%s\n' "$VERSION" >> "$TMP_VERSION_ENV"
+    [[ "$BUILD_SEEN" -eq 1 ]] || printf 'BUILD_NUMBER=%s\n' "$APPCAST_BUILD" >> "$TMP_VERSION_ENV"
+    mv "$TMP_VERSION_ENV" "$VERSION_ENV"
+    print_success "Updated version.env to $VERSION ($APPCAST_BUILD)"
+  fi
+fi

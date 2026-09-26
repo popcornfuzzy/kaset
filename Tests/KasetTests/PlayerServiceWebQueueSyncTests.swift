@@ -340,6 +340,69 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.isKasetInitiatedPlayback == false)
     }
 
+    @Test("Web metadata observation is recorded so the lyrics pipeline can gate on it")
+    func webMetadataObservationRecorded() async {
+        let songs = [
+            Song(
+                id: "v1",
+                title: "You Make My Dreams (Come True)",
+                artists: [Artist(id: "artist-1", name: "Daryl Hall & John Oates")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        // No WebView metadata has arrived yet, so the lyrics pipeline must keep waiting.
+        #expect(self.playerService.hasObservedWebMetadata(for: "v1") == false)
+
+        self.playerService.updateTrackMetadata(
+            title: "You Make My Dreams (Come True)",
+            artist: "Daryl Hall and John Oates",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.hasObservedWebMetadata(for: "v1"))
+        #expect(self.playerService.hasObservedWebMetadata(for: "v2") == false)
+        // The lyrics search uses the WebView's normalized byline, not the queue's
+        // localized "&" form, so the provider gets the artist as the user sees it.
+        #expect(self.playerService.lyricsSearchMetadata(for: "v1")?.artist == "Daryl Hall, John Oates")
+        #expect(self.playerService.lyricsSearchMetadata(for: "v2") == nil)
+    }
+
+    @Test("Lyrics metadata waits for the WebView and prefers its normalized byline")
+    func lyricsMetadataPrefersObservedByline() async {
+        let songs = [
+            Song(
+                id: "v1",
+                title: "You Make My Dreams (Come True)",
+                artists: [Artist(id: "artist-1", name: "Daryl Hall & John Oates")],
+                album: nil,
+                duration: 180,
+                thumbnailURL: nil,
+                videoId: "v1"
+            ),
+        ]
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        // Before the WebView reports, the fallback is only the current track (so a silent
+        // WebView cannot leave the pane empty forever).
+        #expect(self.playerService.lyricsSearchMetadata(for: "v1")?.title == "You Make My Dreams (Come True)")
+
+        self.playerService.updateTrackMetadata(
+            title: "You Make My Dreams (Come True)",
+            artist: "Daryl Hall und John Oates",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(self.playerService.hasObservedWebMetadata(for: "v1"))
+        #expect(self.playerService.lyricsSearchMetadata(for: "v1")?.artist == "Daryl Hall, John Oates")
+    }
+
     @Test("Web metadata reconcile keeps the artwork URL the queue song is already showing")
     func webMetadataReconcileKeepsQueueArtworkURL() async {
         // YouTube serves one picture from many URLs: the player bar's `<img>` is the same art

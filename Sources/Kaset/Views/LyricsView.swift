@@ -10,6 +10,7 @@ struct LyricsView: View {
     let client: any YTMusicClientProtocol
 
     @State private var lastLoadedVideoId: String?
+    @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
     @State private var isLoadingFallback = false
 
@@ -55,31 +56,22 @@ struct LyricsView: View {
                 self.partialSummary = nil
                 self.showExplanation = false
                 self.explanationError = nil
-                self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
             }
+            self.startLyricsLoad(for: newVideoId)
+        }
+        .onChange(of: self.playerService.observedWebMetadata) { _, _ in
+            self.retryLyricsLoadIfMetadataImproved()
         }
         .onChange(of: self.playerService.currentTrack?.title) { _, _ in
-            guard let videoId = self.playerService.currentTrack?.videoId else { return }
-
-            guard videoId != self.lastLoadedVideoId else { return }
-            self.loadTask?.cancel()
-            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+            self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
         }
         .onChange(of: self.playerService.duration) { _, newDuration in
-            guard newDuration > 0,
-                  let videoId = self.playerService.currentTrack?.videoId,
-                  videoId != self.lastLoadedVideoId
-            else { return }
-            self.loadTask?.cancel()
-            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+            guard newDuration > 0 else { return }
+            self.retryLyricsLoadIfMetadataImproved()
         }
         .onChange(of: self.playerService.isPlaying) { _, isPlaying in
-            guard isPlaying,
-                  let videoId = self.playerService.currentTrack?.videoId,
-                  videoId != self.lastLoadedVideoId
-            else { return }
-            self.loadTask?.cancel()
-            self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId) }
+            guard isPlaying else { return }
+            self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
         }
         .task {
             if let videoId = playerService.currentTrack?.videoId {
@@ -482,26 +474,22 @@ struct LyricsView: View {
 
     @MainActor
     private func loadLyrics(for videoId: String, forceRefresh: Bool = false) async {
-        guard let track = playerService.currentTrack else { return }
+        guard let track = playerService.currentTrack, track.videoId == videoId else { return }
 
-        // Don't search if it's not the current track anymore
-        guard track.videoId == videoId else { return }
-
-        // Skip fetch if metadata hasn't stabilized yet — a later onChange on
-        // the track's title will re-trigger loading with correct metadata.
-        guard !track.title.isEmpty,
-              track.title != "Loading...",
-              !track.artistsDisplay.isEmpty
-        else { return }
+        // Search with the WebView's observed, normalized metadata when it has arrived:
+        // a queue entry can carry a title/artist YouTube has since refined, which makes
+        // the providers match the wrong song (or nothing) and caches the miss.
+        guard let metadata = self.playerService.lyricsSearchMetadata(for: videoId) else { return }
 
         self.lastLoadedVideoId = videoId
+        self.lastLoadedSignature = self.lyricsSignature(for: videoId)
 
         let info = LyricsSearchInfo(
-            title: track.title,
-            artist: track.artistsDisplay,
+            title: metadata.title,
+            artist: metadata.artist,
             album: track.album?.title,
             duration: self.playerService.duration > 0 ? self.playerService.duration : track.duration,
-            videoId: track.videoId
+            videoId: videoId
         )
 
         if SettingsManager.shared.syncedLyricsEnabled {
@@ -542,19 +530,69 @@ struct LyricsView: View {
     }
 
     @MainActor
-    private func loadLyricsWhenReady(for videoId: String) async {
-        for _ in 0 ..< 20 {
+    private func startLyricsLoad(for videoId: String?, forceRefresh: Bool = false) {
+        self.loadTask?.cancel()
+        self.loadTask = nil
+        guard let videoId else { return }
+        // A new track, a refined metadata signature, or an explicit refresh all warrant a
+        // rerun; an unchanged track and metadata do not.
+        guard forceRefresh
+            || videoId != self.lastLoadedVideoId
+            || self.lyricsSignature(for: videoId) != self.lastLoadedSignature
+        else { return }
+        self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId, forceRefresh: forceRefresh) }
+    }
+
+    /// Re-runs a search that already ran for this track when the metadata it used has
+    /// since been refined — the failure mode where the panel searches before the WebView
+    /// reports the new song and then stays on "No Lyrics Available". A result already on
+    /// screen is never re-searched on a metadata tweak.
+    @MainActor
+    private func retryLyricsLoadIfMetadataImproved() {
+        guard let videoId = self.playerService.currentTrack?.videoId,
+              self.playerService.hasObservedWebMetadata(for: videoId),
+              self.lyricsSignature(for: videoId) != self.lastLoadedSignature,
+              !self.hasDisplayedLyrics(for: videoId)
+        else { return }
+        self.startLyricsLoad(for: videoId, forceRefresh: self.lastLoadedVideoId == videoId)
+    }
+
+    private func hasDisplayedLyrics(for videoId: String) -> Bool {
+        self.syncedLyricsService.currentLyricsVideoId == videoId
+            && self.syncedLyricsService.currentLyrics.isAvailable
+    }
+
+    /// Identity of the metadata a search would run with. It changes when the WebView
+    /// refines the title/artist or the duration settles, which is exactly when a search
+    /// that ran against incomplete metadata should be retried.
+    private func lyricsSignature(for videoId: String) -> String? {
+        guard let metadata = self.playerService.lyricsSearchMetadata(for: videoId) else { return nil }
+        let duration = self.playerService.duration > 0 ? self.playerService.duration : (self.playerService.currentTrack?.duration ?? 0)
+        return "\(videoId)|\(metadata.title)|\(metadata.artist)|\(Int(duration.rounded()))"
+    }
+
+    @MainActor
+    private func loadLyricsWhenReady(for videoId: String, forceRefresh: Bool = false) async {
+        for _ in 0 ..< 40 {
             guard !Task.isCancelled else { return }
             guard self.playerService.currentTrack?.videoId == videoId else { return }
-            if let track = self.playerService.currentTrack,
-               !track.title.isEmpty,
-               track.title != "Loading...",
-               !track.artistsDisplay.isEmpty
+            // Wait for the WebView's observed metadata before searching: it is the
+            // authoritative, normalized title/artist. Searching on the queue entry or the
+            // "Loading..." placeholder makes the providers match the wrong song (or
+            // nothing) and can leave the wrong lyrics on screen.
+            if self.playerService.hasObservedWebMetadata(for: videoId),
+               self.playerService.lyricsSearchMetadata(for: videoId) != nil
             {
-                await self.loadLyrics(for: videoId)
+                await self.loadLyrics(for: videoId, forceRefresh: forceRefresh)
                 return
             }
             try? await Task.sleep(for: .milliseconds(250))
+        }
+
+        // The WebView never reported metadata in time: fall back to the current track's
+        // metadata rather than leaving the panel empty forever.
+        if self.playerService.lyricsSearchMetadata(for: videoId) != nil {
+            await self.loadLyrics(for: videoId, forceRefresh: forceRefresh)
         }
     }
 
