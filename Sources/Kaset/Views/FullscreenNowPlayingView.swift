@@ -263,7 +263,15 @@ struct FullscreenNowPlayingView: View {
                     case let .synced(synced):
                         FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.lyricsTimeMs, isPlaying: self.playerService.isPlaying, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
                     case let .plain(plain):
-                        ScrollView { Text(plain.text).font(.system(size: 36, weight: .bold)).lineSpacing(18).foregroundStyle(.white).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12) }.scrollIndicators(.hidden).mask(self.lyricsFadeMask)
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(plain.text).font(.system(size: 36, weight: .bold)).lineSpacing(18).foregroundStyle(.white).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
+                                if let attribution = plain.attribution, attribution.hasSubmitter {
+                                    LyricsSubmitterCredit(attribution: attribution, color: .white.opacity(0.55))
+                                        .padding(.top, 24)
+                                }
+                            }
+                        }.scrollIndicators(.hidden).mask(self.lyricsFadeMask)
                     case .unavailable:
                         self.emptyLyricsState(icon: "quote.bubble", title: String(localized: "No Lyrics Available"), message: self.syncedLyricsService.errorMessage ?? String(localized: "Try another song to see synced lyrics here."))
                     }
@@ -565,6 +573,13 @@ private struct FullscreenSyncedLyricsView: View {
                             .id(line.id)
                         }
                     }
+                    // The submitter credit sits at the end of the sheet, out of the
+                    // way until the reader reaches the bottom.
+                    if let attribution = self.lyrics.attribution, attribution.hasSubmitter {
+                        LyricsSubmitterCredit(attribution: attribution, color: .white.opacity(0.55))
+                            .padding(.top, 28)
+                    }
+
                     Spacer().frame(height: 84)
                 }
             }
@@ -731,20 +746,35 @@ private struct FullscreenSyncedLineView: View {
             clock: self.clock,
             minimumFrameInterval: self.minimumFrameInterval
         ) { displayTimeMs in
-            if self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let hasLead = !self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let background = self.line.backgroundText
+
+            if !hasLead, background == nil {
                 // A short instrumental gap that is not long enough for the pause dots.
                 Text("♪")
                     .font(.system(size: Self.fontSize, weight: .bold))
                     .lineSpacing(18)
                     .foregroundStyle(.white)
             } else {
-                KaraokeLyricsLineView(
-                    layout: layout,
-                    displayTimeMs: displayTimeMs,
-                    color: .white,
-                    emphasis: self.emphasis,
-                    lineSpacing: 18
-                )
+                VStack(alignment: .leading, spacing: 6) {
+                    if hasLead {
+                        KaraokeLyricsLineView(
+                            layout: layout,
+                            displayTimeMs: displayTimeMs,
+                            color: .white,
+                            emphasis: self.emphasis,
+                            lineSpacing: 18
+                        )
+                    }
+                    if let background {
+                        LyricsBackgroundVocalsView(
+                            text: background,
+                            fontSize: Self.fontSize * 0.62,
+                            color: .white.opacity(0.55),
+                            lineSpacing: 8
+                        )
+                    }
+                }
             }
         }
         .offset(y: self.drift)

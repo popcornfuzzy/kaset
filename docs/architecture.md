@@ -289,7 +289,7 @@ Manages user preferences persisted via `UserDefaults`:
 | `hapticFeedbackEnabled` | `Bool` | `true` | Force Touch feedback |
 | `rememberPlaybackSettings` | `Bool` | `false` | Persist shuffle/repeat state |
 | `syncedLyricsEnabled` | `Bool` | `true` | Enable synced lyrics provider lookup before plain lyrics fallback |
-| `lyricsProviderOrder` | `[LyricsProviderID]` | BetterLyrics, Paxsenix, KuGo, LRCLIB | Priority order for lyrics providers |
+| `lyricsProviderOrder` | `[LyricsProviderID]` | BetterLyrics, Paxsenix, Unison, KuGo, LRCLIB | Priority order for lyrics providers |
 | `disabledLyricsProviders` | `Set<LyricsProviderID>` | `[]` | Providers switched off in Lyrics settings |
 
 **Lyrics Providers** are configured per-provider in the dedicated **Lyrics** settings tab (`LyricsSettingsView`): each source can be toggled independently and dragged to set priority. A hidden **Provider Status** card probes each provider's host and shows a red/green LED. The legacy single-choice preset (`settings.lyricsProvider`) is migrated into this model on first launch.
@@ -306,17 +306,22 @@ Coordinates synced and plain lyrics resolution for the current track:
 |----------|------|-------------|
 | `currentLyrics` | `LyricResult` | Currently displayed `.synced`, `.plain`, or `.unavailable` lyrics |
 | `activeProvider` | `String?` | Provider/source label surfaced in the lyrics UI |
+| `availableLyricsVariants` | `[LyricsVariant]` | Alternative community versions for the current track (memory-only) |
+| `selectedLyricsVariantID` | `String?` | Which version is on screen, when a variant list exists |
 | `isLoading` | `Bool` | Whether synced provider search is currently running |
 
 **Key Behaviors**:
 - Searches all enabled `LyricsProvider` implementations concurrently using `LyricsSearchInfo`; the enabled set and its priority come from `SettingsManager`
-- Ships with `BetterLyricsProvider`, `PaxsenixProvider`, `KuGoProvider`, and `LRCLibProvider`; the highest-fidelity result across them wins (word > line > plain)
+- Ships with `BetterLyricsProvider`, `PaxsenixProvider`, `UnisonProvider`, `KuGoProvider`, and `LRCLibProvider`; the highest-fidelity result across them wins (word > line > plain)
 - Caches results in memory by `videoId` and can upgrade cached plain lyrics when synced lyrics become available later
 - Persists each resolved result to one file per song via `LyricsCacheStore` (`~/Library/Application Support/Kaset/LyricsCache/<videoId>.json`) when a store is injected
 - Resolves the real home directory (via `getpwuid`) instead of the sandbox container; `Kaset.entitlements` grants the sandboxed app a home-relative temporary exception for `~/Library/Application Support/Kaset/`
 - Migrates a legacy single-file lyrics cache (`~/Library/Application Support/Kaset/lyrics-cache.json`) into per-song files in the background on launch
 - Uses `fetchGeneration` to ignore stale async completions when the user changes tracks quickly
 - Preserves plain lyrics fallback state until a higher-quality synced result is resolved
+- Credits community submitters via `LyricsAttribution` (name, profile URL, avatar) and, when a winning `LyricsVariantProvider` (Unison) offers more than one version, loads its alternatives so the lyrics footer can switch between them; the chosen version becomes the cached result
+- The submitter credit renders at the end of the lyric sheet (never pinned over the lyrics); the sticky footer carries only `Source:` and the version picker
+- Models backing vocals: `TimedWord.isBackground` and `SyncedLyricLine.backgroundWords` keep `ttm:role="x-bg"` (and Paxsenix `background`) phrases out of the lead line, so the lead text is never glued to a backing phrase and the karaoke fill is not dragged backwards. See [ADR-0025](adr/0025-background-vocals.md)
 
 **Related Files**:
 - `Sources/Kaset/Services/Lyrics/LyricsProvider.swift` — Provider protocol and search model
@@ -324,6 +329,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 - `Sources/Kaset/Views/LyricsSettingsView.swift` — Lyrics settings tab (toggles, priority, status card)
 - `Sources/Kaset/Services/Lyrics/Providers/BetterLyricsProvider.swift` — Apple Music TTML via `lyrics-api.boidu.dev`
 - `Sources/Kaset/Services/Lyrics/Providers/PaxsenixProvider.swift` — Apple Music TTML/LRC via `lyrics.paxsenix.org`
+- `Sources/Kaset/Services/Lyrics/Providers/UnisonProvider.swift` — Community TTML/LRC via `unison.boidu.dev`
 - `Sources/Kaset/Services/Lyrics/Providers/KuGoProvider.swift` — Line-synced LRC via KuGou
 - `Sources/Kaset/Services/Lyrics/Providers/LRCLibProvider.swift` — External synced lyrics provider
 - `Sources/Kaset/Services/API/Parsers/LRCParser.swift` — LRC to `SyncedLyrics` parser

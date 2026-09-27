@@ -107,7 +107,7 @@ struct SyncedLyricsDisplayView: View {
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
-                        if self.lyrics.isPauseLine(at: index) || (line.words == nil && line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                        if self.lyrics.isPauseLine(at: index) || (line.words == nil && line.backgroundWords == nil && line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                             KaraokeTimeSource(
                                 line: line,
                                 status: status,
@@ -137,6 +137,14 @@ struct SyncedLyricsDisplayView: View {
                             )
                             .id(line.id)
                         }
+                    }
+
+                    // The submitter credit belongs to the lyrics, not to the panel:
+                    // it sits at the end of the sheet, out of the way until read to
+                    // the bottom.
+                    if let attribution = self.lyrics.attribution, attribution.hasSubmitter {
+                        LyricsSubmitterCredit(attribution: attribution)
+                            .padding(.top, 28)
                     }
 
                     Spacer().frame(height: 120)
@@ -541,21 +549,31 @@ struct SyncedLineView: View {
 
     @ViewBuilder
     private func content(at displayTimeMs: Double, layout: KaraokeLineLayout) -> some View {
-        if self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let hasLead = !self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let background = self.line.backgroundText
+
+        if !hasLead, background == nil {
             // A short instrumental gap that is not long enough for the pause dots.
             Text("♪")
                 .font(.system(size: Self.fontSize, weight: .bold))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            KaraokeLyricsLineView(
-                layout: layout,
-                displayTimeMs: displayTimeMs,
-                color: .primary,
-                emphasis: self.emphasis,
-                lineSpacing: 2
-            )
-            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                if hasLead {
+                    KaraokeLyricsLineView(
+                        layout: layout,
+                        displayTimeMs: displayTimeMs,
+                        color: .primary,
+                        emphasis: self.emphasis,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                if let background {
+                    LyricsBackgroundVocalsView(text: background, fontSize: Self.fontSize - 2)
+                }
+            }
         }
     }
 

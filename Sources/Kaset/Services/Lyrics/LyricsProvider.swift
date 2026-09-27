@@ -43,6 +43,35 @@ protocol LyricsProvider: Sendable {
     func search(info: LyricsSearchInfo) async -> LyricResult
 }
 
+// MARK: - LyricsVariant
+
+/// An alternative version of a song's lyrics that the user can switch to.
+///
+/// Only providers backed by community submissions (currently Unison) produce
+/// these — a song can have several synced versions of differing fidelity, and
+/// the highest-ranked one is not always the one a listener wants.
+struct LyricsVariant: Identifiable, Equatable, Sendable {
+    /// Provider-scoped identifier, stable for the lifetime of the variant list.
+    let id: String
+
+    /// Short label for the variant picker (e.g. `"Word-synced · username"`).
+    let label: String
+
+    /// The lyrics this variant renders, including its attribution.
+    let result: LyricResult
+}
+
+// MARK: - LyricsVariantProvider
+
+/// A lyrics provider that can list alternative versions of a track's lyrics.
+///
+/// The service asks only the provider that produced the displayed result, so a
+/// provider that wins a search can advertise what else it has for that song.
+protocol LyricsVariantProvider: LyricsProvider {
+    /// Every alternative this provider has for the track, best-ranked first.
+    func variants(for info: LyricsSearchInfo) async -> [LyricsVariant]
+}
+
 // MARK: - Result capability
 
 extension LyricResult {

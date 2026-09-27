@@ -86,6 +86,7 @@ extension SettingsManager.LyricsProviderID {
         switch self {
         case .betterLyrics: URL(string: "https://lyrics-api.boidu.dev/")
         case .paxsenix: URL(string: "https://lyrics.paxsenix.org/")
+        case .unison: URL(string: "https://unison.boidu.dev/")
         case .kugou: URL(string: "https://lyrics.kugou.com/")
         case .lrclib: URL(string: "https://lrclib.net/")
         }

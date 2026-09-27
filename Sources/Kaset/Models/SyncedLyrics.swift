@@ -6,6 +6,36 @@ import Foundation
 struct TimedWord: Equatable, Codable, Sendable {
     let timeInMs: Int
     let word: String
+    /// Whether the word is a backing vocal sung over the line rather than part of
+    /// the lead vocal. Apple Music TTML marks these with `ttm:role="x-bg"`.
+    let isBackground: Bool
+
+    init(timeInMs: Int, word: String, isBackground: Bool = false) {
+        self.timeInMs = timeInMs
+        self.word = word
+        self.isBackground = isBackground
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timeInMs, word, isBackground
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.timeInMs = try container.decode(Int.self, forKey: .timeInMs)
+        self.word = try container.decode(String.self, forKey: .word)
+        // Absent in caches written before backing vocals were modelled.
+        self.isBackground = try container.decodeIfPresent(Bool.self, forKey: .isBackground) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.timeInMs, forKey: .timeInMs)
+        try container.encode(self.word, forKey: .word)
+        if self.isBackground {
+            try container.encode(true, forKey: .isBackground)
+        }
+    }
 }
 
 // MARK: - SyncedLyricLine
@@ -17,21 +47,40 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     let timeInMs: Int
     /// Duration in milliseconds (time until next line).
     var duration: Int
-    /// The lyric text for this line.
+    /// The lead lyric text for this line. Backing vocals are not included.
     let text: String
     /// Optional word-level timing for karaoke mode.
     let words: [TimedWord]?
+    /// Optional backing-vocal words sung over this line.
+    ///
+    /// Kept apart from `words` on purpose: a backing vocal overlaps the lead line
+    /// in time and would otherwise be treated as the next word of the lead vocal,
+    /// dragging the karaoke fill backwards and gluing the two together.
+    let backgroundWords: [TimedWord]?
 
-    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?) {
+    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?, backgroundWords: [TimedWord]? = nil) {
         self.id = UUID()
         self.timeInMs = timeInMs
         self.duration = duration
         self.text = text
         self.words = words
+        self.backgroundWords = backgroundWords
+    }
+
+    /// The line's backing-vocal text, or `nil` when it has none.
+    var backgroundText: String? {
+        guard let backgroundWords, !backgroundWords.isEmpty else { return nil }
+        let joined = backgroundWords.map(\.word).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    /// Whether the line carries only backing vocals, with no lead text.
+    var isBackgroundOnly: Bool {
+        self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(self.backgroundWords ?? []).isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, timeInMs, duration, text, words
+        case id, timeInMs, duration, text, words, backgroundWords
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +90,8 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         self.duration = try container.decode(Int.self, forKey: .duration)
         self.text = try container.decode(String.self, forKey: .text)
         self.words = try container.decodeIfPresent([TimedWord].self, forKey: .words)
+        // Absent in caches written before backing vocals were modelled.
+        self.backgroundWords = try container.decodeIfPresent([TimedWord].self, forKey: .backgroundWords)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -50,6 +101,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         try container.encode(self.duration, forKey: .duration)
         try container.encode(self.text, forKey: .text)
         try container.encodeIfPresent(self.words, forKey: .words)
+        try container.encodeIfPresent(self.backgroundWords, forKey: .backgroundWords)
     }
 }
 
@@ -59,6 +111,14 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
 struct SyncedLyrics: Equatable, Codable, Sendable {
     let lines: [SyncedLyricLine]
     let source: String
+    /// Who supplied the lyrics, when the provider credits a person.
+    let attribution: LyricsAttribution?
+
+    init(lines: [SyncedLyricLine], source: String, attribution: LyricsAttribution? = nil) {
+        self.lines = lines
+        self.source = source
+        self.attribution = attribution
+    }
 
     static let defaultPauseGapThresholdMs = 600
 
@@ -72,6 +132,11 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
             if let words = line.words { return !words.isEmpty }
             return false
         }
+    }
+
+    /// Whether any line carries backing vocals.
+    var hasBackgroundVocals: Bool {
+        self.lines.contains { !($0.backgroundWords ?? []).isEmpty }
     }
 
 
@@ -142,7 +207,10 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         guard self.lines.indices.contains(lineIndex) else { return nil }
 
         let line = self.lines[lineIndex]
+        // A line with backing vocals is not a pause: it has something to sing,
+        // even though its lead text is empty.
         let isPauseText = line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (line.backgroundWords ?? []).isEmpty
         guard isPauseText else { return nil }
         guard line.duration >= minimumGapMs else { return nil }
 

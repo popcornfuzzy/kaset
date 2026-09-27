@@ -19,6 +19,42 @@ struct LyricsCacheStoreTests {
         #expect(Self.jsonFiles(in: dir).count == 1)
     }
 
+    @Test("cache files record the schema version that wrote them")
+    func writesSchemaVersion() throws {
+        let dir = try Self.makeTempDirectory()
+        let store = LyricsCacheStore(directory: dir, legacyFileURL: dir.appendingPathComponent("legacy.json"))
+        let videoId = "video-version"
+
+        store.save(.plain(Lyrics(text: "Line", source: "Test")), for: videoId)
+
+        let data = try Data(contentsOf: store.fileURL(for: videoId))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(object?["version"] as? Int == LyricsCacheStore.schemaVersion)
+    }
+
+    @Test("a cache written before the current schema is a miss")
+    func staleSchemaIsIgnored() throws {
+        let dir = try Self.makeTempDirectory()
+        let store = LyricsCacheStore(directory: dir, legacyFileURL: dir.appendingPathComponent("legacy.json"))
+        let videoId = "video-stale"
+        let result = LyricResult.plain(Lyrics(text: "Stale parse", source: "Old"))
+        let url = store.fileURL(for: videoId)
+
+        // The pre-versioned format: a bare `LyricResult`, which older builds wrote.
+        try JSONEncoder().encode(result).write(to: url)
+        #expect(store.load(for: videoId) == nil)
+
+        // A versioned file from an older schema is discarded just the same.
+        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result))
+        let older = try JSONSerialization.data(withJSONObject: ["version": 1, "result": payload])
+        try older.write(to: url)
+        #expect(store.load(for: videoId) == nil)
+
+        // Rewriting it at the current version makes it readable again.
+        store.save(result, for: videoId)
+        #expect(store.load(for: videoId) == result)
+    }
+
     @Test("two songs are stored as two separate files")
     func storesSeparateFilesPerSong() throws {
         let dir = try Self.makeTempDirectory()

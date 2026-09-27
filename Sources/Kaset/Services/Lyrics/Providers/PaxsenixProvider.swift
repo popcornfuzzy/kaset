@@ -314,14 +314,29 @@ final class PaxsenixProvider: LyricsProvider {
                 let text = words.isEmpty
                     ? (rawUnits.compactMap(\.text).joined())
                     : words.map(\.word).joined()
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+                // A line the provider flagged as backing vocals is sung over the
+                // lead: keep it out of the line's own words so it never glues onto
+                // the lead text or drags the karaoke fill backwards.
+                let isBackground = line.background == true
+                let backgroundWords = isBackground && !words.isEmpty
+                    ? words.map { TimedWord(timeInMs: $0.timeInMs, word: $0.word, isBackground: true) }
+                    : nil
+                let lineText = backgroundWords == nil ? text : ""
+                let lineWords = backgroundWords == nil && !words.isEmpty ? words : nil
+
+                guard !lineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || backgroundWords != nil
+                else { continue }
+
                 let startMs = line.timestamp ?? 0
                 let nextMs = index + 1 < content.count ? (content[index + 1].timestamp ?? startMs) : startMs + 4_000
                 lines.append(SyncedLyricLine(
                     timeInMs: startMs,
                     duration: max(1, nextMs - startMs),
-                    text: text,
-                    words: words.isEmpty ? nil : words
+                    text: lineText,
+                    words: lineWords,
+                    backgroundWords: backgroundWords
                 ))
             }
             guard !lines.isEmpty else { return .unavailable }

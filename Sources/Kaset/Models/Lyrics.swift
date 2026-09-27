@@ -10,6 +10,15 @@ struct Lyrics: Equatable, Codable, Sendable {
     /// Source attribution (e.g., "Source: LyricFind").
     let source: String?
 
+    /// Who supplied the lyrics, when the provider credits a person.
+    let attribution: LyricsAttribution?
+
+    init(text: String, source: String?, attribution: LyricsAttribution? = nil) {
+        self.text = text
+        self.source = source
+        self.attribution = attribution
+    }
+
     /// Whether the song has lyrics available.
     var isAvailable: Bool {
         !self.text.isEmpty

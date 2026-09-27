@@ -99,6 +99,7 @@ final class SettingsManager {
     enum LyricsProviderID: String, CaseIterable, Identifiable, Codable, Sendable {
         case betterLyrics
         case paxsenix
+        case unison
         case kugou
         case lrclib
 
@@ -108,6 +109,7 @@ final class SettingsManager {
             switch self {
             case .betterLyrics: "BetterLyrics"
             case .paxsenix: "Paxsenix"
+            case .unison: "Unison"
             case .kugou: "KuGo"
             case .lrclib: "LRCLIB"
             }
@@ -118,6 +120,7 @@ final class SettingsManager {
             switch self {
             case .betterLyrics: String(localized: "Apple Music TTML · word-synced")
             case .paxsenix: String(localized: "Apple Music · word-synced")
+            case .unison: String(localized: "Community · word-synced")
             case .kugou: String(localized: "KuGou · line-synced")
             case .lrclib: String(localized: "Community · line-synced")
             }
@@ -125,7 +128,7 @@ final class SettingsManager {
     }
 
     /// The default priority order, highest first.
-    static let defaultLyricsProviderOrder: [LyricsProviderID] = [.betterLyrics, .paxsenix, .kugou, .lrclib]
+    static let defaultLyricsProviderOrder: [LyricsProviderID] = [.betterLyrics, .paxsenix, .unison, .kugou, .lrclib]
 
     // MARK: - Settings Properties
 
@@ -408,9 +411,9 @@ final class SettingsManager {
     /// new per-provider model.
     nonisolated static func disabledProvidersForLegacyChoice(_ rawValue: String?) -> Set<LyricsProviderID> {
         switch rawValue {
-        case "betterLyrics": [.paxsenix, .kugou, .lrclib]
-        case "kugouAndLRCLib": [.betterLyrics, .paxsenix]
-        case "lrclib": [.betterLyrics, .paxsenix, .kugou]
+        case "betterLyrics": [.paxsenix, .unison, .kugou, .lrclib]
+        case "kugouAndLRCLib": [.betterLyrics, .paxsenix, .unison]
+        case "lrclib": [.betterLyrics, .paxsenix, .unison, .kugou]
         default: [] // "paxsenixAndLRCLib" (or never configured): everything enabled
         }
     }
