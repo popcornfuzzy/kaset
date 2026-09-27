@@ -1120,9 +1120,9 @@ final class YTMusicClient: YTMusicClientProtocol {
             // about the session and must not sign the user out.
             self.logger.error("Mobile client request rejected: HTTP \(statusCode)")
             throw YTMusicError.apiError(message: "HTTP \(statusCode)", code: statusCode)
-        case let .httpError(statusCode):
-            self.logger.error("Mobile client request failed: HTTP \(statusCode)")
-            throw YTMusicError.apiError(message: "HTTP \(statusCode)", code: statusCode)
+        case let .httpError(statusCode, reason):
+            self.logger.error("Mobile client request failed: HTTP \(statusCode) \(reason, privacy: .public)")
+            throw YTMusicError.apiError(message: Self.apiErrorMessage(statusCode: statusCode, reason: reason), code: statusCode)
         case let .networkError(error):
             throw YTMusicError.networkError(underlying: error)
         }
@@ -1466,6 +1466,34 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         APICache.shared.invalidateMutationCaches()
         self.logger.info("Renamed playlist \(cleanPlaylistId)")
+    }
+
+    /// Changes the server-side track order for a playlist.
+    /// YouTube Music stores the order on the playlist, so the selection is shared with every
+    /// other client and the next fetch returns the tracks already reordered.
+    func setPlaylistSortOrder(playlistId: String, sortOrder: PlaylistSortOrder) async throws {
+        let cleanPlaylistId = Self.normalizedPlaylistIdForMutation(playlistId)
+        // The prefix distinguishes the auto-playlists (LM, SE) from an owned playlist in the log,
+        // which is what a rejected write needs in order to be diagnosed, without printing the id.
+        self.logger.info(
+            "Setting playlist \(cleanPlaylistId.prefix(6), privacy: .public) sort order to \(sortOrder.rawValue)"
+        )
+
+        let body: [String: Any] = [
+            "playlistId": cleanPlaylistId,
+            "actions": [
+                [
+                    "action": "ACTION_SET_PLAYLIST_VIDEO_ORDER",
+                    "playlistVideoOrder": sortOrder.rawValue,
+                ],
+            ],
+        ]
+
+        let data = try await self.request("browse/edit_playlist", body: body)
+        try Self.validatePlaylistEditSucceeded(data)
+
+        APICache.shared.invalidateMutationCaches()
+        self.logger.info("Set playlist \(cleanPlaylistId) sort order")
     }
 
     /// Deletes a playlist.
@@ -1895,10 +1923,10 @@ final class YTMusicClient: YTMusicClientProtocol {
             self.logger.error("Auth error: HTTP \(statusCode)")
             self.authService.sessionExpired()
             throw YTMusicError.authExpired
-        case let .httpError(statusCode):
-            self.logger.error("API error: HTTP \(statusCode)")
+        case let .httpError(statusCode, reason):
+            self.logger.error("API error: HTTP \(statusCode) \(reason, privacy: .public)")
             throw YTMusicError.apiError(
-                message: "HTTP \(statusCode)",
+                message: Self.apiErrorMessage(statusCode: statusCode, reason: reason),
                 code: statusCode
             )
         case let .networkError(error):
@@ -1913,7 +1941,7 @@ final class YTMusicClient: YTMusicClientProtocol {
     private enum NetworkResult {
         case success(Data)
         case authError(statusCode: Int)
-        case httpError(statusCode: Int)
+        case httpError(statusCode: Int, reason: String)
         case networkError(Error)
     }
 
@@ -1938,12 +1966,41 @@ final class YTMusicClient: YTMusicClientProtocol {
 
             // Handle other HTTP errors
             guard (200 ... 299).contains(httpResponse.statusCode) else {
-                return .httpError(statusCode: httpResponse.statusCode)
+                return .httpError(
+                    statusCode: httpResponse.statusCode,
+                    reason: Self.serverErrorMessage(from: data)
+                )
             }
 
             return .success(data)
         } catch {
             return .networkError(error)
         }
+    }
+
+    /// Extracts the server's own explanation for a rejected request, when it sends one.
+    ///
+    /// YouTube answers a bad request with `{"error": {"code": 400, "message": "…", "status":
+    /// "INVALID_ARGUMENT"}}`. Without this the error surfaces as a bare `HTTP 400`, which says nothing
+    /// about what the server objected to.
+    nonisolated static func serverErrorMessage(from body: Data) -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let error = json["error"] as? [String: Any]
+        else {
+            return ""
+        }
+
+        let status = error["status"] as? String ?? ""
+        let message = error["message"] as? String ?? ""
+
+        if message.isEmpty {
+            return status
+        }
+        return status.isEmpty ? message : "\(status) — \(message)"
+    }
+
+    /// The `message` half of a `YTMusicError.apiError`, including the server's reason when there is one.
+    private static func apiErrorMessage(statusCode: Int, reason: String) -> String {
+        reason.isEmpty ? "HTTP \(statusCode)" : "HTTP \(statusCode): \(reason)"
     }
 }

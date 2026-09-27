@@ -812,6 +812,70 @@ try await request("playlist/create", body: body)
 // Returns HTTP 401 without auth
 ```
 
+#### Playlist track order (sorting)
+
+YouTube Music stores a playlist's track order **server-side**, per playlist, so a sort set in one
+client shows up in every other. The order is read from the playlist's browse header and written
+through the same `browse/edit_playlist` endpoint used for add/remove:
+
+```swift
+// Change the stored order (requires auth + playlist ownership)
+let body: [String: Any] = [
+    "playlistId": "PLxyz...",
+    "actions": [[
+        "action": "ACTION_SET_PLAYLIST_VIDEO_ORDER",
+        "playlistVideoOrder": 1, // see PlaylistSortOrder
+    ]],
+]
+try await request("browse/edit_playlist", body: body)
+```
+
+`playlistVideoOrder` values (from ytmusicapi's `PlaylistSortOrder`):
+
+| Value | Meaning |
+|-------|---------|
+| `0` | Manual (the owner's hand-arranged order) |
+| `1` | Newest first |
+| `2` | Newest last (YouTube Music labels it "Oldest first") |
+| `6` | Top voted — **not modelled by Kaset**, see below |
+
+**Ownership is a precondition, not a detail.** Sending this action for a playlist the signed-in user
+cannot edit answers `HTTP 400` (`INVALID_ARGUMENT`, or a bare `400`), which is why `PlaylistDetail`
+only reports `isSortable` for a playlist whose header carried
+`musicEditablePlaylistDetailHeaderRenderer` (Liked Music, `LM`, is the one exception: the account can
+reorder it although its header has no editable marker). YouTube's response body carries the reason —
+`{"error": {"code": 400, "message": "…", "status": "INVALID_ARGUMENT"}}` — and `YTMusicClient` now
+surfaces it in the thrown error instead of dropping the body, so a rejected write says what was
+wrong rather than only `HTTP 400`.
+
+**`6` (`Top voted`) is not offered.** The write is accepted — `STATUS_SUCCEEDED` — but the playlist
+comes back in its previous order, so the option selected fine, showed a check mark and changed
+nothing. `PlaylistSortOrder` therefore has no case for `6`, and `PlaylistParser.videoOrder(in:)`
+drops values it has no case for, which leaves a header that advertises Top voted offering only the
+orders that work.
+
+**`STATUS_SUCCEEDED` does not mean the order changed.** The same silence can happen to a supported
+order, so `PlaylistDetailViewModel.changeSortOrder` re-reads the order the reloaded header reports
+and tells the user when it differs — the tracks themselves carry no marker for the order they are in.
+
+**Reading the current order.** The browse response for an owned playlist carries a sort menu whose
+options each hold an `ACTION_SET_PLAYLIST_VIDEO_ORDER` action. Two renderer shapes are handled by
+`PlaylistParser.parseSortState`:
+
+- `sortFilterSubMenuRenderer.subMenuItems[]` — each item has `title`, `selected`, and
+  `serviceEndpoint.playlistEditEndpoint.actions["ACTION_SET_PLAYLIST_VIDEO_ORDER"].playlistVideoOrder`.
+- `musicSortFilterButtonRenderer` — its dropdown lives at
+  `menu.musicMultiSelectMenuRenderer.options[]` and its own `title` names the current selection.
+
+The presence of `musicEditablePlaylistDetailHeaderRenderer` marks a playlist as owned/editable,
+which is the same condition under which YouTube Music exposes the sort menu at all.
+
+> ⚠️ The write action and enum values are confirmed by ytmusicapi's `edit_playlist(sortOrder:)` and
+> a Watch Later userscript that both issue `ACTION_SET_PLAYLIST_VIDEO_ORDER`. The YT Music header
+> shape for owned playlists has **not** been re-verified live in this environment (no auth cookies
+> available); `parseSortState` therefore scans for the action key anywhere in the response rather
+> than from a fixed path, and degrades to "no sort menu" if it is absent.
+
 ---
 
 ## Undocumented Endpoints

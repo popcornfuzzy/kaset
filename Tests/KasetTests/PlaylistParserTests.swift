@@ -124,6 +124,132 @@ struct PlaylistParserTests {
         #expect(response.hasMore == true)
     }
 
+    // MARK: - Sort Order
+
+    @Test("Parse sort order and editable flag from the sort submenu")
+    func parseSortOrderFromSubMenu() {
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeOwnedPlaylistData(sortMenu: self.makeSortSubMenu()),
+            playlistId: "VL-owned"
+        )
+
+        #expect(response.detail.isEditable == true)
+        #expect(response.detail.availableSortOrders == [.manual, .newestFirst, .newestLast])
+        #expect(response.detail.sortOrder == .newestFirst)
+        #expect(response.detail.isSortable == true)
+    }
+
+    @Test("A Top voted option in the header is not offered")
+    func parseTopVotedSortOrderIsNotOffered() {
+        // A voted playlist's header can advertise `playlistVideoOrder: 6` for Top voted. Selecting it
+        // writes fine — YouTube Music answers `STATUS_SUCCEEDED` — but the reloaded playlist still
+        // comes back in its previous order, which reads as the sort doing nothing. The option is
+        // therefore dropped rather than offered and then ignored.
+        let submenu: [String: Any] = [
+            "sortFilterSubMenuRenderer": [
+                "subMenuItems": [
+                    self.makeSortSubMenuItem(title: "Manual", order: 0, selected: true),
+                    self.makeSortSubMenuItem(title: "Newest first", order: 1, selected: false),
+                    self.makeSortSubMenuItem(title: "Oldest first", order: 2, selected: false),
+                    self.makeSortSubMenuItem(title: "Top voted", order: 6, selected: false),
+                ],
+            ],
+        ]
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeOwnedPlaylistData(sortMenu: submenu),
+            playlistId: "VL-owned"
+        )
+
+        #expect(response.detail.availableSortOrders == [.manual, .newestFirst, .newestLast])
+        #expect(response.detail.sortOrder == .manual)
+        // The write for it is not modelled at all, so no code path can send `6`.
+        #expect(PlaylistSortOrder(rawValue: 6) == nil)
+        // The playlist stays sortable: only the unsupported option is gone.
+        #expect(response.detail.isSortable == true)
+    }
+
+    @Test("Parse sort order from the sort filter button")
+    func parseSortOrderFromButton() {
+        let button: [String: Any] = [
+            "musicSortFilterButtonRenderer": [
+                "title": ["runs": [["text": "Oldest first"]]],
+                "menu": [
+                    "musicMultiSelectMenuRenderer": [
+                        "options": [
+                            self.makeSortButtonOption(title: "Manual", order: 0),
+                            self.makeSortButtonOption(title: "Newest first", order: 1),
+                            self.makeSortButtonOption(title: "Oldest first", order: 2),
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeOwnedPlaylistData(sortMenu: button),
+            playlistId: "VL-owned"
+        )
+
+        #expect(response.detail.isEditable == true)
+        #expect(response.detail.availableSortOrders == [.manual, .newestFirst, .newestLast])
+        #expect(response.detail.sortOrder == .newestLast)
+    }
+
+    @Test("Liked Music is sortable even without an advertised menu")
+    func parseLikedMusicFallsBackToStandardSortOptions() {
+        let data = self.makePlaylistDetailData(
+            title: "Liked Music",
+            description: nil,
+            author: nil,
+            trackCount: 1
+        )
+
+        let detail = PlaylistParser.parsePlaylistDetail(data, playlistId: "LM")
+
+        #expect(detail.isLikedMusic == true)
+        #expect(detail.sortOptions == PlaylistSortOrder.standard)
+        #expect(detail.isSortable == true)
+        #expect(detail.effectiveSortOrder == .manual)
+    }
+
+    @Test("A sort menu on a playlist we cannot edit is not offered")
+    func parseSortMenuWithoutEditHeaderIsNotActionable() {
+        let detail = PlaylistParser.parsePlaylistDetail(
+            self.makePlaylistDetailData(
+                title: "Someone Else's Playlist",
+                description: nil,
+                author: "Another User",
+                trackCount: 1,
+                sortMenu: self.makeSortSubMenu()
+            ),
+            playlistId: "VL-public"
+        )
+
+        // The response advertises the menu, but a reorder from a listener who cannot edit the playlist
+        // is rejected with HTTP 400, so the UI must not offer one.
+        #expect(detail.availableSortOrders == [.manual, .newestFirst, .newestLast])
+        #expect(detail.isEditable == false)
+        #expect(detail.isSortable == false)
+    }
+
+    @Test("Playlist without an edit header exposes no sort options")
+    func parseSortOrderAbsentForUnownedPlaylist() {
+        let data = self.makePlaylistDetailData(
+            title: "Someone Else's Playlist",
+            description: nil,
+            author: "Another User",
+            trackCount: 2
+        )
+
+        let detail = PlaylistParser.parsePlaylistDetail(data, playlistId: "VL-public")
+
+        #expect(detail.isEditable == false)
+        #expect(detail.availableSortOrders.isEmpty)
+        #expect(detail.sortOrder == nil)
+        #expect(detail.isSortable == false)
+    }
+
     // MARK: - Album Detection
 
     @Test(
@@ -797,11 +923,106 @@ struct PlaylistParserTests {
         ]
     }
 
+    /// Builds a track item shaped like YouTube Music's playlist rows.
+    private func makeTrackItem(index: Int) -> [String: Any] {
+        [
+            "musicResponsiveListItemRenderer": [
+                "playlistItemData": ["videoId": "video\(index)"],
+                "flexColumns": [
+                    [
+                        "musicResponsiveListItemFlexColumnRenderer": [
+                            "text": ["runs": [["text": "Track \(index)"]]],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
+
+    /// Parses the sort menu the same way the app does, from a submenu shape.
+    private func makeSortSubMenu() -> [String: Any] {
+        [
+            "sortFilterSubMenuRenderer": [
+                "subMenuItems": [
+                    self.makeSortSubMenuItem(title: "Manual", order: 0, selected: false),
+                    self.makeSortSubMenuItem(title: "Newest first", order: 1, selected: true),
+                    self.makeSortSubMenuItem(title: "Oldest first", order: 2, selected: false),
+                ],
+            ],
+        ]
+    }
+
+    private func makeSortSubMenuItem(title: String, order: Int, selected: Bool) -> [String: Any] {
+        [
+            "title": title,
+            "selected": selected,
+            "serviceEndpoint": [
+                "playlistEditEndpoint": [
+                    "actions": [["action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": order]],
+                ],
+            ],
+        ]
+    }
+
+    private func makeSortButtonOption(title: String, order: Int) -> [String: Any] {
+        [
+            "musicMultiSelectMenuItemRenderer": [
+                "title": ["runs": [["text": title]]],
+                "selectedCommand": [
+                    "commandExecutorCommand": [
+                        "commands": [[
+                            "playlistEditEndpoint": [
+                                "actions": [["action": "ACTION_SET_PLAYLIST_VIDEO_ORDER", "playlistVideoOrder": order]],
+                            ],
+                        ]],
+                    ],
+                ],
+            ],
+        ]
+    }
+
+    /// A playlist response that carries an owned (editable) header plus a sort menu.
+    private func makeOwnedPlaylistData(sortMenu: [String: Any]) -> [String: Any] {
+        [
+            "header": [
+                "musicEditablePlaylistDetailHeaderRenderer": [
+                    "editHeader": ["musicPlaylistEditHeaderRenderer": ["privacy": "PRIVATE"]],
+                    "header": [
+                        "musicResponsiveHeaderRenderer": [
+                            "title": ["runs": [["text": "My Playlist"]]],
+                        ],
+                    ],
+                ],
+            ],
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicPlaylistShelfRenderer": [
+                                            "contents": [
+                                                self.makeTrackItem(index: 0),
+                                                sortMenu,
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
     private func makePlaylistDetailData(
         title: String,
         description: String?,
         author: String?,
-        trackCount: Int
+        trackCount: Int,
+        sortMenu: [String: Any]? = nil
     ) -> [String: Any] {
         var tracks: [[String: Any]] = []
 
@@ -849,7 +1070,7 @@ struct PlaylistParserTests {
                                 "sectionListRenderer": [
                                     "contents": [[
                                         "musicShelfRenderer": [
-                                            "contents": tracks,
+                                            "contents": tracks + (sortMenu.map { [$0] } ?? []),
                                         ],
                                     ]],
                                 ],

@@ -13,6 +13,7 @@ struct PlaylistDetailView: View {
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.navigateToArtist) private var navigateToArtist
 
     /// Tracks whether this playlist has been added to library in this session.
     @State private var isAddedToLibrary: Bool = false
@@ -57,6 +58,13 @@ struct PlaylistDetailView: View {
     /// passing under a stationary pointer don't animate their background mid-flick.
     @State private var isScrolling: Bool = false
 
+    /// Search query for filtering the playlist's tracks. Typing it triggers a full scan so the
+    /// search covers every song in the playlist, not only the rows already loaded.
+    @State private var searchText: String = ""
+
+    /// Focus for the compact search field in the toolbar.
+    @FocusState private var isSearchFieldFocused: Bool
+
     /// Scroll distance from the bottom, in points, at which the next page is requested.
     /// Requesting a page this early keeps the fetch and its spinner below the visible
     /// window, so scrolling never waits on the network.
@@ -68,6 +76,10 @@ struct PlaylistDetailView: View {
 
     /// How many upcoming rows' artwork to warm in the image cache.
     private static let thumbnailPrefetchWindow = 60
+
+    /// Edge length of the header thumbnail. It also sets the height of the header's info column, so
+    /// the action row lines up with the thumbnail's bottom edge.
+    private static let artworkSize: CGFloat = 180
 
     /// Computed property to check if playlist is in library.
     private var isInLibrary: Bool {
@@ -102,7 +114,32 @@ struct PlaylistDetailView: View {
         }
         .accentBackground(from: self.viewModel.playlistDetail?.thumbnailURL?.highQualityThumbnailURL)
         .navigationTitle(self.viewModel.playlistDetail?.title ?? self.playlist.title)
+        .onChange(of: self.searchText) { _, newValue in
+            // Search covers the whole playlist, so pull the remaining pages the first time a query
+            // is typed instead of only filtering what has scrolled into view.
+            guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            Task { await self.viewModel.loadAllTracksForSearch() }
+        }
         .toolbar {
+            ToolbarItem(placement: .automatic) {
+                self.searchField
+            }
+
+            // Included only when the playlist can be sorted. An always-present item with a
+            // conditional body collapses to an empty toolbar item.
+            if let detail = self.viewModel.playlistDetail, detail.isSortable {
+                ToolbarItem(placement: .automatic) {
+                    self.sortMenu(detail)
+                }
+            }
+
+            // `ToolbarSpacer` ends the group the items above belong to. Without it, a toolbar that
+            // is down to just the search field and the refresh button draws them inside one shared
+            // glass capsule, and the refresh glyph lands on the right edge of the search pill (the
+            // sort menu happened to keep them apart while it was there). This is macOS 26's way of
+            // giving the refresh button its own background.
+            ToolbarSpacer(.fixed)
+
             ToolbarItem(placement: .automatic) {
                 Button {
                     Task { await self.performRefresh() }
@@ -156,14 +193,26 @@ struct PlaylistDetailView: View {
 
     // MARK: - Views
 
-    /// The header, divider and tracks live in one AppKit-backed `List`, whose rows are laid out
-    /// and reused by NSTableView. A `ScrollView` + `LazyVStack` re-measures and re-renders the
-    /// whole realised page on every scroll frame, which made the per-frame cost proportional to
-    /// the rows' view-tree size — see ADR-0014 for the measurements.
+    /// The tracks are rendered by an AppKit-backed `List`, whose rows are laid out and reused by
+    /// NSTableView. A `ScrollView` + `LazyVStack` re-measures and re-renders the whole realised page
+    /// on every scroll frame, which made the per-frame cost proportional to the rows' view-tree size
+    /// — see ADR-0014 for the measurements.
+    ///
+    /// The header sits **above** the list rather than as its first row. As a row it belonged to the
+    /// table's row model, which turned every interaction with its controls into row activation: the
+    /// row kept the table's highlight painted over the whole header afterwards (accent red while the
+    /// window was key, gray while it was not), and once its artist link had pushed the artist page,
+    /// clicking that same link again did nothing. Neither `.borderless` nor `.selectionDisabled` nor
+    /// rebuilding the row on return changed either behaviour, so the header is no longer a row.
     private func contentView(_ detail: PlaylistDetail) -> some View {
-        self.withScrollObservers(
+        let tracks = self.visibleTracks(detail)
+
+        return self.withScrollObservers(
             List {
-                // Header
+                // The header scrolls away with the tracks. It is a row, so the table lays it out and
+                // the page never has to guess how tall it is: a header outside the list became a
+                // flexible child of the page's stack, which shared the tracks list's leftover space
+                // with it (see ADR-0023).
                 self.headerView(detail)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 24, trailing: 24))
@@ -174,8 +223,11 @@ struct PlaylistDetailView: View {
                     .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
                     .listRowBackground(Color.clear)
 
-                // Tracks
-                self.trackRows(detail)
+                if !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.searchStatusRow(detail, matchCount: tracks.count)
+                }
+
+                self.trackRows(detail, tracks: tracks)
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -183,6 +235,47 @@ struct PlaylistDetailView: View {
                 await self.prefetchUpcomingThumbnails(for: detail.tracks)
             }
         )
+    }
+
+    /// The tracks that match the current query, or every loaded track when there is no query.
+    private func visibleTracks(_ detail: PlaylistDetail) -> [Song] {
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return detail.tracks }
+
+        return detail.tracks.filter { song in
+            song.title.localizedCaseInsensitiveContains(query)
+                || song.artistsDisplay.localizedCaseInsensitiveContains(query)
+                || (song.album?.title.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    /// Status line above the results while a search is running over the whole playlist.
+    @ViewBuilder
+    private func searchStatusRow(_ detail: PlaylistDetail, matchCount: Int) -> some View {
+        Group {
+            if self.viewModel.isLoadingAllTracks {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Searching all songs…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } else if matchCount == 0 {
+                Text("No songs match \u{201C}\(self.searchText)\u{201D}")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(matchCount) of \(detail.resolvedTrackCount) songs")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 4)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Color.clear)
     }
 
     /// Paging and hover suppression are attached to whichever scroll container renders the page.
@@ -197,8 +290,9 @@ struct PlaylistDetailView: View {
             }
             .onScrollGeometryChange(for: Int.self) { geometry in
                 // Bucket the remaining scroll distance so the value keeps changing as the user
-                // scrolls near the bottom instead of latching true.
-                guard self.viewModel.hasMore else { return .max }
+                // scrolls near the bottom instead of latching true. Paging stays off while a
+                // search owns the list, since the search already pulls every page.
+                guard self.viewModel.hasMore, self.searchText.isEmpty else { return .max }
                 let remaining = geometry.contentSize.height
                     - (geometry.contentOffset.y + geometry.containerSize.height)
                 guard remaining < Self.paginationThreshold else { return .max }
@@ -211,44 +305,52 @@ struct PlaylistDetailView: View {
             }
     }
 
+    /// Thumbnail, title and credits in a row, with the action row on the thumbnail's bottom edge.
+    ///
+    /// The actions are aligned rather than pushed down by a `Spacer` in the info column: everything in
+    /// the box is then a definite size, so the row's height is the 180 pt thumbnail plus the insets and
+    /// the buttons land on its baseline. A `Spacer` left the header free to absorb the row's height and
+    /// the buttons drifted ~140 pt below the credits (see ADR-0023).
     private func headerView(_ detail: PlaylistDetail) -> some View {
-        HStack(alignment: .top, spacing: 20) {
-            // Thumbnail
-            CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Rectangle()
-                    .fill(.quaternary)
-                    .overlay {
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
-                    }
+        ZStack(alignment: .bottomLeading) {
+            HStack(alignment: .top, spacing: 20) {
+                // Thumbnail
+                CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay {
+                            Image(systemName: "music.note.list")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.secondary)
+                        }
+                }
+                .frame(width: Self.artworkSize, height: Self.artworkSize)
+                .clipShape(.rect(cornerRadius: 8))
+                .fadeIn(duration: 0.3)
+                .accessibilityIdentifier(AccessibilityID.PlaylistDetail.artwork)
+
+                // Info
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(detail.isAlbum ? String(localized: "Album") : String(localized: "Playlist"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    Text(detail.title)
+                        .font(.title)
+                        .fontWeight(.bold)
+
+                    self.creditsView(detail)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(width: 180, height: 180)
-            .clipShape(.rect(cornerRadius: 8))
-            .fadeIn(duration: 0.3)
 
-            // Info
-            VStack(alignment: .leading, spacing: 8) {
-                Text(detail.isAlbum ? String(localized: "Album") : String(localized: "Playlist"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-
-                Text(detail.title)
-                    .font(.title)
-                    .fontWeight(.bold)
-
-                self.creditsView(detail)
-
-                Spacer()
-
-                self.headerButtons(detail)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            self.headerButtons(detail)
+                .padding(.leading, Self.artworkSize + 20)
         }
     }
 
@@ -267,7 +369,8 @@ struct PlaylistDetailView: View {
     }
 
     /// The playlist's creators or the album's artists. Names that carry a channel ID link to that
-    /// artist's page; the rest (and the whole line when no links were exposed) stay plain text.
+    /// artist's page via the stack's existing `navigationDestination(for: Artist.self)`; the rest
+    /// (and the whole line when no links were exposed) stay plain text.
     @ViewBuilder
     private func creditsView(_ detail: PlaylistDetail) -> some View {
         if detail.artists.isEmpty {
@@ -291,14 +394,27 @@ struct PlaylistDetailView: View {
         }
     }
 
+    /// A credited artist that opens its page on click.
+    ///
+    /// Pushes the artist through the stack's `navigateToArtist` action rather than a value-based
+    /// `NavigationLink`. The header is a `List` row, and a link in a row makes the whole row
+    /// selectable: the table paints its selection over the header, and after the link has pushed its
+    /// page it keeps the activation, so a second click on the same credit is swallowed. See
+    /// `NavigateToArtistAction` and ADR-0023.
+    ///
+    /// Kept in sync with `PlaylistArtistNavigationUITests`, which clicks this credit, presses Back and
+    /// clicks it again — twice in a row, because the second click is what used to be ignored.
     @ViewBuilder
     private func artistLink(_ artist: Artist) -> some View {
         if artist.hasNavigableId {
-            NavigationLink(value: artist) {
+            Button {
+                self.navigateToArtist(artist)
+            } label: {
                 Text(artist.name)
                     .fontWeight(.semibold)
             }
-            .buttonStyle(.link)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AccessibilityID.PlaylistDetail.artistCredit(artist.id))
         } else {
             Text(artist.name)
                 .foregroundStyle(.secondary)
@@ -318,6 +434,7 @@ struct PlaylistDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(detail.tracks.isEmpty)
+                .accessibilityIdentifier(AccessibilityID.PlaylistDetail.playButton)
 
                 // Shuffle button
                 Button {
@@ -433,7 +550,65 @@ struct PlaylistDetailView: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }
+
+            if let sortOrderError = viewModel.sortOrderError {
+                Text(sortOrderError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
         }
+    }
+
+    /// Compact toolbar search field. Fixed width keeps it from stretching across the toolbar; the
+    /// toolbar supplies the container background, so no extra glass is layered on top.
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            TextField(String(localized: "Search in playlist"), text: self.$searchText)
+                .textFieldStyle(.plain)
+                .focused(self.$isSearchFieldFocused)
+                .frame(width: 140)
+
+            if !self.searchText.isEmpty {
+                Button {
+                    self.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Clear search"))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// Toolbar menu that mirrors YouTube Music's playlist sort options. The active order is shown by
+    /// the check mark in the dropdown; choosing one writes the order to the account and reloads the
+    /// tracks in the new order.
+    private func sortMenu(_ detail: PlaylistDetail) -> some View {
+        Menu {
+            // Toggles render as menu items with a check mark, which is what actually shows the
+            // active order in a macOS menu (a `Label` image does not).
+            ForEach(detail.sortOptions, id: \.self) { order in
+                Toggle(order.displayName, isOn: Binding(
+                    get: { detail.effectiveSortOrder == order },
+                    set: { isSelected in
+                        guard isSelected else { return }
+                        Task { await self.viewModel.changeSortOrder(to: order) }
+                    }
+                ))
+            }
+        } label: {
+            Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
+        }
+        .help(Text("Sort by \(detail.effectiveSortOrder.displayName). This order is saved to your YouTube Music account."))
+        .disabled(self.viewModel.isChangingSortOrder)
     }
 
     private func metadataText(for detail: PlaylistDetail) -> String {
@@ -495,8 +670,7 @@ struct PlaylistDetailView: View {
     /// rebuild the visible window, and upcoming artwork is warmed ahead of the scroll.
     /// The track rows plus the paging spinner.
     @ViewBuilder
-    private func trackRows(_ detail: PlaylistDetail) -> some View {
-        let tracks = detail.tracks
+    private func trackRows(_ detail: PlaylistDetail, tracks: [Song]) -> some View {
         let isAlbum = detail.isAlbum
         // Read the player state once per pass: each row only needs to know whether *it* is the
         // current track, which keeps rows out of the observation dependency for playback.
@@ -517,7 +691,7 @@ struct PlaylistDetailView: View {
                 playerService: self.playerService,
                 client: self.viewModel.client,
                 libraryViewModel: self.libraryViewModel,
-                onPlay: { self.playTrack(at: index) },
+                onPlay: { self.playTrack(in: tracks, at: index) },
                 onRemoveFromPlaylist: { song in
                     Task {
                         await self.removeTrackFromCurrentPlaylist(song)
@@ -534,8 +708,9 @@ struct PlaylistDetailView: View {
         }
 
         // Loading indicator for pagination. Paging itself is driven by scroll proximity,
-        // so the fetch and this spinner sit below the visible window.
-        if self.viewModel.loadingState == .loadingMore {
+        // so the fetch and this spinner sit below the visible window. Hidden while searching,
+        // where the status row reports progress instead.
+        if self.viewModel.loadingState == .loadingMore, self.searchText.isEmpty {
             HStack {
                 Spacer()
                 ProgressView()
@@ -548,15 +723,15 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Plays the row's queue. Reads the playlist live instead of a captured snapshot, so a row
-    /// skipped by `Equatable` still queues every track that has been loaded.
-    private func playTrack(at index: Int) {
+    /// Plays the row's queue from the list currently on screen, so a filtered result plays the
+    /// filtered songs rather than the full playlist.
+    private func playTrack(in tracks: [Song], at index: Int) {
         guard let detail = self.viewModel.playlistDetail,
-              detail.tracks.indices.contains(index)
+              tracks.indices.contains(index)
         else { return }
 
         self.playTrackInQueue(
-            tracks: detail.tracks,
+            tracks: tracks,
             startingAt: index,
             fallbackArtist: detail.author,
             fallbackAlbum: self.makeFallbackAlbum(from: detail)

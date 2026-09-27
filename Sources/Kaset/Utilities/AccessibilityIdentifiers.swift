@@ -135,6 +135,7 @@ enum AccessibilityID {
     enum PlaylistDetail {
         static let container = "playlistDetailView"
         static let header = "playlistDetailView.header"
+        static let artwork = "playlistDetailView.artwork"
         static let playButton = "playlistDetailView.playButton"
         static let shuffleButton = "playlistDetailView.shuffleButton"
         static let tracksList = "playlistDetailView.tracksList"
@@ -142,6 +143,11 @@ enum AccessibilityID {
 
         static func trackRow(index: Int) -> String {
             "playlistDetailView.track.\(index)"
+        }
+
+        /// The credited artist in the header, which pushes that artist's page.
+        static func artistCredit(_ artistId: String) -> String {
+            "playlistDetailView.artistCredit.\(artistId)"
         }
     }
 

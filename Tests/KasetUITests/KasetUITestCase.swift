@@ -38,6 +38,11 @@ enum TestAccessibilityID {
         static let container = "videoWindow"
     }
 
+    enum PlaylistDetail {
+        static let artwork = "playlistDetailView.artwork"
+        static let playButton = "playlistDetailView.playButton"
+    }
+
     // MARK: - Sidebar Profile
 
     enum SidebarProfile {
@@ -495,6 +500,11 @@ class KasetUITestCase: XCTestCase {
             XCTFail("Sidebar item '\(accessibilityID)' never appeared")
             return
         }
+
+        // Front the app before judging hit-testing: the window can sit behind another app's, and an
+        // element that is not frontmost reports `isHittable == false`, so the wait below times out
+        // even though the item is where it belongs.
+        self.app.activate()
 
         // Then wait for it to be hittable (may need time for layout)
         if self.waitForHittable(sidebarItem, timeout: 10) {

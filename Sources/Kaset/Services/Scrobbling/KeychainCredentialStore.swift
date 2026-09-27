@@ -46,6 +46,10 @@ final class KeychainCredentialStore {
     // MARK: - Private Helpers
 
     private func save(key: String, value: String) throws {
+        // UI tests must not touch the real Keychain: the freshly built app is signed differently
+        // from the item's owner, so macOS asks the user to allow access on every launch.
+        guard !UITestConfig.isUITestMode else { return }
+
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.encodingFailed
         }
@@ -82,6 +86,8 @@ final class KeychainCredentialStore {
     }
 
     private func get(key: String) -> String? {
+        guard !UITestConfig.isUITestMode else { return nil }
+
         let account = "\(self.servicePrefix).\(key)"
 
         let query: [String: Any] = [
@@ -106,6 +112,8 @@ final class KeychainCredentialStore {
     }
 
     private func delete(key: String) {
+        guard !UITestConfig.isUITestMode else { return }
+
         let account = "\(self.servicePrefix).\(key)"
 
         let query: [String: Any] = [

@@ -272,6 +272,11 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         nil
     }
 
+    /// Credited header artist. The `UC` prefix is what makes the credit a navigable channel link
+    /// (see `Artist.hasNavigableId`), which the artist-navigation UI tests depend on.
+    static let mockCreditArtistId = "UCuittestcreditartist"
+    static let mockCreditArtistName = "Credit Artist"
+
     func getPlaylist(id: String) async throws -> PlaylistTracksResponse {
         try? await Task.sleep(for: .milliseconds(100))
         let playlist = self.playlists.first { $0.id == id } ?? Playlist(
@@ -285,7 +290,8 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         let detail = PlaylistDetail(
             playlist: playlist,
             tracks: Self.defaultSongs(count: 10),
-            duration: "30 minutes"
+            duration: "30 minutes",
+            artists: [Artist(id: Self.mockCreditArtistId, name: Self.mockCreditArtistName)]
         )
         return PlaylistTracksResponse(detail: detail, continuationToken: nil)
     }
@@ -372,6 +378,10 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
     }
 
     func renamePlaylist(playlistId _: String, newTitle _: String) async throws {
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    func setPlaylistSortOrder(playlistId _: String, sortOrder _: PlaylistSortOrder) async throws {
         try? await Task.sleep(for: .milliseconds(100))
     }
 

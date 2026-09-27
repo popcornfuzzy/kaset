@@ -8,6 +8,8 @@
 
 "%lld songs" = "%lld songs";
 
+"%lld of %lld songs" = "%lld of %lld songs";
+
 "A native YouTube Music experience for macOS" = "A native YouTube Music experience for macOS";
 
 "AI responses follow your system language settings." = "AI responses follow your system language settings.";
@@ -369,11 +371,29 @@
 
 "Move Down" = "Move Down";
 
+"Manual" = "Manual";
+
 "Media Keys" = "Media Keys";
 
 "Mix" = "Mix";
 
 "Moods & Genres" = "Moods & Genres";
+
+"Newest first" = "Newest first";
+
+"No songs match “%@”" = "No songs match “%@”";
+
+"Oldest first" = "Oldest first";
+
+"Search in playlist" = "Search in playlist";
+
+"Searching all songs…" = "Searching all songs…";
+
+"Sort" = "Sort";
+
+"Sort by %@. This order is saved to your YouTube Music account." = "Sort by %@. This order is saved to your YouTube Music account.";
+
+"YouTube Music kept the previous order for this playlist." = "YouTube Music kept the previous order for this playlist.";
 
 "Move to End" = "Move to End";
 

@@ -501,6 +501,71 @@ Enable Web Inspector for debug builds:
 
 Right-click WebView → Inspect Element
 
+### Running UI Tests Locally
+
+UI tests drive a real build of the app, so the bundle has to be installed first, no other instance
+may be running, and the runner has to survive launch. `Scripts/run-ui-tests.sh` does all of it:
+
+```bash
+Scripts/run-ui-tests.sh                                  # every UI test
+Scripts/run-ui-tests.sh KasetUITests/MyUITests           # one class
+Scripts/run-ui-tests.sh KasetUITests/MyUITests/testFoo   # one test
+```
+
+Run one class while iterating — the whole suite launches the app dozens of times.
+
+> ⚠️ **Ask permission before running UI tests** — they launch the app and can be disruptive.
+
+The script exists because each missing step fails with an error that reads like a different problem:
+
+| Symptom | Cause |
+|---------|-------|
+| `Test crashed with signal kill before establishing connection` | Runner was built unsigned (`CODE_SIGNING_ALLOWED=NO`). The script signs it ad-hoc. |
+| `Application 'com.popcornfuzzy.kaset' does not have a process ID` | A Kaset instance with the same bundle ID was already running. The script quits it first. |
+| `open() failed, errno=1 (Operation not permitted)` while linking the runner | A previously signed runner bundle cannot be re-linked in place. The script deletes it before building. |
+| Tests behave as if mock data were absent | See below. |
+| macOS asks to use the Keychain in "Kaset" on every launch | The run was not in mock mode, so the app read its real cookie and scrobble items. Every build is ad-hoc signed, so its code hash is not in the items' ACL — `securityd` logs `displaying keychain prompt` and asks. Mock mode never touches the Keychain at all. |
+
+**Mock mode needs the marker file.** The runner is sandboxed and launches the app through
+`NSWorkspace`, so macOS drops the `-UITestMode` argument and the `UI_TEST_MODE` environment variable
+it passes; even signing the runner properly does not change that (Xcode 27 logs exactly this). The
+app therefore starts out speaking to the real service, with whatever account is signed in on the
+machine. `UITestConfig.isUITestMode` additionally accepts a marker file in the app's
+`Application Support/Kaset/` directory, which is what the script creates for the duration of a run
+and removes afterwards (also on failure).
+
+Write UI tests so they pass either way: assert on the app's own behaviour — an element appears, a
+frame does not overlap another, a pixel stays unchanged — instead of hard-coding mock values such as
+a playlist title or an artist ID.
+
+**Confirm the run really was in mock mode.** A Keychain prompt, your own playlists, or a login sheet
+all mean it was not, and the failure then looks like a test-data bug. The app writes
+`UITestModeSeen` next to the marker file whenever it starts in UI test mode, and the script removes
+that file before a run and warns if it is missing afterwards.
+
+```bash
+ls "$HOME/Library/Application Support/Kaset/UITestModeSeen"   # exists ⇢ the last run was mock
+```
+
+The app also logs `App launched in UI Test mode`, but that is not usable as a check: a freshly built
+app's info-level entries reach the log store minutes later, so a `log show --start <run>` query right
+after a run reports nothing even when the run was in mock mode.
+
+### Measuring layout from a UI test
+
+`XCUIElement.frame` is in screen coordinates, and for these windows the `windows.firstMatch` frame is
+the *content* area, below the toolbar. An element that reports a `minY` above it is not merely
+misaligned: the page is taller than the window and SwiftUI is centring the overflow, which slides the
+top of the page — toolbar controls included — out of the window. `testHeaderActionRowSitsOnTheThumbnail`
+asserts exactly that containment, and prints the relevant frames as a test activity.
+
+For sizes the accessibility tree cannot show (a container's height, what a `List` decided to take),
+have the app log them with a temporary `onGeometryChange` probe and read them back:
+
+```bash
+log show --last 3m --info --debug --predicate 'process == "Kaset"' | grep LayoutProbe
+```
+
 ## Continuous Integration
 
 Four workflows, each with a single responsibility:

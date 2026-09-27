@@ -564,7 +564,7 @@ struct MainWindow: View {
                 let playlist = self.sidebarPlaylist(for: playlistId)
                 // A stack is what makes the playlist's own links (artist, album) work when the
                 // playlist is opened straight from the sidebar instead of a navigated list.
-                NavigationStack {
+                DetailNavigationStack {
                     PlaylistDetailView(
                         playlist: playlist,
                         viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client)
@@ -629,7 +629,7 @@ struct MainWindow: View {
             case .podcasts:
                 if let vm = podcastsViewModel { PodcastsView(viewModel: vm) }
             case .likedMusic:
-                NavigationStack {
+                DetailNavigationStack {
                     PlaylistDetailView(
                         playlist: self.likedMusicPlaylist,
                         viewModel: PlaylistDetailViewModel(playlist: self.likedMusicPlaylist, client: self.client)
