@@ -321,7 +321,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 - Preserves plain lyrics fallback state until a higher-quality synced result is resolved
 - Credits community submitters via `LyricsAttribution` (name, profile URL, avatar) and, when a winning `LyricsVariantProvider` (Unison) offers more than one version, loads its alternatives so the lyrics footer can switch between them; the chosen version becomes the cached result
 - The submitter credit renders at the end of the lyric sheet (never pinned over the lyrics); the sticky footer carries only `Source:` and the version picker
-- Models backing vocals: `TimedWord.isBackground` and `SyncedLyricLine.backgroundWords` keep `ttm:role="x-bg"` (and Paxsenix `background`) phrases out of the lead line, so the lead text is never glued to a backing phrase and the karaoke fill is not dragged backwards. See [ADR-0025](adr/0025-background-vocals.md)
+- Models backing vocals: `TimedWord.isBackground` and `SyncedLyricLine.backgroundWords` keep `ttm:role="x-bg"` (and Paxsenix `background`) phrases out of the lead line, so the lead text is never glued to a backing phrase and the karaoke fill is not dragged backwards. Backing vocals animate with the same per-character karaoke wipe as the lead — `KaraokeFillModel.backgroundWords(for:)` builds their fill windows from their own onsets, both lines render from the one display clock inside `KaraokeTimeSource`, and `KaraokeLayoutCache` keys by (line, font size) so a row's two layouts at two sizes never evict each other. See [ADR-0025](adr/0025-background-vocals.md)
 
 **Related Files**:
 - `Sources/Kaset/Services/Lyrics/LyricsProvider.swift` — Provider protocol and search model

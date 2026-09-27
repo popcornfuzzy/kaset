@@ -58,8 +58,8 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     /// dragging the karaoke fill backwards and gluing the two together.
     let backgroundWords: [TimedWord]?
 
-    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?, backgroundWords: [TimedWord]? = nil) {
-        self.id = UUID()
+    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?, backgroundWords: [TimedWord]? = nil, id: UUID? = nil) {
+        self.id = id ?? UUID()
         self.timeInMs = timeInMs
         self.duration = duration
         self.text = text
@@ -77,6 +77,28 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     /// Whether the line carries only backing vocals, with no lead text.
     var isBackgroundOnly: Bool {
         self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(self.backgroundWords ?? []).isEmpty
+    }
+
+    /// The line as its own backing vocal, for rendering the backing words with the same
+    /// karaoke machinery the lead line uses.
+    ///
+    /// `KaraokeLineLayout` reads a line's `words`, so the backing words are handed to it
+    /// as the words of a line that is otherwise empty of lead text. The line's `id` is
+    /// kept — the renderer keys layouts and SwiftUI identity by it — and the empty `text`
+    /// is exactly what a backing-only line already looks like, so `isLineSynced` falls
+    /// out of the backing words themselves rather than needing a special case. The fill
+    /// windows come from `KaraokeFillModel.backgroundWords(for:)`, which reads
+    /// `backgroundWords` and never this view, so the synthetic shape exists only to fit
+    /// the layout's input.
+    var backingVocalLine: SyncedLyricLine {
+        SyncedLyricLine(
+            timeInMs: self.timeInMs,
+            duration: self.duration,
+            text: "",
+            words: self.backgroundWords,
+            backgroundWords: nil,
+            id: self.id
+        )
     }
 
     private enum CodingKeys: String, CodingKey {

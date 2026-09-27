@@ -735,8 +735,14 @@ private struct FullscreenSyncedLineView: View {
     private static let fontSize: CGFloat = 36
 
     var body: some View {
-        // Measured once per line, not once per frame or per sheet re-render.
+        // Measured once per line, not once per frame or per sheet re-render. The backing
+        // vocal is measured at its own smaller size — the cache keys by size, so the two
+        // layouts of one row never evict each other.
         let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
+        let backgroundLayout = self.layoutCache.backgroundLayout(
+            for: self.line,
+            fontSize: Self.fontSize * Self.backgroundFontSizeRatio
+        )
 
         return KaraokeTimeSource(
             line: self.line,
@@ -747,9 +753,8 @@ private struct FullscreenSyncedLineView: View {
             minimumFrameInterval: self.minimumFrameInterval
         ) { displayTimeMs in
             let hasLead = !self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let background = self.line.backgroundText
 
-            if !hasLead, background == nil {
+            if !hasLead, backgroundLayout == nil {
                 // A short instrumental gap that is not long enough for the pause dots.
                 Text("♪")
                     .font(.system(size: Self.fontSize, weight: .bold))
@@ -766,11 +771,16 @@ private struct FullscreenSyncedLineView: View {
                             lineSpacing: 18
                         )
                     }
-                    if let background {
-                        LyricsBackgroundVocalsView(
-                            text: background,
-                            fontSize: Self.fontSize * 0.62,
+                    if let backgroundLayout {
+                        // The backing vocal runs the same per-character wipe as the lead,
+                        // driven by the same display clock position — it overlaps the line
+                        // in time, so synchrony is simply sharing the clock. It is dimmer
+                        // and smaller so it reads as accompaniment, nothing else differs.
+                        KaraokeLyricsLineView(
+                            layout: backgroundLayout,
+                            displayTimeMs: displayTimeMs,
                             color: .white.opacity(0.55),
+                            emphasis: self.emphasis,
                             lineSpacing: 8
                         )
                     }
@@ -779,6 +789,8 @@ private struct FullscreenSyncedLineView: View {
         }
         .offset(y: self.drift)
     }
+
+    private static let backgroundFontSizeRatio: CGFloat = 0.62
 
     /// Neighbouring lines sit slightly off their slot, so a line settles into place
     /// as it becomes the line being sung.

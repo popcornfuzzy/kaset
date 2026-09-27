@@ -163,4 +163,105 @@ struct LyricsBackgroundVocalsTests {
         #expect(line.backgroundWords == nil)
         #expect(line.words?.first?.isBackground == false)
     }
+
+    // MARK: - Karaoke animation
+
+    /// A lead line with one backing vocal that starts later and ends later, the shape the
+    /// Autobahn TTML and Apple Music's own x-bg markup produce.
+    private func lineWithBackingVocal() -> SyncedLyricLine {
+        SyncedLyricLine(
+            timeInMs: 1_000,
+            duration: 4_000,
+            text: "Stare at the sun",
+            words: [
+                TimedWord(timeInMs: 1_000, word: "Stare"),
+                TimedWord(timeInMs: 1_400, word: " at"),
+                TimedWord(timeInMs: 1_800, word: " the"),
+                TimedWord(timeInMs: 2_200, word: " sun"),
+            ],
+            backgroundWords: [
+                TimedWord(timeInMs: 1_500, word: "Ooh", isBackground: true),
+                TimedWord(timeInMs: 3_000, word: " oh", isBackground: true),
+            ]
+        )
+    }
+
+    @Test("backing vocal words carry their own fill windows, not the lead's")
+    func backgroundWordsFillOnTheirOwnTiming() throws {
+        let line = self.lineWithBackingVocal()
+        let background = KaraokeFillModel.backgroundWords(for: line)
+
+        #expect(background.count == 2)
+        #expect(background.map(\.text) == ["Ooh", "oh"])
+        // The first backing word is timed from its own onset (1 500 ms, less the attack
+        // lead), never interpolated from the lead's first word.
+        #expect(abs(background[0].fillStartMs - 1_430) < 1)
+        // The last backing word fills from its own onset, and — like a lead word — is
+        // clamped to a 1 200 ms ramp, so a held note lands instead of crawling: 3 000 +
+        // 1 200, less the release tail. It still ends well past the lead's last word.
+        #expect(abs(background[1].fillEndMs - 4_160) < 1)
+    }
+
+    @Test("the backing synthetic line keeps the line's identity and timing")
+    func backingVocalLineKeepsIdentity() throws {
+        let line = self.lineWithBackingVocal()
+        let backing = line.backingVocalLine
+
+        #expect(backing.id == line.id)
+        #expect(backing.timeInMs == line.timeInMs)
+        #expect(backing.duration == line.duration)
+        #expect(backing.text.isEmpty)
+        #expect(backing.words?.map(\.word) == line.backgroundWords?.map(\.word))
+        #expect(backing.backgroundWords == nil)
+    }
+
+    @Test("the row stays on the display clock until the backing vocal lands")
+    func settleBoundaryCoversBackingVocal() throws {
+        let line = self.lineWithBackingVocal()
+
+        // The lead's last ramp ends at 3 360 ms, the backing's at 4 160 ms, and the line's
+        // declared end is 5 000 ms: the boundary is the latest of the three, so the row stays
+        // on the clock until the backing vocal has landed too.
+        let boundary = KaraokeFillModel.settleBoundaryMs(for: line)
+        #expect(abs(boundary - 5_000) < 1)
+        #expect(boundary > KaraokeFillModel.words(for: line).map(\.fillEndMs).max().unwrapOrFallback())
+        #expect(boundary > KaraokeFillModel.backgroundWords(for: line).map(\.fillEndMs).max().unwrapOrFallback())
+    }
+
+    @Test("a line without backing vocals settles exactly as before")
+    func settleBoundaryUnchangedWithoutBackingVocals() {
+        let line = SyncedLyricLine(
+            timeInMs: 1_000,
+            duration: 4_000,
+            text: "Plain",
+            words: [TimedWord(timeInMs: 1_000, word: "Plain")]
+        )
+
+        let boundary = KaraokeFillModel.settleBoundaryMs(for: line)
+        let declaredEnd = 5_000.0
+        #expect(abs(boundary - declaredEnd) < 1)
+    }
+
+    @Test("backing vocals fill synchronously with the lead on a shared clock")
+    func backingAndLeadFillOnSharedClock() throws {
+        let line = self.lineWithBackingVocal()
+        let lead = KaraokeFillModel.words(for: line)
+        let background = KaraokeFillModel.backgroundWords(for: line)
+
+        // At a position between the lead's last word and the backing's last word, the lead
+        // is fully sung while the backing is still filling: both are rendered from the same
+        // playback position, and each from its own windows.
+        let sharedClock: Double = 4_000
+        #expect(lead.allSatisfy { $0.fill(at: sharedClock) == 1 })
+        #expect(background[0].fill(at: sharedClock) == 1)
+        #expect(background[1].fill(at: sharedClock) > 0)
+        #expect(background[1].fill(at: sharedClock) < 1)
+    }
+}
+
+private extension Optional where Wrapped == Double {
+    /// Reads cleanly in a comparison where the fallback value is fine to substitute.
+    func unwrapOrFallback() -> Double {
+        self ?? 0
+    }
 }

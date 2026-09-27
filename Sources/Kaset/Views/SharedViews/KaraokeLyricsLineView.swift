@@ -119,21 +119,43 @@ struct KaraokeLineLayout: Equatable {
 @available(macOS 26.0, *)
 @MainActor
 final class KaraokeLayoutCache {
-    private var layouts: [UUID: KaraokeLineLayout] = [:]
-    private var fontSize: CGFloat = 0
+    /// One row of a sheet draws its lead line and its backing vocal side by side, at
+    /// **different** font sizes. The cache is therefore keyed by both, not by the line
+    /// alone: keying by the line alone would clear on every alternating lookup — each
+    /// frame would re-measure one of the two, which is exactly the per-frame text
+    /// measurement this cache exists to keep out of the display clock.
+    private struct Key: Hashable {
+        let lineID: UUID
+        let fontSize: CGFloat
+    }
+
+    private var layouts: [Key: KaraokeLineLayout] = [:]
 
     func layout(for line: SyncedLyricLine, fontSize: CGFloat) -> KaraokeLineLayout {
-        if self.fontSize != fontSize {
-            self.layouts.removeAll(keepingCapacity: true)
-            self.fontSize = fontSize
+        self.layout(for: line, fontSize: fontSize) {
+            KaraokeLineLayout(line: line, fontSize: fontSize)
         }
+    }
+
+    /// The backing vocal's layout, measured at its own smaller size against a line
+    /// whose `words` are the backing words — the same machinery the lead uses, fed
+    /// the backing timings.
+    func backgroundLayout(for line: SyncedLyricLine, fontSize: CGFloat) -> KaraokeLineLayout? {
+        guard !(line.backgroundWords ?? []).isEmpty else { return nil }
+        return self.layout(for: line, fontSize: fontSize) {
+            KaraokeLineLayout(line: line.backingVocalLine, fontSize: fontSize)
+        }
+    }
+
+    private func layout(for line: SyncedLyricLine, fontSize: CGFloat, build: () -> KaraokeLineLayout) -> KaraokeLineLayout {
+        let key = Key(lineID: line.id, fontSize: fontSize)
         // Bound the cache: a lyric sheet is a few hundred lines at most, and the words and
         // widths a layout holds are tiny, but a session plays many tracks.
         if self.layouts.count > 512 { self.layouts.removeAll(keepingCapacity: true) }
-        if let cached = self.layouts[line.id] { return cached }
+        if let cached = self.layouts[key] { return cached }
 
-        let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
-        self.layouts[line.id] = layout
+        let layout = build()
+        self.layouts[key] = layout
         return layout
     }
 }

@@ -519,8 +519,11 @@ struct SyncedLineView: View {
 
     var body: some View {
         // Measured once per line, not once per frame or per sheet re-render: a frame of
-        // the wipe of this line is then arithmetic and drawing only.
+        // the wipe of this line is then arithmetic and drawing only. The backing vocal is
+        // measured at its own smaller size — the cache keys by size, so the two layouts
+        // of one row never evict each other.
         let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
+        let backgroundLayout = self.layoutCache.backgroundLayout(for: self.line, fontSize: Self.fontSize - 2)
 
         return KaraokeTimeSource(
             line: self.line,
@@ -530,7 +533,7 @@ struct SyncedLineView: View {
             clock: self.clock,
             minimumFrameInterval: self.minimumFrameInterval
         ) { displayTimeMs in
-            self.content(at: displayTimeMs, layout: layout)
+            self.content(at: displayTimeMs, layout: layout, backgroundLayout: backgroundLayout)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(self.opacity(for: self.status))
@@ -548,11 +551,10 @@ struct SyncedLineView: View {
     }
 
     @ViewBuilder
-    private func content(at displayTimeMs: Double, layout: KaraokeLineLayout) -> some View {
+    private func content(at displayTimeMs: Double, layout: KaraokeLineLayout, backgroundLayout: KaraokeLineLayout?) -> some View {
         let hasLead = !self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let background = self.line.backgroundText
 
-        if !hasLead, background == nil {
+        if !hasLead, backgroundLayout == nil {
             // A short instrumental gap that is not long enough for the pause dots.
             Text("♪")
                 .font(.system(size: Self.fontSize, weight: .bold))
@@ -570,8 +572,19 @@ struct SyncedLineView: View {
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                if let background {
-                    LyricsBackgroundVocalsView(text: background, fontSize: Self.fontSize - 2)
+                if let backgroundLayout {
+                    // The backing vocal runs the same per-character wipe as the lead,
+                    // driven by the same display clock position — it overlaps the line
+                    // in time, so synchrony is simply sharing the clock. It is dimmer
+                    // and smaller so it reads as accompaniment, nothing else differs.
+                    KaraokeLyricsLineView(
+                        layout: backgroundLayout,
+                        displayTimeMs: displayTimeMs,
+                        color: .secondary,
+                        emphasis: self.emphasis,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
