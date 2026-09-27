@@ -363,8 +363,6 @@
 
 "Checking…" = "Checking…";
 
-"Change how this playlist is sorted. The order is saved to your YouTube Music account." = "Change how this playlist is sorted. The order is saved to your YouTube Music account.";
-
 "Unreachable" = "Unreachable";
 
 "Last checked %@" = "Last checked %@";
@@ -393,9 +391,9 @@
 
 "Sort" = "Sort";
 
-"Sort by %@" = "Sort by %@";
+"Sort by %@. This order is saved to your YouTube Music account." = "Sort by %@. This order is saved to your YouTube Music account.";
 
-"Top voted" = "Top voted";
+"YouTube Music kept the previous order for this playlist." = "YouTube Music kept the previous order for this playlist.";
 
 "Move to End" = "Move to End";
 

@@ -450,6 +450,11 @@ final class PlaylistDetailViewModel {
 
     /// Changes the playlist's server-side order and reloads, so the displayed tracks match the
     /// order YouTube Music now stores for the playlist.
+    ///
+    /// The write is verified against the order the reloaded header reports. YouTube Music answers
+    /// `STATUS_SUCCEEDED` even when it keeps a different order, and the list then looks unchanged,
+    /// which is indistinguishable from the sort silently doing nothing. The tracks carry no marker
+    /// for the order they are in, so the reloaded header is the only place the mismatch can be seen.
     func changeSortOrder(to sortOrder: PlaylistSortOrder) async {
         guard !self.isChangingSortOrder else { return }
         guard self.playlistDetail?.effectiveSortOrder != sortOrder else { return }
@@ -461,9 +466,27 @@ final class PlaylistDetailViewModel {
         do {
             try await self.client.setPlaylistSortOrder(playlistId: self.playlist.id, sortOrder: sortOrder)
             await self.refresh()
+            self.reportSortOrderIfNotApplied(sortOrder)
         } catch {
             self.sortOrderError = error.localizedDescription
             self.logger.error("Failed to change playlist sort order: \(error.localizedDescription)")
         }
+    }
+
+    /// Compares the requested order with the one the reloaded playlist header reports, and explains
+    /// the outcome when they differ. A header that does not report any selected order is left alone:
+    /// that is a gap in the response, not evidence that the write was ignored.
+    private func reportSortOrderIfNotApplied(_ requested: PlaylistSortOrder) {
+        guard let landed = self.playlistDetail?.sortOrder else { return }
+
+        guard landed != requested else {
+            self.logger.info("Playlist sort order is now \(requested.rawValue)")
+            return
+        }
+
+        self.logger.warning(
+            "Playlist sort order was not applied: requested \(requested.rawValue), header still reports \(landed.rawValue)"
+        )
+        self.sortOrderError = String(localized: "YouTube Music kept the previous order for this playlist.")
     }
 }

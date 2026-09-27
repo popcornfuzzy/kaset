@@ -837,7 +837,7 @@ try await request("browse/edit_playlist", body: body)
 | `0` | Manual (the owner's hand-arranged order) |
 | `1` | Newest first |
 | `2` | Newest last (YouTube Music labels it "Oldest first") |
-| `6` | Top voted (only on playlists with community voting) |
+| `6` | Top voted — **not modelled by Kaset**, see below |
 
 **Ownership is a precondition, not a detail.** Sending this action for a playlist the signed-in user
 cannot edit answers `HTTP 400` (`INVALID_ARGUMENT`, or a bare `400`), which is why `PlaylistDetail`
@@ -847,6 +847,16 @@ reorder it although its header has no editable marker). YouTube's response body 
 `{"error": {"code": 400, "message": "…", "status": "INVALID_ARGUMENT"}}` — and `YTMusicClient` now
 surfaces it in the thrown error instead of dropping the body, so a rejected write says what was
 wrong rather than only `HTTP 400`.
+
+**`6` (`Top voted`) is not offered.** The write is accepted — `STATUS_SUCCEEDED` — but the playlist
+comes back in its previous order, so the option selected fine, showed a check mark and changed
+nothing. `PlaylistSortOrder` therefore has no case for `6`, and `PlaylistParser.videoOrder(in:)`
+drops values it has no case for, which leaves a header that advertises Top voted offering only the
+orders that work.
+
+**`STATUS_SUCCEEDED` does not mean the order changed.** The same silence can happen to a supported
+order, so `PlaylistDetailViewModel.changeSortOrder` re-reads the order the reloaded header reports
+and tells the user when it differs — the tracks themselves carry no marker for the order they are in.
 
 **Reading the current order.** The browse response for an owned playlist carries a sort menu whose
 options each hold an `ACTION_SET_PLAYLIST_VIDEO_ORDER` action. Two renderer shapes are handled by

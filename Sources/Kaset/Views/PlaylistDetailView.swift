@@ -126,13 +126,19 @@ struct PlaylistDetailView: View {
             }
 
             // Included only when the playlist can be sorted. An always-present item with a
-            // conditional body collapses to an empty toolbar item, which makes SwiftUI merge the
-            // search field and the refresh button.
+            // conditional body collapses to an empty toolbar item.
             if let detail = self.viewModel.playlistDetail, detail.isSortable {
                 ToolbarItem(placement: .automatic) {
                     self.sortMenu(detail)
                 }
             }
+
+            // `ToolbarSpacer` ends the group the items above belong to. Without it, a toolbar that
+            // is down to just the search field and the refresh button draws them inside one shared
+            // glass capsule, and the refresh glyph lands on the right edge of the search pill (the
+            // sort menu happened to keep them apart while it was there). This is macOS 26's way of
+            // giving the refresh button its own background.
+            ToolbarSpacer(.fixed)
 
             ToolbarItem(placement: .automatic) {
                 Button {
@@ -601,9 +607,8 @@ struct PlaylistDetailView: View {
         } label: {
             Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
         }
-        .help(String(localized: "Sort by \(detail.effectiveSortOrder.displayName)"))
+        .help(Text("Sort by \(detail.effectiveSortOrder.displayName). This order is saved to your YouTube Music account."))
         .disabled(self.viewModel.isChangingSortOrder)
-        .help(String(localized: "Change how this playlist is sorted. The order is saved to your YouTube Music account."))
     }
 
     private func metadataText(for detail: PlaylistDetail) -> String {

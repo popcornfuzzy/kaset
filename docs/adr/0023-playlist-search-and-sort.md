@@ -51,7 +51,25 @@ and a sort is offered — either the header's own menu or the standard set for *
 browse response does not carry the editable header a normal playlist has. The active order is shown
 by a check mark on the selected option in the dropdown (the menu's `help` text names it too). A
 compact, fixed-width search field sits in the toolbar, and picking a result plays the filtered list
-rather than the full playlist.
+rather than the full playlist. A `ToolbarSpacer(.fixed)` sits between the search field and the
+refresh button: toolbar items in the same group share one glass background on macOS 26, so a toolbar
+down to just those two (a playlist that cannot be sorted) drew them as a single pill with the
+refresh glyph on the search field's trailing edge. The spacer ends the group the search field and
+the sort menu belong to, which gives the refresh button its own background with or without a sort
+menu present.
+
+**`Top voted` is not offered.** The header can advertise `playlistVideoOrder: 6` for it, and the
+write is accepted, but the reloaded playlist comes back in its previous order: selecting it showed a
+check mark and changed nothing, which reads as the sort being broken. `PlaylistSortOrder` has no case
+for `6`, so `PlaylistParser.videoOrder(in:)` drops it wherever a header advertises it, and the menu
+lists only the orders that work.
+
+**The order change is verified against the reloaded header, not assumed.** YouTube Music answers
+`STATUS_SUCCEEDED` even when it keeps a different order, and the list then comes back unchanged.
+Because the tracks carry no marker for the order they are in, that is indistinguishable from a sort
+that did nothing. `changeSortOrder` compares the requested order with the one the reloaded header
+reports and, when they differ, says so next to the header controls instead of leaving the user to
+guess whether the click registered.
 
 **The header is the list's first row, and scrolls with the tracks.** It started that way. It was then
 moved out into a `VStack` above the list to escape the table's row model, which introduced a worse
@@ -121,6 +139,9 @@ presses Back and clicks it again, which is the click that used to be ignored.
   noticeable time on first search (once per view model, then cached in memory).
 - The live YT Music header shape for sort could not be verified in this environment; if it differs,
   the sort menu simply does not appear until the parser is updated.
+- The verification can only speak when the reloaded header reports a selected order. A response that
+  omits the selection (or a write whose effect the server applies only to later fetches) leaves it
+  silent, and the order on screen is then whatever the server returned.
 
 ### Neutral
 

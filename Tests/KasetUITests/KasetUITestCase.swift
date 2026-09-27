@@ -501,6 +501,11 @@ class KasetUITestCase: XCTestCase {
             return
         }
 
+        // Front the app before judging hit-testing: the window can sit behind another app's, and an
+        // element that is not frontmost reports `isHittable == false`, so the wait below times out
+        // even though the item is where it belongs.
+        self.app.activate()
+
         // Then wait for it to be hittable (may need time for layout)
         if self.waitForHittable(sidebarItem, timeout: 10) {
             sidebarItem.click()

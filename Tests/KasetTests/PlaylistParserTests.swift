@@ -139,6 +139,36 @@ struct PlaylistParserTests {
         #expect(response.detail.isSortable == true)
     }
 
+    @Test("A Top voted option in the header is not offered")
+    func parseTopVotedSortOrderIsNotOffered() {
+        // A voted playlist's header can advertise `playlistVideoOrder: 6` for Top voted. Selecting it
+        // writes fine — YouTube Music answers `STATUS_SUCCEEDED` — but the reloaded playlist still
+        // comes back in its previous order, which reads as the sort doing nothing. The option is
+        // therefore dropped rather than offered and then ignored.
+        let submenu: [String: Any] = [
+            "sortFilterSubMenuRenderer": [
+                "subMenuItems": [
+                    self.makeSortSubMenuItem(title: "Manual", order: 0, selected: true),
+                    self.makeSortSubMenuItem(title: "Newest first", order: 1, selected: false),
+                    self.makeSortSubMenuItem(title: "Oldest first", order: 2, selected: false),
+                    self.makeSortSubMenuItem(title: "Top voted", order: 6, selected: false),
+                ],
+            ],
+        ]
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeOwnedPlaylistData(sortMenu: submenu),
+            playlistId: "VL-owned"
+        )
+
+        #expect(response.detail.availableSortOrders == [.manual, .newestFirst, .newestLast])
+        #expect(response.detail.sortOrder == .manual)
+        // The write for it is not modelled at all, so no code path can send `6`.
+        #expect(PlaylistSortOrder(rawValue: 6) == nil)
+        // The playlist stays sortable: only the unsupported option is gone.
+        #expect(response.detail.isSortable == true)
+    }
+
     @Test("Parse sort order from the sort filter button")
     func parseSortOrderFromButton() {
         let button: [String: Any] = [

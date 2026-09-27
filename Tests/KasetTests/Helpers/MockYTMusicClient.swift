@@ -80,6 +80,10 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     var createPlaylistResult: Playlist?
     var nextAddSongSetVideoId: String?
 
+    /// Simulates YouTube Music accepting an order change without applying it: the write reports
+    /// success, but a following `getPlaylist` still reports the order the playlist had before.
+    var ignoresPlaylistSortOrders = false
+
     // MARK: - Call Tracking
 
     private(set) var getSongCalled = false
@@ -746,7 +750,7 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         if let error = shouldThrowError { throw error }
 
         // Mirror the server: remember the order so a following getPlaylist reports it.
-        if let existing = self.playlistDetails[playlistId] {
+        if let existing = self.playlistDetails[playlistId], !self.ignoresPlaylistSortOrders {
             self.playlistDetails[playlistId] = PlaylistDetail(
                 playlist: Playlist(
                     id: existing.id,
@@ -1047,6 +1051,7 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         self.addToPlaylistEntries = []
         self.createPlaylistResult = nil
         self.nextAddSongSetVideoId = nil
+        self.ignoresPlaylistSortOrders = false
         self.moodCategoryCalled = false
         self.shouldThrowError = nil
     }

@@ -567,4 +567,53 @@ struct PlaylistDetailViewModelTests {
         #expect(self.viewModel.sortOrderError != nil)
         #expect(self.viewModel.playlistDetail?.sortOrder == .manual)
     }
+
+    @Test("A write YouTube Music accepts but does not apply is reported")
+    func changeSortOrderReportsAnOrderTheServerKept() async {
+        let playlist = TestFixtures.makePlaylist(id: "VL-test-playlist")
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: playlist,
+            tracks: TestFixtures.makeSongs(count: 3),
+            sortOrder: .manual,
+            availableSortOrders: PlaylistSortOrder.standard,
+            isEditable: true
+        )
+
+        await self.viewModel.load()
+
+        // YouTube Music can answer STATUS_SUCCEEDED for an order it does not store, and the reloaded
+        // playlist then still carries the old order. The list looks unchanged, so the mismatch has to
+        // be said out loud instead of being left to look like a slow sort.
+        self.mockClient.ignoresPlaylistSortOrders = true
+        await self.viewModel.changeSortOrder(to: .newestFirst)
+
+        #expect(self.mockClient.setPlaylistSortOrders == [.newestFirst])
+        #expect(self.viewModel.playlistDetail?.sortOrder == .manual)
+        #expect(self.viewModel.sortOrderError != nil)
+    }
+
+    @Test("An applied write leaves no error behind")
+    func changeSortOrderClearsAnEarlierOrderError() async {
+        let playlist = TestFixtures.makePlaylist(id: "VL-test-playlist")
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: playlist,
+            tracks: TestFixtures.makeSongs(count: 2),
+            sortOrder: .manual,
+            availableSortOrders: PlaylistSortOrder.standard,
+            isEditable: true
+        )
+
+        await self.viewModel.load()
+
+        self.mockClient.ignoresPlaylistSortOrders = true
+        await self.viewModel.changeSortOrder(to: .newestFirst)
+        #expect(self.viewModel.sortOrderError != nil)
+
+        // The next attempt is applied, so the earlier message must not stick around.
+        self.mockClient.ignoresPlaylistSortOrders = false
+        await self.viewModel.changeSortOrder(to: .newestLast)
+
+        #expect(self.viewModel.playlistDetail?.sortOrder == .newestLast)
+        #expect(self.viewModel.sortOrderError == nil)
+    }
 }
