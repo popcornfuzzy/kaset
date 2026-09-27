@@ -18,6 +18,12 @@ enum PlaylistParser {
         var artists: [Artist] = []
         var trackCount: Int?
         var duration: String?
+        /// Whether the response carried an editable playlist header (i.e. the user owns it).
+        var isEditable: Bool = false
+        /// Sort options the header advertised, in menu order.
+        var availableSortOrders: [PlaylistSortOrder] = []
+        /// The sort option the server currently has selected.
+        var sortOrder: PlaylistSortOrder?
     }
 
     /// Parses library playlists from browse response.
@@ -451,7 +457,10 @@ enum PlaylistParser {
             playlist: playlist,
             tracks: tracks,
             duration: header.duration,
-            artists: header.artists
+            artists: header.artists,
+            sortOrder: header.sortOrder,
+            availableSortOrders: header.availableSortOrders,
+            isEditable: header.isEditable
         )
     }
 
@@ -476,7 +485,10 @@ enum PlaylistParser {
             playlist: playlist,
             tracks: tracks,
             duration: header.duration,
-            artists: header.artists
+            artists: header.artists,
+            sortOrder: header.sortOrder,
+            availableSortOrders: header.availableSortOrders,
+            isEditable: header.isEditable
         )
         let continuationToken = Self.extractPlaylistContinuationToken(from: data)
 
@@ -956,6 +968,9 @@ enum PlaylistParser {
     private static func parsePlaylistHeader(_ data: [String: Any]) -> HeaderData {
         var header = HeaderData()
 
+        header.isEditable = Self.hasEditableHeader(data)
+        (header.availableSortOrders, header.sortOrder) = Self.parseSortState(data)
+
         if let headerDict = data["header"] as? [String: Any] {
             // Try each header renderer type in order of preference
             Self.applyDetailHeaderRenderer(from: headerDict, to: &header)
@@ -975,6 +990,154 @@ enum PlaylistParser {
         }
 
         return header
+    }
+
+    // MARK: - Sort Order
+
+    /// Whether the response carried an editable playlist header. YouTube Music only exposes the
+    /// edit header for playlists the signed-in user owns, which is also the only case where the
+    /// server-side order can be changed.
+    private static func hasEditableHeader(_ data: [String: Any]) -> Bool {
+        Self.findFirstDictionary(named: "musicEditablePlaylistDetailHeaderRenderer", in: data) != nil
+    }
+
+    /// Reads the playlist's sort menu, supporting both shapes YouTube uses:
+    /// - `sortFilterSubMenuRenderer.subMenuItems` (the classic submenu, e.g. Watch Later),
+    ///   where each item flags itself with `selected`.
+    /// - `musicSortFilterButtonRenderer`, whose dropdown options carry the order action and whose
+    ///   own title names the current selection.
+    ///
+    /// Both expose the stored order through an `ACTION_SET_PLAYLIST_VIDEO_ORDER` action, so the
+    /// order values are read from wherever that action appears rather than from a fixed path.
+    private static func parseSortState(_ data: [String: Any]) -> (options: [PlaylistSortOrder], selected: PlaylistSortOrder?) {
+        if let submenu = Self.findFirstDictionary(named: "sortFilterSubMenuRenderer", in: data),
+           let items = submenu["subMenuItems"] as? [[String: Any]]
+        {
+            return Self.sortState(fromSubMenuItems: items)
+        }
+
+        if let button = Self.findFirstDictionary(named: "musicSortFilterButtonRenderer", in: data) {
+            return Self.sortState(fromSortFilterButton: button)
+        }
+
+        return ([], nil)
+    }
+
+    private static func sortState(fromSubMenuItems items: [[String: Any]]) -> (options: [PlaylistSortOrder], selected: PlaylistSortOrder?) {
+        var options: [PlaylistSortOrder] = []
+        var selected: PlaylistSortOrder?
+
+        for item in items {
+            guard let order = Self.videoOrder(in: item) else { continue }
+            options.append(order)
+            if item["selected"] as? Bool == true {
+                selected = order
+            }
+        }
+
+        return (options, selected)
+    }
+
+    private static func sortState(fromSortFilterButton button: [String: Any]) -> (options: [PlaylistSortOrder], selected: PlaylistSortOrder?) {
+        let menuOptions = ((button["menu"] as? [String: Any])?["musicMultiSelectMenuRenderer"] as? [String: Any])?["options"] as? [[String: Any]] ?? []
+
+        var options: [PlaylistSortOrder] = []
+        var titlesByOrder: [PlaylistSortOrder: String] = [:]
+
+        for optionData in menuOptions {
+            let option = (optionData["musicMultiSelectMenuItemRenderer"] as? [String: Any]) ?? optionData
+            guard let order = Self.videoOrder(in: option) else { continue }
+            options.append(order)
+            if let title = Self.text(of: option["title"]) {
+                titlesByOrder[order] = title
+            }
+        }
+
+        // The button's own title names the current selection, which is more reliable than walking
+        // the checkbox mutation commands that differ per menu shape.
+        let selectedTitle = Self.text(of: button["title"])
+        let selected = selectedTitle.flatMap { title in
+            titlesByOrder.first { $0.value.caseInsensitiveCompare(title) == .orderedSame }?.key
+        }
+
+        return (options, selected)
+    }
+
+    /// Finds the playlist video order carried by an `ACTION_SET_PLAYLIST_VIDEO_ORDER` action
+    /// anywhere inside `node`.
+    private static func videoOrder(in node: Any) -> PlaylistSortOrder? {
+        guard let order = Self.rawVideoOrder(in: node), let value = PlaylistSortOrder(rawValue: order) else {
+            return nil
+        }
+        return value
+    }
+
+    private static func rawVideoOrder(in node: Any) -> Int? {
+        if let array = node as? [Any] {
+            for item in array {
+                if let order = Self.rawVideoOrder(in: item) { return order }
+            }
+            return nil
+        }
+
+        guard let dictionary = node as? [String: Any] else { return nil }
+
+        if dictionary["action"] as? String == "ACTION_SET_PLAYLIST_VIDEO_ORDER",
+           let order = Self.intValue(dictionary["playlistVideoOrder"])
+        {
+            return order
+        }
+
+        for value in dictionary.values {
+            if let order = Self.rawVideoOrder(in: value) { return order }
+        }
+
+        return nil
+    }
+
+    /// Reads text out of a `simpleText` or `runs` node.
+    private static func text(of node: Any?) -> String? {
+        guard let dictionary = node as? [String: Any] else { return nil }
+
+        if let simpleText = dictionary["simpleText"] as? String {
+            return simpleText
+        }
+
+        if let runs = dictionary["runs"] as? [[String: Any]] {
+            let text = runs.compactMap { $0["text"] as? String }.joined()
+            return text.isEmpty ? nil : text
+        }
+
+        return nil
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    /// Depth-first search for the first dictionary stored under `key` anywhere in the response.
+    private static func findFirstDictionary(named key: String, in node: Any) -> [String: Any]? {
+        if let array = node as? [Any] {
+            for item in array {
+                if let found = Self.findFirstDictionary(named: key, in: item) { return found }
+            }
+            return nil
+        }
+
+        guard let dictionary = node as? [String: Any] else { return nil }
+
+        if let found = dictionary[key] as? [String: Any] {
+            return found
+        }
+
+        for value in dictionary.values {
+            if let found = Self.findFirstDictionary(named: key, in: value) { return found }
+        }
+
+        return nil
     }
 
     /// Artists credited by a run list. Separator runs (" & ", " • ") and blanks are dropped, and

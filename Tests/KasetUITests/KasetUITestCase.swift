@@ -38,6 +38,11 @@ enum TestAccessibilityID {
         static let container = "videoWindow"
     }
 
+    enum PlaylistDetail {
+        static let artwork = "playlistDetailView.artwork"
+        static let playButton = "playlistDetailView.playButton"
+    }
+
     // MARK: - Sidebar Profile
 
     enum SidebarProfile {

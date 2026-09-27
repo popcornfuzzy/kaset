@@ -13,7 +13,7 @@
 		E5000004 /* HomeViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000104 /* HomeViewUITests.swift */; };
 		E5000005 /* KasetUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000105 /* KasetUITestCase.swift */; };
 		E5000006 /* LibraryViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000106 /* LibraryViewUITests.swift */; };
-		E5000007 /* LikedMusicViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000107 /* LikedMusicViewUITests.swift */; };
+		E500000C /* PlaylistArtistNavigationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E500010C /* PlaylistArtistNavigationUITests.swift */; };
 		E5000008 /* PlayerBarUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000108 /* PlayerBarUITests.swift */; };
 		E5000009 /* SearchViewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5000109 /* SearchViewUITests.swift */; };
 		E500000A /* SidebarUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E500010A /* SidebarUITests.swift */; };
@@ -27,7 +27,7 @@
 		E5000104 /* HomeViewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewUITests.swift; sourceTree = "<group>"; };
 		E5000105 /* KasetUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KasetUITestCase.swift; sourceTree = "<group>"; };
 		E5000106 /* LibraryViewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewUITests.swift; sourceTree = "<group>"; };
-		E5000107 /* LikedMusicViewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LikedMusicViewUITests.swift; sourceTree = "<group>"; };
+		E500010C /* PlaylistArtistNavigationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistArtistNavigationUITests.swift; sourceTree = "<group>"; };
 		E5000108 /* PlayerBarUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerBarUITests.swift; sourceTree = "<group>"; };
 		E5000109 /* SearchViewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViewUITests.swift; sourceTree = "<group>"; };
 		E500010A /* SidebarUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarUITests.swift; sourceTree = "<group>"; };
@@ -63,7 +63,7 @@
 				E5000104 /* HomeViewUITests.swift */,
 				E5000105 /* KasetUITestCase.swift */,
 				E5000106 /* LibraryViewUITests.swift */,
-				E5000107 /* LikedMusicViewUITests.swift */,
+				E500010C /* PlaylistArtistNavigationUITests.swift */,
 				E5000108 /* PlayerBarUITests.swift */,
 				E5000109 /* SearchViewUITests.swift */,
 				E500010A /* SidebarUITests.swift */,
@@ -139,7 +139,7 @@
 				E5000004 /* HomeViewUITests.swift in Sources */,
 				E5000005 /* KasetUITestCase.swift in Sources */,
 				E5000006 /* LibraryViewUITests.swift in Sources */,
-				E5000007 /* LikedMusicViewUITests.swift in Sources */,
+				E500000C /* PlaylistArtistNavigationUITests.swift in Sources */,
 				E5000008 /* PlayerBarUITests.swift in Sources */,
 				E5000009 /* SearchViewUITests.swift in Sources */,
 				E500000A /* SidebarUITests.swift in Sources */,

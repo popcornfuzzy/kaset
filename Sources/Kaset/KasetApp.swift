@@ -104,6 +104,9 @@ struct KasetApp: App {
         self.appDelegate.playerService = player
 
         if UITestConfig.isUITestMode {
+            // Leaves a trace the UI test script checks, since the log's info-level entries are not
+            // flushed in time to be read back at the end of a run (see `UITestConfig`).
+            UITestConfig.markUITestModeSeen()
             DiagnosticsLogger.ui.info("App launched in UI Test mode")
         }
     }

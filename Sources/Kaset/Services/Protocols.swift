@@ -220,6 +220,11 @@ protocol YTMusicClientProtocol: Sendable {
     /// Renames a playlist.
     func renamePlaylist(playlistId: String, newTitle: String) async throws
 
+    /// Changes a playlist's server-side track order.
+    /// YouTube Music stores the order per playlist, so the change is shared across devices and
+    /// reflected the next time the playlist is fetched.
+    func setPlaylistSortOrder(playlistId: String, sortOrder: PlaylistSortOrder) async throws
+
     /// Deletes a playlist.
     func deletePlaylist(playlistId: String) async throws
 

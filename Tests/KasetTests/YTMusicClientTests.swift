@@ -236,4 +236,30 @@ struct YTMusicClientTests {
         // Should not throw for valid ID
         try await mockClient.unsubscribeFromPodcast(showId: "MPSPPLXz2p9abc123")
     }
+
+    // MARK: - Rejected request messages
+
+    @Test("A rejected request reports the server's reason")
+    func serverErrorMessageReadsErrorBody() {
+        let body = Data(
+            #"{"error": {"code": 400, "message": "Request contains an invalid argument.", "status": "INVALID_ARGUMENT"}}"#.utf8
+        )
+
+        #expect(
+            YTMusicClient.serverErrorMessage(from: body) == "INVALID_ARGUMENT — Request contains an invalid argument."
+        )
+    }
+
+    @Test(
+        "A rejected request without a usable error body falls back to the status alone",
+        arguments: [
+            Data(),
+            Data("not json".utf8),
+            Data(#"{"status": "INVALID_ARGUMENT"}"#.utf8),
+            Data(#"{"error": {"code": 400}}"#.utf8),
+        ]
+    )
+    func serverErrorMessageIgnoresUnusableBodies(body: Data) {
+        #expect(YTMusicClient.serverErrorMessage(from: body).isEmpty)
+    }
 }

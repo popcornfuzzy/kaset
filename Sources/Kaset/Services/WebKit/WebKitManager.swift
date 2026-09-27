@@ -126,6 +126,10 @@ enum KeychainCookieStorage {
     /// Saves an already-serialized cookie archive to the Keychain.
     @discardableResult
     static func saveArchiveData(_ data: Data, cookieCount: Int) -> Bool {
+        // UI tests must not touch the real Keychain. A freshly built app is signed differently from
+        // the item's owner, so macOS asks the user to allow access on every launch.
+        guard !UITestConfig.isUITestMode else { return false }
+
         guard self.writeCoordinator.beginSaveIfNeeded(data) else {
             self.logger.debug("Skipping Keychain cookie save because archive is already saved or a write is in progress")
             return false
@@ -167,6 +171,8 @@ enum KeychainCookieStorage {
 
     /// Returns `true` if a Keychain item exists for our cookie storage.
     static func hasCookieItem() -> Bool {
+        guard !UITestConfig.isUITestMode else { return false }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -181,6 +187,8 @@ enum KeychainCookieStorage {
 
     /// Loads the raw serialized cookie archive data from Keychain.
     static func loadArchiveData() -> Data? {
+        guard !UITestConfig.isUITestMode else { return nil }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -254,6 +262,8 @@ enum KeychainCookieStorage {
 
     /// Deletes cookies from the Keychain.
     static func deleteCookies() {
+        guard !UITestConfig.isUITestMode else { return }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service,
@@ -295,6 +305,9 @@ enum LegacyCookieMigration {
     /// Returns true if migration occurred, false if no migration was needed.
     @discardableResult
     static func migrateIfNeeded() -> Bool {
+        // Nothing to migrate to in UI test mode, where the Keychain is left alone entirely.
+        guard !UITestConfig.isUITestMode else { return false }
+
         // If Keychain already has cookies, do not repeatedly migrate on every startup.
         guard !KeychainCookieStorage.hasCookieItem() else { return false }
 

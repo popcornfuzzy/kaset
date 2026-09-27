@@ -191,6 +191,9 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
     private(set) var renamePlaylistCalled = false
     private(set) var renamePlaylistIds: [String] = []
     private(set) var renamePlaylistTitles: [String] = []
+    private(set) var setPlaylistSortOrderCalled = false
+    private(set) var setPlaylistSortOrderPlaylistIds: [String] = []
+    private(set) var setPlaylistSortOrders: [PlaylistSortOrder] = []
     private(set) var deletePlaylistCalled = false
     private(set) var deletePlaylistIds: [String] = []
     private(set) var addSongToPlaylistCalled = false
@@ -736,6 +739,33 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         }
     }
 
+    func setPlaylistSortOrder(playlistId: String, sortOrder: PlaylistSortOrder) async throws {
+        self.setPlaylistSortOrderCalled = true
+        self.setPlaylistSortOrderPlaylistIds.append(playlistId)
+        self.setPlaylistSortOrders.append(sortOrder)
+        if let error = shouldThrowError { throw error }
+
+        // Mirror the server: remember the order so a following getPlaylist reports it.
+        if let existing = self.playlistDetails[playlistId] {
+            self.playlistDetails[playlistId] = PlaylistDetail(
+                playlist: Playlist(
+                    id: existing.id,
+                    title: existing.title,
+                    description: existing.description,
+                    thumbnailURL: existing.thumbnailURL,
+                    trackCount: existing.trackCount,
+                    author: existing.author
+                ),
+                tracks: existing.tracks,
+                duration: existing.duration,
+                artists: existing.artists,
+                sortOrder: sortOrder,
+                availableSortOrders: existing.availableSortOrders,
+                isEditable: existing.isEditable
+            )
+        }
+    }
+
     func deletePlaylist(playlistId: String) async throws {
         self.deletePlaylistCalled = true
         self.deletePlaylistIds.append(playlistId)
@@ -975,6 +1005,9 @@ final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this
         self.renamePlaylistCalled = false
         self.renamePlaylistIds = []
         self.renamePlaylistTitles = []
+        self.setPlaylistSortOrderCalled = false
+        self.setPlaylistSortOrderPlaylistIds = []
+        self.setPlaylistSortOrders = []
         self.deletePlaylistCalled = false
         self.deletePlaylistIds = []
         self.addSongToPlaylistCalled = false

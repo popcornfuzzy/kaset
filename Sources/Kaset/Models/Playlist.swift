@@ -82,6 +82,13 @@ struct PlaylistDetail: Identifiable {
     /// Artists credited on the album, or the playlist's creators. Carries channel IDs when the
     /// response exposed them, which is what makes the names navigable to artist pages.
     let artists: [Artist]
+    /// The server's stored track ordering. `nil` when the playlist is not owned by the signed-in
+    /// user, or the header did not expose a sort menu.
+    let sortOrder: PlaylistSortOrder?
+    /// Sort options the header advertised, in menu order. Empty when the playlist is not sortable.
+    let availableSortOrders: [PlaylistSortOrder]
+    /// Whether the signed-in user can edit this playlist — and therefore reorder it.
+    let isEditable: Bool
 
     /// Whether this is an album (vs a playlist).
     /// Albums have IDs starting with "OLAK" or "MPRE".
@@ -89,7 +96,48 @@ struct PlaylistDetail: Identifiable {
         self.id.hasPrefix("OLAK") || self.id.hasPrefix("MPRE")
     }
 
-    init(playlist: Playlist, tracks: [Song], duration: String? = nil, artists: [Artist] = []) {
+    /// Whether this is the Liked Music auto-playlist. Its browse response does not carry the
+    /// editable header a normal playlist has, but the account can still sort it.
+    var isLikedMusic: Bool {
+        let normalized = self.id.hasPrefix("VL") ? String(self.id.dropFirst(2)) : self.id
+        return normalized == "LM"
+    }
+
+    /// Sort options to offer. Prefers the header's own menu and falls back to the standard set for
+    /// Liked Music, which is sortable even though its header does not advertise a menu.
+    var sortOptions: [PlaylistSortOrder] {
+        if !self.availableSortOrders.isEmpty {
+            return self.availableSortOrders
+        }
+        return self.isLikedMusic ? PlaylistSortOrder.standard : []
+    }
+
+    /// Whether the track list can be sorted in place.
+    ///
+    /// Albums cannot, and the server only accepts a reorder for a playlist the signed-in user can
+    /// edit — the same `musicEditablePlaylistDetailHeaderRenderer` marker that gates every other
+    /// playlist write. A menu advertised for a playlist we do not own is therefore not actionable,
+    /// and offering it produced an `HTTP 400` when the write was sent. Liked Music is the exception:
+    /// the account can reorder it although its header carries no editable marker.
+    var isSortable: Bool {
+        !self.isAlbum && !self.sortOptions.isEmpty && (self.isEditable || self.isLikedMusic)
+    }
+
+    /// The option to mark as selected. Falls back to Manual — the documented server default — when
+    /// the header did not name its current order.
+    var effectiveSortOrder: PlaylistSortOrder {
+        self.sortOrder ?? .manual
+    }
+
+    init(
+        playlist: Playlist,
+        tracks: [Song],
+        duration: String? = nil,
+        artists: [Artist] = [],
+        sortOrder: PlaylistSortOrder? = nil,
+        availableSortOrders: [PlaylistSortOrder] = [],
+        isEditable: Bool = false
+    ) {
         self.id = playlist.id
         self.title = playlist.title
         self.description = playlist.description
@@ -99,6 +147,9 @@ struct PlaylistDetail: Identifiable {
         self.tracks = tracks
         self.duration = duration
         self.artists = artists
+        self.sortOrder = sortOrder
+        self.availableSortOrders = availableSortOrders
+        self.isEditable = isEditable
     }
 
     /// Track count to show in the UI, preferring the API-reported total over the loaded row count.

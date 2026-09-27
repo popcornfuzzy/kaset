@@ -41,6 +41,22 @@ final class PlaylistDetailViewModel {
     /// this off to keep page accounting deterministic.
     var prefetchesFollowingPage = true
 
+    /// Whether every remaining page is currently being fetched so search can cover the whole
+    /// playlist instead of only the rows already loaded.
+    private(set) var isLoadingAllTracks = false
+
+    /// Shared in-flight full-scan task, so repeated keystrokes don't restart the scan.
+    // swiftformat:disable modifierOrder
+    /// nonisolated(unsafe) required for deinit access; Swift 6.2 warning is expected.
+    nonisolated(unsafe) private var loadAllTracksTask: Task<Void, Never>?
+    // swiftformat:enable modifierOrder
+
+    /// Whether a sort-order change is on its way to the server.
+    private(set) var isChangingSortOrder = false
+
+    /// Error from the last sort-order change, surfaced next to the controls.
+    private(set) var sortOrderError: String?
+
     init(playlist: Playlist, client: any YTMusicClientProtocol) {
         self.playlist = playlist
         self.client = client
@@ -48,6 +64,7 @@ final class PlaylistDetailViewModel {
 
     deinit {
         self.prefillTask?.cancel()
+        self.loadAllTracksTask?.cancel()
     }
 
     /// Strips song count patterns from author text (e.g., " • 145 songs" or " • 2,429 tracks").
@@ -129,7 +146,11 @@ final class PlaylistDetailViewModel {
                     detail = PlaylistDetail(
                         playlist: updatedPlaylist,
                         tracks: allTracks,
-                        duration: detail.duration
+                        duration: detail.duration,
+                        artists: detail.artists,
+                        sortOrder: detail.sortOrder,
+                        availableSortOrders: detail.availableSortOrders,
+                        isEditable: detail.isEditable
                     )
                     hasMore = false
                 }
@@ -171,7 +192,10 @@ final class PlaylistDetailViewModel {
                 playlist: mergedPlaylist,
                 tracks: detail.tracks,
                 duration: detail.duration,
-                artists: detail.artists
+                artists: detail.artists,
+                sortOrder: detail.sortOrder,
+                availableSortOrders: detail.availableSortOrders,
+                isEditable: detail.isEditable
             )
         }
 
@@ -230,7 +254,10 @@ final class PlaylistDetailViewModel {
             playlist: playlist,
             tracks: tracks,
             duration: detail.duration,
-            artists: detail.artists
+            artists: detail.artists,
+            sortOrder: detail.sortOrder,
+            availableSortOrders: detail.availableSortOrders,
+            isEditable: detail.isEditable
         )
     }
 
@@ -329,7 +356,10 @@ final class PlaylistDetailViewModel {
                 playlist: updatedPlaylist,
                 tracks: allTracks,
                 duration: currentDetail.duration,
-                artists: currentDetail.artists
+                artists: currentDetail.artists,
+                sortOrder: currentDetail.sortOrder,
+                availableSortOrders: currentDetail.availableSortOrders,
+                isEditable: currentDetail.isEditable
             ))
             self.hasMore = response.hasMore
 
@@ -347,12 +377,15 @@ final class PlaylistDetailViewModel {
 
     /// Refreshes the playlist.
     func refresh() async {
-        // A refresh replaces the track list, so any in-flight prefill or page fetch is stale.
+        // A refresh replaces the track list, so any in-flight prefill, full scan, or page fetch is stale.
         self.prefillGeneration += 1
         self.prefillTask?.cancel()
         self.prefillTask = nil
         self.inFlightPageLoad?.cancel()
         self.inFlightPageLoad = nil
+        self.loadAllTracksTask?.cancel()
+        self.loadAllTracksTask = nil
+        self.isLoadingAllTracks = false
 
         // Manual refresh should fetch fresh data instead of reusing browse cache.
         APICache.shared.invalidate(matching: "browse:")
@@ -383,6 +416,54 @@ final class PlaylistDetailViewModel {
         } catch {
             // Keep showing the existing detail while refresh fails.
             self.logger.warning("Playlist refresh failed, keeping existing detail: \(error.localizedDescription)")
+        }
+    }
+
+    /// Loads every remaining page of the playlist so a search can cover all tracks rather than only
+    /// the rows already on screen. Repeated calls coalesce onto one scan, and the scroll-driven
+    /// prefill is suspended so the pages don't interleave.
+    func loadAllTracksForSearch() async {
+        if let loadAllTracksTask {
+            await loadAllTracksTask.value
+            return
+        }
+
+        guard self.hasMore else { return }
+
+        self.prefillGeneration += 1
+        self.prefillTask?.cancel()
+        self.prefillTask = nil
+        self.isLoadingAllTracks = true
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            while self.hasMore, !Task.isCancelled {
+                let appended = await self.appendNextPage()
+                if !appended { break }
+            }
+        }
+        self.loadAllTracksTask = task
+        await task.value
+        self.loadAllTracksTask = nil
+        self.isLoadingAllTracks = false
+    }
+
+    /// Changes the playlist's server-side order and reloads, so the displayed tracks match the
+    /// order YouTube Music now stores for the playlist.
+    func changeSortOrder(to sortOrder: PlaylistSortOrder) async {
+        guard !self.isChangingSortOrder else { return }
+        guard self.playlistDetail?.effectiveSortOrder != sortOrder else { return }
+
+        self.isChangingSortOrder = true
+        self.sortOrderError = nil
+        defer { self.isChangingSortOrder = false }
+
+        do {
+            try await self.client.setPlaylistSortOrder(playlistId: self.playlist.id, sortOrder: sortOrder)
+            await self.refresh()
+        } catch {
+            self.sortOrderError = error.localizedDescription
+            self.logger.error("Failed to change playlist sort order: \(error.localizedDescription)")
         }
     }
 }
