@@ -24,7 +24,29 @@ struct FullscreenNowPlayingView: View {
     @State private var seekValue: Double = 0
     @State private var lyricsTimeMs: Int = 0
     @State private var isSeeking = false
-    @State private var escapeKeyMonitor: Any?
+    /// The fullscreen player's key monitor, installed for one presentation.
+    ///
+    /// Two things go through it. `Escape` closes the player. Everything else is offered to the
+    /// app's own menu first, and swallowed if the menu took it.
+    ///
+    /// That second part is the fix for the playback shortcuts working or not in here with nothing
+    /// to see: a key equivalent is resolved against the window's view hierarchy *before* the main
+    /// menu is consulted, and the player puts a seek slider, seven transport buttons and a
+    /// scrolling lyric sheet into that window. Whichever of them held keyboard focus last was the
+    /// one that got the key, so `Space` and `⌘←`/`⌘→` behaved differently depending on where the
+    /// last click landed. A local monitor runs ahead of the responder chain *and* ahead of the key
+    /// window, so while the player is on screen the app's commands are answered first and never
+    /// depend on focus. It does not restate them — the event is handed to the same menu the
+    /// shortcuts are declared in, so there is still exactly one definition of what `Space` does.
+    ///
+    /// Scoped to the presentation: installed when the player is presented and removed when it is
+    /// not (see `startPresentation`/`endPresentation`), so nothing outside the player is affected.
+    @State private var keyMonitor: Any?
+    /// The window the monitor answers for, so a key typed into another window — Settings, a sheet —
+    /// is left alone. The player is an overlay inside the main window, which is found the way
+    /// `KasetApp.showMainWindow()` finds it. `nil` (no window identifiable yet) means the monitor
+    /// answers for every window, which is what it did before it had this guard.
+    @State private var keyMonitorWindowNumber: Int?
     @State private var canvasReady = false
     @State private var canvasFailed = false
 
@@ -307,7 +329,7 @@ struct FullscreenNowPlayingView: View {
         // A fresh canvas player reports readiness again; a canvas that failed last time gets retried.
         self.canvasReady = false
         self.canvasFailed = false
-        self.installEscapeKeyMonitorIfNeeded()
+        self.installKeyMonitorIfNeeded()
         self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
     }
@@ -320,7 +342,7 @@ struct FullscreenNowPlayingView: View {
     private func endPresentation() {
         self.loadTask?.cancel()
         self.loadTask = nil
-        self.removeEscapeKeyMonitor()
+        self.removeKeyMonitor()
         if LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
             isSidebarLyricsVisible: self.playerService.showLyrics,
             hasSyncedLyrics: self.syncedLyricsService.hasSyncedLyrics(
@@ -375,8 +397,25 @@ struct FullscreenNowPlayingView: View {
         return "\(videoId)|\(metadata.title)|\(metadata.artist)|\(Int(duration.rounded()))"
     }
 
-    private func installEscapeKeyMonitorIfNeeded() { guard self.escapeKeyMonitor == nil else { return }; self.escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in if event.keyCode == 53 { self.closeFullscreenNowPlaying(); return nil }; return event } }
-    private func removeEscapeKeyMonitor() { guard let monitor = self.escapeKeyMonitor else { return }; NSEvent.removeMonitor(monitor); self.escapeKeyMonitor = nil }
+    private func installKeyMonitorIfNeeded() {
+        guard self.keyMonitor == nil else { return }
+        let window = NSApplication.shared.windows.first { $0.frameAutosaveName == "KasetMainWindow" }
+            ?? NSApplication.shared.keyWindow
+        self.keyMonitorWindowNumber = window?.windowNumber
+        self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            // A key destined for another window is not ours to answer: the player is behind
+            // whatever the user is actually typing into.
+            if let windowNumber = self.keyMonitorWindowNumber, event.window?.windowNumber != windowNumber {
+                return event
+            }
+            if event.keyCode == 53 {
+                self.closeFullscreenNowPlaying()
+                return nil
+            }
+            return NSApp.mainMenu?.performKeyEquivalent(with: event) == true ? nil : event
+        }
+    }
+    private func removeKeyMonitor() { guard let monitor = self.keyMonitor else { return }; NSEvent.removeMonitor(monitor); self.keyMonitor = nil }
 
     /// Canvas is shown only for the current non-podcast track when the feature
     /// is enabled and the video did not fail to load.
@@ -535,10 +574,9 @@ private struct FullscreenSyncedLyricsView: View {
                                 minimumFrameInterval: self.frameInterval(lineIndex: index)
                             ) { displayTimeMs in
                                 FullscreenPauseDotsLineView(
-                                    dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: Int(displayTimeMs)),
+                                    dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
                                     status: status,
-                                    isHovered: self.hoveredLineId == line.id,
-                                    minimumFrameInterval: self.frameInterval(lineIndex: index, animatesWhilePaused: true)
+                                    isHovered: self.hoveredLineId == line.id
                                 )
                             }
                             .animation(AppAnimation.lyricLine, value: self.currentLineIndex)
@@ -637,14 +675,12 @@ private struct FullscreenSyncedLyricsView: View {
     }
     /// How often a row may redraw, while it is live. A settled row is paused rather than
     /// removed (see `KaraokeTimeSource`), so this is only about the rate a row that *is*
-    /// drawing gets: the line being sung at the full live rate, the line after it and the one
-    /// that has just finished at the cheaper armed rate, which loses nothing because the
-    /// transitions on them are Core Animation's rather than redraws of their own.
-    /// - Parameter animatesWhilePaused: the bouncing pause dot is decorative motion that
-    ///   only exists while it is moving, so it keeps its rate when playback is paused.
-    private func frameInterval(lineIndex: Int, animatesWhilePaused: Bool = false) -> Double? {
+    /// drawing gets: the line being sung at the full live rate, and any other row that is on
+    /// the clock at the cheaper armed rate, which loses nothing because the transitions on
+    /// them are Core Animation's rather than redraws of their own.
+    private func frameInterval(lineIndex: Int) -> Double? {
         if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
-        if !self.isPlaying, !animatesWhilePaused { return KaraokeFrameBudget.paused }
+        if !self.isPlaying { return KaraokeFrameBudget.paused }
         return lineIndex == self.currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
     }
     private var karaokeEmphasis: Double { self.reduceMotion ? 0 : 1 }
@@ -805,15 +841,15 @@ private struct FullscreenSyncedLineView: View {
 
 @available(macOS 26.0, *)
 private struct FullscreenPauseDotsLineView: View {
-    let dotStatuses: [SyncedLyrics.PauseDotStatus]
+    let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
     let isHovered: Bool
-    /// The bouncing dot is the only thing here that redraws; it shares the karaoke
-    /// frame budget rather than running at the display's refresh rate.
-    var minimumFrameInterval: Double?
-    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.safeDotStatus(at: dotIndex)) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading).animation(.easeInOut(duration: 0.35), value: self.dotStatuses).animation(.easeInOut(duration: 0.35), value: self.status) }
-    @ViewBuilder private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View { let dot = Circle().fill(Color.white).frame(width: 13, height: 13).opacity(self.dotOpacity(for: dotStatus)); if dotStatus == .active { TimelineView(.animation(minimumInterval: self.minimumFrameInterval)) { timeline in let elapsed = timeline.date.timeIntervalSinceReferenceDate; let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72; dot.offset(y: -5.2 * (0.5 + 0.5 * sin(phase * 2 * .pi))) } } else { dot } }
-    private func safeDotStatus(at index: Int) -> SyncedLyrics.PauseDotStatus { self.dotStatuses.indices.contains(index) ? self.dotStatuses[index] : .notSung }
+    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
+    /// The bounce is a value off the row's own display clock rather than a timeline of its own:
+    /// the row is already redrawing per frame while it is the one being sung, and two clocks on
+    /// one row are two chances to disagree about when that is.
+    @ViewBuilder private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View { Circle().fill(Color.white).frame(width: 13, height: 13).opacity(self.dotOpacity(for: dotStatus)).offset(y: dotStatus == .active ? -5.2 * self.dots.lift : 0) }
+    private func status(of index: Int) -> SyncedLyrics.PauseDotStatus { self.dots.statuses.indices.contains(index) ? self.dots.statuses[index] : .notSung }
     private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double { switch status { case .notSung: 0.28; case .active: 1; case .sung: 0.65 } }
     private func lineScale(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> CGFloat { if isHovered, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
     private func lineOpacity(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> Double { if isHovered, status != .current { return 0.78 }; return switch status { case .current: 1; case .previous: 0.35; case .upcoming: 0.55 } }

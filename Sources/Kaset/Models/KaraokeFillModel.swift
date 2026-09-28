@@ -327,11 +327,32 @@ enum KaraokeFillModel {
         return Double(timeMs) < contentEnd ? declared - 1 : declared
     }
 
+    /// When the line *after* the one being sung takes the display clock: just before its own
+    /// first ramp opens.
+    ///
+    /// Derived from the line's own words, lead and backing alike, because either can be what
+    /// starts the row: a backing vocal that comes in before the lead still has to arrive on a
+    /// row already running the clock.
+    static func armBoundaryMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
+        var firstRamps: [Double] = []
+        if let first = self.words(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
+        if let first = self.backgroundWords(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
+        let firstRamp = firstRamps.min()
+            ?? (Double(line.timeInMs) - timing.attackLeadMs)
+        return firstRamp - timing.armLeadMs
+    }
+
     /// Whether a lyric row should run on the display clock.
     ///
-    /// Three rows run: the line being sung, the line after it (so its fill and swell are
-    /// already moving when the highlight arrives), and the line that has just finished, until
-    /// the clock is past `settleBoundaryMs`.
+    /// Three rows run: the line being sung, the line after it once its own content is about
+    /// to move (so its fill and swell are already moving when the highlight arrives), and the
+    /// line that has just finished, until the clock is past `settleBoundaryMs`.
+    ///
+    /// The line after the current one waiting for its own first ramp is the difference between
+    /// a sheet that redraws three rows and one that redraws two: before that instant the row's
+    /// frame is the one it already drew — a settled, untouched line renders exactly the same
+    /// pixels on the display clock and off it (`staticTimeMs` returns the position before the
+    /// first ramp) — so the frames between were paid for and thrown away.
     ///
     /// That last window is not about the row's own fill, which is complete either way. It is
     /// about the hand-off: a row that is not live renders one settled frame and stops, and the
@@ -355,8 +376,12 @@ enum KaraokeFillModel {
         timing: KaraokeTiming = .standard
     ) -> Bool {
         guard let currentLineIndex else { return false }
-        if lineIndex == currentLineIndex || lineIndex == currentLineIndex + 1 { return true }
-        guard lineIndex == currentLineIndex - 1, let line else { return false }
+        if lineIndex == currentLineIndex { return true }
+        guard let line else { return false }
+        if lineIndex == currentLineIndex + 1 {
+            return clockMs >= self.armBoundaryMs(for: line, timing: timing)
+        }
+        guard lineIndex == currentLineIndex - 1 else { return false }
         return clockMs < self.settleBoundaryMs(for: line, timing: timing)
     }
 

@@ -211,13 +211,24 @@ struct KaraokeLyricsLineView: View {
 
     @Environment(\.layoutDirection) private var layoutDirection
 
-    @ViewBuilder
     var body: some View {
-        if self.layout.isLineSynced {
-            self.lineSyncedText
-        } else {
-            self.wordTimedText
+        Group {
+            if self.layout.isLineSynced {
+                self.lineSyncedText
+            } else {
+                self.wordTimedText
+            }
         }
+        // Nothing in a line is a target: the row above it owns the tap that seeks, through its
+        // own content shape. Everything here is otherwise a responder that hit testing walks —
+        // a text layer per word, the rectangle masks the fill and the lift are cut with, the
+        // shape layers those are made of. A word-synced row with a backing vocal is forty-odd
+        // words of it, and it is walked for every mouse move over the sheet and for every frame
+        // the pointer spends there, because the sheet is redrawing underneath it. Sampling the
+        // running app while pointing at heavy lyrics puts that walk at the top of the profile;
+        // one prune here removes the whole subtree from it, and the row's own shape — which is
+        // what the gesture was attached to — is untouched.
+        .allowsHitTesting(false)
     }
 
     /// Line-synced lyrics, sung as a line: the line appears at its own start and then

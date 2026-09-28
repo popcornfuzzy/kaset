@@ -133,6 +133,48 @@ an untimed neighbour collapsed it to a single millisecond, which is both too
 short to be a pause row and too short for the highlight to show at all. Because it does change what is parsed,
 `LyricsCacheStore.schemaVersion` stays at 3.
 
+## Amendment: the dots are timed by the interlude
+
+The dots showed, and their bounce did not belong to the pause. The dot that was
+moving read its rise straight off a display-refresh clock of its own, so the
+rise was in phase with how long the app had been running rather than with
+anything on screen: a dot took over from the one before it wherever that clock
+happened to be. A 600 ms interlude caught it half-way up a rise and left it
+half-way down, and a 31.8 s one — a real interlude in the sheet of
+`bxBiTm7vtCs`, which has 33 gaps of ≥ 600 ms among its 113 lines — kept the same
+720 ms period for forty-odd bounces. One rate, for gaps three orders of
+magnitude apart.
+
+The bounce is now a **value of the interlude** rather than of the clock
+(`SyncedLyrics.PauseInterlude.dotLift`), which is what makes it suit every
+length an interlude can be:
+
+- Each dot's turn holds a **whole number** of bounces, chosen so one takes about
+  750 ms. So the dot is at rest, with zero slope, at both ends of every bounce
+  *and* at both ends of its turn: it never appears mid-air in either direction
+  and there is nothing to smooth over where one dot hands off to the next. A gap
+  too short to hold three unhurried bounces (a 600 ms one gives each dot 200 ms)
+  gets a single quick pulse rather than a fraction of a rise.
+- The envelope is `(1 - cos(2π·phase)) / 2` — a rise that starts and ends at rest
+  and never goes below the baseline — so the motion is continuous across the
+  frames of a turn and across the hand-over between dots.
+
+`SyncedLyrics.pauseDots(forLineAt:at:)` returns the statuses and the rise
+together, because both come from the same interlude at the same position, and a
+dot lit from one position and drawn from another is a dot that jumps. The two dot
+views take that value and draw it, and the nested `TimelineView` each of them
+used to carry is gone: the row is already redrawing per frame while it is the one
+being sung, and two clocks on one row are two chances to disagree about when it
+is. That also removes the last thing the two surfaces disagreed about — a
+*short* silent line, where the fullscreen player drew `♪` and the panel drew
+three dim dots that could never light up. Both now ask the same question the dots
+themselves ask (`isPauseLine`, ≥ 600 ms) and fall back to the same `♪`.
+
+One deliberate behaviour change: the dots **freeze while playback is paused**,
+like the fill they sit among. Their rise now comes from the shared playback
+clock, which stops when the app is paused, where the dot's own timeline used to
+keep running to the display's refresh rate.
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
@@ -153,3 +195,9 @@ short to be a pause row and too short for the highlight to show at all. Because 
   interlude is read from the timeline itself, so line-synced and word-synced
   sheets behave the same way, and a source that spells its interludes out
   explicitly still gets exactly one row for each.
+- The dots' motion is a function of the interlude's length and position, so it is
+  testable without a display link (`PauseDotsBounceTests`), and a 10-hour
+  interlude is as well-behaved as a 600 ms one.
+- The bounce is frozen while playback is paused. If a live dot during a pause is
+  wanted, it needs a phase source that is not the playback clock — which is the
+  thing that was removed.

@@ -180,6 +180,11 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
             max(1, self.endTimeMs - self.startTimeMs)
         }
 
+        /// Roughly how long one bounce of the dot that is moving should take. The
+        /// interlude's own length decides how many of them fit in the dot's turn, so
+        /// the dot is always at rest when its turn begins and when it ends.
+        static let targetBounceMs: Double = 750
+
         func dotStatuses(at timeMs: Int) -> [PauseDotStatus] {
             if timeMs < self.startTimeMs {
                 return [.notSung, .notSung, .notSung]
@@ -199,6 +204,39 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
                 return .notSung
             }
         }
+
+        /// How far the dot that is bouncing has risen, 0...1, at a playback position.
+        ///
+        /// The bounce is timed by the interlude, not by the wall clock, which is what makes
+        /// it work at every length an interlude can be. Each dot's turn holds a whole number
+        /// of bounces — chosen so one takes about `targetBounceMs` — and each bounce leaves
+        /// and arrives at rest, because the envelope is `(1 - cos) / 2`: it is zero with zero
+        /// slope at both ends of a cycle. So the dot never appears mid-air, never runs at a
+        /// rate that a longer or shorter gap makes look frantic or stuck, and the last frame
+        /// of the interlude is the still one the settled row draws. A dot driven by the wall
+        /// clock had none of that: it started wherever the clock happened to be, so a 600 ms
+        /// gap caught it half-way through a rise and a 30 s one kept the same 720 ms period
+        /// for forty bounces.
+        func dotLift(at timeMs: Int) -> Double {
+            let turnMs = Double(self.durationMs) / 3.0
+            guard turnMs > 0, timeMs >= self.startTimeMs, timeMs < self.endTimeMs else { return 0 }
+
+            let relativeMs = Double(timeMs - self.startTimeMs)
+            let elapsedInTurnMs = relativeMs - min(2, floor(relativeMs / turnMs)) * turnMs
+            let bounces = max(1, (turnMs / Self.targetBounceMs).rounded())
+            let phase = elapsedInTurnMs / (turnMs / bounces)
+            return (1 - cos(2 * .pi * phase)) / 2
+        }
+    }
+
+    /// What the three pause dots show at a playback position: which of them has been
+    /// sung, which is moving, and how far the moving one has risen.
+    struct PauseDots: Equatable {
+        let statuses: [PauseDotStatus]
+        /// 0...1 rise of the dot that is bouncing; 0 when none of them is.
+        let lift: Double
+
+        static let resting = PauseDots(statuses: [.notSung, .notSung, .notSung], lift: 0)
     }
 
     func lineStatuses(at timeMs: Int) -> [LineStatus] {
@@ -322,15 +360,36 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) != nil
     }
 
+    /// The three dots' state at a playback position, for a row that is a pause.
+    ///
+    /// Taken together — which dots are lit and how far the moving one has risen — because
+    /// both come from the same interlude and from the same display position, and a dot drawn
+    /// from one position and lit from another is a dot that jumps. The rise is a plain value
+    /// here rather than a second animation of its own: the row already redraws per frame off
+    /// the display clock, so the dots need no timeline of their own and are synchronized with
+    /// everything else on the row.
+    func pauseDots(
+        forLineAt lineIndex: Int,
+        at timeMs: Int,
+        minimumGapMs: Int = Self.defaultPauseGapThresholdMs
+    ) -> PauseDots {
+        guard let interlude = self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) else {
+            return .resting
+        }
+        return PauseDots(
+            statuses: interlude.dotStatuses(at: timeMs),
+            lift: interlude.dotLift(at: timeMs)
+        )
+    }
+
+    /// Which of the three dots is lit, without the bounce. For callers that only ask about
+    /// the state of the pause rather than drawing it.
     func pauseDotStatuses(
         forLineAt lineIndex: Int,
         at timeMs: Int,
         minimumGapMs: Int = Self.defaultPauseGapThresholdMs
     ) -> [PauseDotStatus] {
-        guard let interlude = self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) else {
-            return [.notSung, .notSung, .notSung]
-        }
-        return interlude.dotStatuses(at: timeMs)
+        self.pauseDots(forLineAt: lineIndex, at: timeMs, minimumGapMs: minimumGapMs).statuses
     }
 }
 
