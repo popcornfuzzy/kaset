@@ -72,9 +72,9 @@ struct LyricsProviderSettingsTests {
     func legacyMigration() {
         #expect(SettingsManager.disabledProvidersForLegacyChoice("paxsenixAndLRCLib").isEmpty)
         #expect(SettingsManager.disabledProvidersForLegacyChoice(nil).isEmpty)
-        #expect(SettingsManager.disabledProvidersForLegacyChoice("betterLyrics") == [.paxsenix, .kugou, .lrclib])
-        #expect(SettingsManager.disabledProvidersForLegacyChoice("kugouAndLRCLib") == [.betterLyrics, .paxsenix])
-        #expect(SettingsManager.disabledProvidersForLegacyChoice("lrclib") == [.betterLyrics, .paxsenix, .kugou])
+        #expect(SettingsManager.disabledProvidersForLegacyChoice("betterLyrics") == [.paxsenix, .unison, .kugou, .lrclib])
+        #expect(SettingsManager.disabledProvidersForLegacyChoice("kugouAndLRCLib") == [.betterLyrics, .paxsenix, .unison])
+        #expect(SettingsManager.disabledProvidersForLegacyChoice("lrclib") == [.betterLyrics, .paxsenix, .unison, .kugou])
     }
 
     // MARK: - Status probe

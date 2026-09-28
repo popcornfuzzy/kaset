@@ -50,6 +50,143 @@ struct SyncedLyricsServiceTests {
         #expect(service.isLoading == false)
     }
 
+    /// The display reads `currentLyrics`, so this is the seam the pause rows have to cross:
+    /// a provider that leaves its interlude as a gap in the timeline must still reach the
+    /// panel with a row for the dots, in either mode and whatever produced it.
+    @Test("an interlude a provider left as a gap reaches the display as a pause row")
+    func interludeGapReachesTheDisplay() async {
+        let sheet = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "First", words: nil),
+                SyncedLyricLine(timeInMs: 9_000, duration: 2_000, text: "Second", words: nil),
+            ],
+            source: "Unison"
+        )
+        let service = SyncedLyricsService(providers: [
+            MockLyricsProvider(name: "Unison", result: .synced(sheet)),
+        ])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-interlude"))
+
+        guard case let .synced(displayed) = service.currentLyrics else {
+            Issue.record("no synced lyrics were installed")
+            return
+        }
+        #expect(displayed.lines.count == 3)
+        #expect(displayed.lines[1].timeInMs == 2_000)
+        #expect(displayed.lines[1].duration == 7_000)
+        #expect(displayed.isPauseLine(at: 1))
+        #expect(displayed.currentLineIndex(at: 5_000) == 1)
+        // The rows are the display's business, not the cache's: what was fetched is what
+        // was already on disk and what stays there.
+        #expect(service.currentLyrics != .synced(sheet))
+    }
+
+    @Test("a variant provider's alternatives are listed and the first is selected")
+    func variantProviderListsAlternatives() async {
+        let first = Self.makeWordSyncedLyrics(source: "Unison", lineText: "First version")
+        let second = Self.makeSyncedLyrics(source: "Unison", lineText: "Second version")
+        let provider = MockVariantLyricsProvider(
+            name: "Unison",
+            result: .synced(first),
+            variants: [
+                LyricsVariant(id: "10", label: "Word-synced", result: .synced(first)),
+                LyricsVariant(id: "11", label: "Line-synced", result: .synced(second)),
+            ]
+        )
+        let service = SyncedLyricsService(providers: [provider])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-variants"))
+
+        #expect(service.currentLyrics == .synced(first))
+        #expect(service.availableLyricsVariants.map(\.id) == ["10", "11"])
+        #expect(service.selectedLyricsVariantID == "10")
+    }
+
+    @Test("selecting a variant swaps the displayed lyrics")
+    func selectsVariant() async {
+        let first = Self.makeWordSyncedLyrics(source: "Unison", lineText: "First version")
+        let second = Self.makeSyncedLyrics(source: "Unison", lineText: "Second version")
+        let provider = MockVariantLyricsProvider(
+            name: "Unison",
+            result: .synced(first),
+            variants: [
+                LyricsVariant(id: "10", label: "Word-synced", result: .synced(first)),
+                LyricsVariant(id: "11", label: "Line-synced", result: .synced(second)),
+            ]
+        )
+        let service = SyncedLyricsService(providers: [provider])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-swap"))
+        service.selectLyricsVariant(id: "11")
+
+        #expect(service.currentLyrics == .synced(second))
+        #expect(service.selectedLyricsVariantID == "11")
+        #expect(service.activeProvider == "Unison")
+    }
+
+    @Test("providers without alternatives leave the variant picker empty")
+    func standardProviderHasNoVariants() async {
+        let synced = Self.makeSyncedLyrics(source: "Standard", lineText: "Line")
+        let service = SyncedLyricsService(providers: [
+            MockLyricsProvider(name: "Standard", result: .synced(synced)),
+        ])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-no-variants"))
+
+        #expect(service.availableLyricsVariants.isEmpty)
+        #expect(service.selectedLyricsVariantID == nil)
+    }
+
+    @Test("a variant list that lands after a track change is discarded")
+    func lateVariantListIsDiscarded() async {
+        let lyrics = Self.makeWordSyncedLyrics(source: "Unison", lineText: "Version")
+        let provider = GatedVariantLyricsProvider(result: .synced(lyrics)) { videoId in
+            [LyricsVariant(id: videoId, label: videoId, result: .synced(lyrics))]
+        }
+        let service = SyncedLyricsService(providers: [provider])
+
+        let first = Task { @MainActor in
+            await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-a"))
+        }
+        // The first track's variant request is in flight when the track changes.
+        await provider.waitUntilStarted()
+        let second = Task { @MainActor in
+            await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-b"))
+        }
+        // Wait for the second track's lyrics to land; its variant request then
+        // blocks on the same gate as the first one.
+        for _ in 0 ..< 200 {
+            if service.currentLyricsVideoId == "video-b" { break }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(service.currentLyricsVideoId == "video-b")
+
+        await provider.release()
+        await second.value
+        await first.value
+
+        #expect(service.availableLyricsVariants.map(\.id) == ["video-b"])
+        #expect(service.selectedLyricsVariantID == "video-b")
+    }
+
+    @Test("selecting an unknown variant id is a no-op")
+    func unknownVariantIsIgnored() async {
+        let first = Self.makeWordSyncedLyrics(source: "Unison", lineText: "First version")
+        let provider = MockVariantLyricsProvider(
+            name: "Unison",
+            result: .synced(first),
+            variants: [LyricsVariant(id: "10", label: "Word-synced", result: .synced(first))]
+        )
+        let service = SyncedLyricsService(providers: [provider])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-unknown-variant"))
+        service.selectLyricsVariant(id: "nope")
+
+        #expect(service.currentLyrics == .synced(first))
+        #expect(service.selectedLyricsVariantID == "10")
+    }
+
     @Test("equal-fidelity plain results keep the first arrival without replacement")
     func equalFidelityKeepsFirstArrival() async {
         let gate = SearchGate()
@@ -641,6 +778,68 @@ private final class MockLyricsProvider: LyricsProvider, @unchecked Sendable {
 
     func callCount() async -> Int {
         await self.counter.value()
+    }
+}
+
+// MARK: - MockVariantLyricsProvider
+
+/// A provider that returns one result and advertises a list of alternatives.
+private final class MockVariantLyricsProvider: LyricsProvider, LyricsVariantProvider, @unchecked Sendable {
+    let name: String
+    let capability: LyricsCapability
+
+    private let result: LyricResult
+    private let variantList: [LyricsVariant]
+
+    init(name: String, result: LyricResult, variants: [LyricsVariant]) {
+        self.name = name
+        self.capability = result.capability
+        self.result = result
+        self.variantList = variants
+    }
+
+    func search(info: LyricsSearchInfo) async -> LyricResult {
+        self.result
+    }
+
+    func variants(for info: LyricsSearchInfo) async -> [LyricsVariant] {
+        self.variantList
+    }
+}
+
+// MARK: - GatedVariantLyricsProvider
+
+/// A variant provider whose variant list can be held open, so a test can change
+/// tracks while the previous track's list is still in flight.
+private final class GatedVariantLyricsProvider: LyricsProvider, LyricsVariantProvider, @unchecked Sendable {
+    let name = "Unison"
+    let capability: LyricsCapability = .word
+
+    private let result: LyricResult
+    private let listForVideo: @Sendable (String) -> [LyricsVariant]
+    private let gate = SearchGate()
+
+    init(result: LyricResult, listForVideo: @escaping @Sendable (String) -> [LyricsVariant]) {
+        self.result = result
+        self.listForVideo = listForVideo
+    }
+
+    func search(info: LyricsSearchInfo) async -> LyricResult {
+        self.result
+    }
+
+    func variants(for info: LyricsSearchInfo) async -> [LyricsVariant] {
+        await self.gate.markStarted()
+        await self.gate.waitUntilReleased()
+        return self.listForVideo(info.videoId)
+    }
+
+    func waitUntilStarted() async {
+        await self.gate.waitUntilStarted()
+    }
+
+    func release() async {
+        await self.gate.release()
     }
 }
 

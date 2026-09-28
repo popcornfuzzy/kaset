@@ -183,6 +183,31 @@ enum KaraokeFillModel {
         return self.timedWords(timedWords, line: line, timing: timing)
     }
 
+    /// The backing-vocal words to render alongside the lead line, each with its own
+    /// fill window — the same windows the same machinery builds for the lead.
+    ///
+    /// A backing vocal overlaps the lead line in time and carries its own word
+    /// timings, so it is derived from `backgroundWords` alone: the windows are the
+    /// backing words' own onsets, never interpolated from the lead. A provider that
+    /// timed only the line as a whole gets the whole backing text as one word over
+    /// the line's own window, so line-synced lyrics keep a synchronized backing
+    /// vocal rather than losing one.
+    static func backgroundWords(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> [KaraokeWord] {
+        let timedWords = (line.backgroundWords ?? []).filter { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !timedWords.isEmpty else {
+            guard let text = line.backgroundText else { return [] }
+            return [self.word(
+                index: 0,
+                text: text,
+                isNewWord: true,
+                start: Double(line.timeInMs),
+                end: Double(line.timeInMs + max(line.duration, 1)),
+                timing: timing
+            )]
+        }
+        return self.timedWords(timedWords, line: line, timing: timing)
+    }
+
     /// A word split into its characters, each handed the slice of the word's fill window that
     /// matches the share of the word's width it occupies.
     ///
@@ -252,18 +277,23 @@ enum KaraokeFillModel {
         }
     }
 
-    /// When a line stops being sung: the later of its declared end and the end of its last fill
-    /// ramp.
+    /// When a line stops being sung: the later of its declared end and the ends of its
+    /// last fill ramps, lead and backing alike.
     ///
     /// The two can disagree. Providers are not obliged to give a duration, and a line with none
     /// would otherwise stop being sung while its last word was still filling. This single
     /// position answers both questions the display asks about a line that is finishing — is it
     /// still on the display clock, and has the highlight moved on — so the two can never
     /// disagree with each other either.
+    ///
+    /// The backing vocal counts here even though it never drives the highlight: a backing
+    /// word can outlast the lead — a held “oooh” over the line's last syllable — and the row
+    /// must stay on the clock until that word has landed too, or its wipe freezes mid-word.
     static func settleBoundaryMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
         let declaredEnd = Double(line.timeInMs) + max(Double(line.duration), 0)
-        let contentEnd = self.words(for: line, timing: timing).map(\.fillEndMs).max() ?? 0
-        return max(declaredEnd, contentEnd)
+        let leadEnd = self.words(for: line, timing: timing).map(\.fillEndMs).max() ?? 0
+        let backgroundEnd = self.backgroundWords(for: line, timing: timing).map(\.fillEndMs).max() ?? 0
+        return max(declaredEnd, leadEnd, backgroundEnd)
     }
 
     /// Index of the line being sung at a playback position.
@@ -297,11 +327,32 @@ enum KaraokeFillModel {
         return Double(timeMs) < contentEnd ? declared - 1 : declared
     }
 
+    /// When the line *after* the one being sung takes the display clock: just before its own
+    /// first ramp opens.
+    ///
+    /// Derived from the line's own words, lead and backing alike, because either can be what
+    /// starts the row: a backing vocal that comes in before the lead still has to arrive on a
+    /// row already running the clock.
+    static func armBoundaryMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
+        var firstRamps: [Double] = []
+        if let first = self.words(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
+        if let first = self.backgroundWords(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
+        let firstRamp = firstRamps.min()
+            ?? (Double(line.timeInMs) - timing.attackLeadMs)
+        return firstRamp - timing.armLeadMs
+    }
+
     /// Whether a lyric row should run on the display clock.
     ///
-    /// Three rows run: the line being sung, the line after it (so its fill and swell are
-    /// already moving when the highlight arrives), and the line that has just finished, until
-    /// the clock is past `settleBoundaryMs`.
+    /// Three rows run: the line being sung, the line after it once its own content is about
+    /// to move (so its fill and swell are already moving when the highlight arrives), and the
+    /// line that has just finished, until the clock is past `settleBoundaryMs`.
+    ///
+    /// The line after the current one waiting for its own first ramp is the difference between
+    /// a sheet that redraws three rows and one that redraws two: before that instant the row's
+    /// frame is the one it already drew — a settled, untouched line renders exactly the same
+    /// pixels on the display clock and off it (`staticTimeMs` returns the position before the
+    /// first ramp) — so the frames between were paid for and thrown away.
     ///
     /// That last window is not about the row's own fill, which is complete either way. It is
     /// about the hand-off: a row that is not live renders one settled frame and stops, and the
@@ -325,8 +376,12 @@ enum KaraokeFillModel {
         timing: KaraokeTiming = .standard
     ) -> Bool {
         guard let currentLineIndex else { return false }
-        if lineIndex == currentLineIndex || lineIndex == currentLineIndex + 1 { return true }
-        guard lineIndex == currentLineIndex - 1, let line else { return false }
+        if lineIndex == currentLineIndex { return true }
+        guard let line else { return false }
+        if lineIndex == currentLineIndex + 1 {
+            return clockMs >= self.armBoundaryMs(for: line, timing: timing)
+        }
+        guard lineIndex == currentLineIndex - 1 else { return false }
         return clockMs < self.settleBoundaryMs(for: line, timing: timing)
     }
 

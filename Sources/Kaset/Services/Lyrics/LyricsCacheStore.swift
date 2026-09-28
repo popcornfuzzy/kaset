@@ -12,6 +12,16 @@ import Foundation
 /// actor for quick reads/writes as well as from detached tasks for background
 /// migration work.
 struct LyricsCacheStore: Sendable {
+    /// Bumped whenever a change to parsing or to the lyrics model would make a
+    /// previously cached result wrong.
+    ///
+    /// A stale payload still decodes cleanly — the model is the same, only the
+    /// parse that produced it changed (backing vocals were once folded into the
+    /// lead line, for example, and instrumental-gap paragraphs were once dropped,
+    /// which hid the pause dots from word-synced lyrics) — so the version, not the
+    /// schema, is the only signal that a cache file must be discarded and re-fetched.
+    static let schemaVersion = 3
+
     /// Directory that holds one file per cached song.
     let directoryURL: URL
 
@@ -40,16 +50,27 @@ struct LyricsCacheStore: Sendable {
         self.directoryURL.appendingPathComponent(Self.safeFileName(for: videoId) + ".json")
     }
 
-    /// Loads cached lyrics for a song, if a valid file exists.
+    /// Loads cached lyrics for a song, if a current valid file exists.
+    ///
+    /// Files written by an older `schemaVersion` are treated as a miss, so a
+    /// change to how lyrics are parsed takes effect on the next play instead of
+    /// leaving stale text on screen until the user clears the cache by hand.
     func load(for videoId: String) -> LyricResult? {
         let url = self.fileURL(for: videoId)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
         do {
             let data = try Data(contentsOf: url)
-            let result = try JSONDecoder().decode(LyricResult.self, from: data)
-            return result
+            let file = try JSONDecoder().decode(CacheFile.self, from: data)
+            guard file.version == Self.schemaVersion else { return nil }
+            return file.result
         } catch {
+            // A readable file in the pre-versioned format is also stale.
+            if let data = try? Data(contentsOf: url),
+               (try? JSONDecoder().decode(LyricResult.self, from: data)) != nil
+            {
+                return nil
+            }
             self.logger.error("Failed to load cached lyrics for \\(videoId): \\(error.localizedDescription)")
             return nil
         }
@@ -59,7 +80,8 @@ struct LyricsCacheStore: Sendable {
     @discardableResult
     func save(_ result: LyricResult, for videoId: String) -> Bool {
         do {
-            let data = try JSONEncoder().encode(result)
+            let file = CacheFile(version: Self.schemaVersion, result: result)
+            let data = try JSONEncoder().encode(file)
             try data.write(to: self.fileURL(for: videoId), options: .atomic)
             return true
         } catch {
@@ -199,6 +221,14 @@ struct LyricsCacheStore: Sendable {
         else { return nil }
         return URL(fileURLWithPath: String(cString: home), isDirectory: true)
     }
+}
+
+// MARK: - Per-song cache file
+
+/// One song's cache file: the schema version that wrote it plus the result.
+private struct CacheFile: Codable {
+    let version: Int
+    let result: LyricResult
 }
 
 // MARK: - Legacy single-file cache format

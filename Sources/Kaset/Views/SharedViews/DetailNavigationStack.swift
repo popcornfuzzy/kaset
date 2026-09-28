@@ -1,54 +1,33 @@
 import SwiftUI
 
-// MARK: - NavigateToArtistAction
-
-/// Pushes an artist page onto the enclosing `DetailNavigationStack`.
-///
-/// A value-based `NavigationLink` is the usual way to do this, but it cannot be used inside a `List`
-/// row: the row becomes selectable, the table paints its selection over the whole row (accent while
-/// the window is key, gray while it is not), and once the row's link has pushed its page it keeps the
-/// activation — a second click on the same link is swallowed and the artist page stops opening. Plain
-/// buttons push through this action instead. See ADR-0023.
-struct NavigateToArtistAction: Sendable {
-    private let push: @MainActor @Sendable (Artist) -> Void
-
-    init(push: @escaping @MainActor @Sendable (Artist) -> Void) {
-        self.push = push
-    }
-
-    @MainActor
-    func callAsFunction(_ artist: Artist) {
-        self.push(artist)
-    }
-}
-
-extension EnvironmentValues {
-    /// Pushes an artist page onto the enclosing detail stack. Does nothing without a
-    /// `DetailNavigationStack` above the view.
-    @Entry var navigateToArtist = NavigateToArtistAction { _ in }
-}
-
 // MARK: - DetailNavigationStack
 
-/// The detail column's navigation stack, which owns its path so `navigateToArtist` can push.
+/// The detail column's navigation stack, which owns its path.
 ///
-/// The destination views are registered by `.navigationDestinations(client:)` on the content, exactly
-/// as they were with a plain `NavigationStack`.
+/// The destination views are registered by `.navigationDestinations(client:artistPath:)` on the content,
+/// exactly as they were with a plain `NavigationStack`.
+///
+/// It exists for the routes that show a page straight from the sidebar (`SidebarSelection.playlist` and
+/// Liked Music): a page that is a stack's root has no list behind it, so without a stack of its own its
+/// value-based links — the Go to Artist / Go to Album items in song context menus, for instance — would
+/// have nowhere to go.
+///
+/// The content receives the path there is no other way for a page to reach: `NavigationLink(value:)`
+/// pushes by itself, but the pages that navigate with a button (the album header's artist credit needs
+/// one; see `PlaylistDetailView.artistCredit(_:)`) can only push by appending to the path of the stack
+/// that shows them.
 @available(macOS 26.0, *)
 struct DetailNavigationStack<Content: View>: View {
     @State private var path = NavigationPath()
-    private let content: Content
+    private let content: (Binding<NavigationPath>) -> Content
 
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
+    init(@ViewBuilder content: @escaping (Binding<NavigationPath>) -> Content) {
+        self.content = content
     }
 
     var body: some View {
         NavigationStack(path: self.$path) {
-            self.content
-                .environment(\.navigateToArtist, NavigateToArtistAction { artist in
-                    self.path.append(artist)
-                })
+            self.content(self.$path)
         }
     }
 }

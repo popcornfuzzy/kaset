@@ -119,21 +119,66 @@ struct KaraokeLineLayout: Equatable {
 @available(macOS 26.0, *)
 @MainActor
 final class KaraokeLayoutCache {
-    private var layouts: [UUID: KaraokeLineLayout] = [:]
-    private var fontSize: CGFloat = 0
+    /// One row of a sheet draws its lead line and its backing vocal side by side, at
+    /// **different** font sizes. The cache is therefore keyed by both, not by the line
+    /// alone: keying by the line alone would clear on every alternating lookup — each
+    /// frame would re-measure one of the two, which is exactly the per-frame text
+    /// measurement this cache exists to keep out of the display clock.
+    ///
+    /// The two are also told apart by `isBacking` rather than only by their size, because
+    /// they are two different lines of text — the backing vocal's words are the backing
+    /// words, not the lead's. Sizes that happen to coincide would otherwise hand one of
+    /// them the other's text, and every caller passing the same size for both is one edit
+    /// away.
+    private struct Key: Hashable {
+        let lineID: UUID
+        let fontSize: CGFloat
+        let isBacking: Bool
+    }
+
+    private var layouts: [Key: KaraokeLineLayout] = [:]
+
+    /// How many lines have actually been measured, cache misses only.
+    ///
+    /// Internal rather than private so a test can hold the cache to its whole point: a
+    /// sheet that re-renders — which it does on every playback sample, and every row
+    /// carries a tap closure so no row is ever considered unchanged — must not measure
+    /// its text again. A count that climbs with the frames rendered is the per-frame text
+    /// measurement this cache exists to keep off the clock.
+    private(set) var measurementCount = 0
 
     func layout(for line: SyncedLyricLine, fontSize: CGFloat) -> KaraokeLineLayout {
-        if self.fontSize != fontSize {
-            self.layouts.removeAll(keepingCapacity: true)
-            self.fontSize = fontSize
+        self.layout(for: line, fontSize: fontSize, isBacking: false) {
+            KaraokeLineLayout(line: line, fontSize: fontSize)
         }
+    }
+
+    /// The backing vocal's layout, measured at its own smaller size against a line
+    /// whose `words` are the backing words — the same machinery the lead uses, fed
+    /// the backing timings. Cached apart from the lead (`Key.isBacking`), so a row that
+    /// draws both looks both up once and never again.
+    func backgroundLayout(for line: SyncedLyricLine, fontSize: CGFloat) -> KaraokeLineLayout? {
+        guard !(line.backgroundWords ?? []).isEmpty else { return nil }
+        return self.layout(for: line, fontSize: fontSize, isBacking: true) {
+            KaraokeLineLayout(line: line.backingVocalLine, fontSize: fontSize)
+        }
+    }
+
+    private func layout(
+        for line: SyncedLyricLine,
+        fontSize: CGFloat,
+        isBacking: Bool,
+        build: () -> KaraokeLineLayout
+    ) -> KaraokeLineLayout {
+        let key = Key(lineID: line.id, fontSize: fontSize, isBacking: isBacking)
         // Bound the cache: a lyric sheet is a few hundred lines at most, and the words and
         // widths a layout holds are tiny, but a session plays many tracks.
         if self.layouts.count > 512 { self.layouts.removeAll(keepingCapacity: true) }
-        if let cached = self.layouts[line.id] { return cached }
+        if let cached = self.layouts[key] { return cached }
 
-        let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
-        self.layouts[line.id] = layout
+        let layout = build()
+        self.layouts[key] = layout
+        self.measurementCount += 1
         return layout
     }
 }
@@ -166,13 +211,24 @@ struct KaraokeLyricsLineView: View {
 
     @Environment(\.layoutDirection) private var layoutDirection
 
-    @ViewBuilder
     var body: some View {
-        if self.layout.isLineSynced {
-            self.lineSyncedText
-        } else {
-            self.wordTimedText
+        Group {
+            if self.layout.isLineSynced {
+                self.lineSyncedText
+            } else {
+                self.wordTimedText
+            }
         }
+        // Nothing in a line is a target: the row above it owns the tap that seeks, through its
+        // own content shape. Everything here is otherwise a responder that hit testing walks —
+        // a text layer per word, the rectangle masks the fill and the lift are cut with, the
+        // shape layers those are made of. A word-synced row with a backing vocal is forty-odd
+        // words of it, and it is walked for every mouse move over the sheet and for every frame
+        // the pointer spends there, because the sheet is redrawing underneath it. Sampling the
+        // running app while pointing at heavy lyrics puts that walk at the top of the profile;
+        // one prune here removes the whole subtree from it, and the row's own shape — which is
+        // what the gesture was attached to — is untouched.
+        .allowsHitTesting(false)
     }
 
     /// Line-synced lyrics, sung as a line: the line appears at its own start and then

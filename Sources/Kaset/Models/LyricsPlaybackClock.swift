@@ -58,6 +58,17 @@ struct KaraokeTiming: Equatable, Sendable {
     /// being sung.
     var scrollLookaheadMs: Double = 120
 
+    /// How far before the line after the one being sung has anything to show that it takes
+    /// the display clock.
+    ///
+    /// The row after the current one used to run on the clock for the whole of the line
+    /// before it, drawing a frame identical to the one already on screen until its own first
+    /// word came round — twice the frames of a row that is actually moving, for none of the
+    /// picture. It now takes the clock just before its own first ramp opens, with this margin
+    /// absorbing a late playback sample so its fill is never first seen part-way through its
+    /// first word. The margin is deliberately smaller than the shortest line.
+    var armLeadMs: Double = 150
+
     static let standard = KaraokeTiming()
 }
 

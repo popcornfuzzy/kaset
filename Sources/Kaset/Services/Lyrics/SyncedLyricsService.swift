@@ -21,6 +21,14 @@ final class SyncedLyricsService {
     var searchingForBetterLyrics = false
     var errorMessage: String?
 
+    /// Alternative versions for the current track, best-ranked first. Populated
+    /// only when the displayed lyrics came from a provider that can list them
+    /// (currently Unison), and kept in memory only — the chosen version is what
+    /// the per-song cache stores.
+    private(set) var availableLyricsVariants: [LyricsVariant] = []
+    /// Identifier of the variant on screen, when a variant list is available.
+    private(set) var selectedLyricsVariantID: String?
+
     private var providers: [LyricsProvider]
     private var cache: [String: LyricResult] = [:]
     private let cacheStore: LyricsCacheStore?
@@ -40,6 +48,7 @@ final class SyncedLyricsService {
         switch id {
         case .betterLyrics: BetterLyricsProvider()
         case .paxsenix: PaxsenixProvider()
+        case .unison: UnisonProvider()
         case .kugou: KuGoProvider()
         case .lrclib: LRCLibProvider()
         }
@@ -60,6 +69,7 @@ final class SyncedLyricsService {
         self.errorMessage = nil
         self.isLoading = false
         self.searchingForBetterLyrics = false
+        self.resetVariants()
     }
 
     func clearCache(keepCurrent: Bool = true) {
@@ -76,6 +86,7 @@ final class SyncedLyricsService {
             self.currentLyricsVideoId = nil
             self.isLoading = false
             self.searchingForBetterLyrics = false
+            self.resetVariants()
         }
     }
 
@@ -88,6 +99,7 @@ final class SyncedLyricsService {
             self.errorMessage = String(localized: "No lyrics providers are enabled.")
             self.isLoading = false
             self.searchingForBetterLyrics = false
+            self.resetVariants()
             return
         }
 
@@ -121,6 +133,7 @@ final class SyncedLyricsService {
 
         if let cached {
             self.apply(cached, provider: Self.source(of: cached), videoId: info.videoId, requestID: requestID)
+            await self.loadVariants(for: info)
             return
         }
 
@@ -157,6 +170,51 @@ final class SyncedLyricsService {
         }
         await flight.fulfill(resolved)
         self.finishSearch(resolved, for: info.videoId, requestID: requestID, flightID: flightID)
+        // Only the caller that ran the search loads the variant list; a caller
+        // that shared the flight returns above and reads what this one stored.
+        await self.loadVariants(for: info)
+    }
+
+    // MARK: - Variants
+
+    /// Swaps the displayed lyrics for one of the listed community versions and
+    /// makes that choice the song's cached result, so the next play opens on it.
+    func selectLyricsVariant(id: String) {
+        guard let variant = self.availableLyricsVariants.first(where: { $0.id == id }),
+              let videoId = self.currentLyricsVideoId
+        else { return }
+
+        self.selectedLyricsVariantID = id
+        self.store(variant.result, for: videoId)
+        self.apply(
+            variant.result,
+            provider: Self.source(of: variant.result),
+            videoId: videoId,
+            requestID: self.fetchGeneration
+        )
+    }
+
+    /// Asks the provider that produced the displayed result for its other
+    /// versions. Providers without alternatives clear the picker.
+    private func loadVariants(for info: LyricsSearchInfo) async {
+        guard let providerName = self.activeProvider,
+              let provider = self.providers.first(where: { $0.name == providerName }) as? any LyricsVariantProvider
+        else {
+            self.resetVariants()
+            return
+        }
+
+        let variants = await provider.variants(for: info)
+        // A track change or provider reload while the list was in flight must
+        // not install another song's versions.
+        guard self.currentLyricsVideoId == info.videoId, self.activeProvider == providerName else { return }
+        self.availableLyricsVariants = variants
+        self.selectedLyricsVariantID = variants.first?.id
+    }
+
+    private func resetVariants() {
+        self.availableLyricsVariants = []
+        self.selectedLyricsVariantID = nil
     }
 
     private func finishSearch(
@@ -268,7 +326,13 @@ final class SyncedLyricsService {
 
     private func apply(_ result: LyricResult, provider: String?, videoId: String, requestID: Int) {
         guard requestID == self.fetchGeneration else { return }
-        self.currentLyrics = result
+        // A result for another track invalidates the variant list: it belongs to
+        // the song that was on screen. Selecting from it would swap in the wrong
+        // lyrics before the new track's own list has loaded.
+        if self.currentLyricsVideoId != videoId {
+            self.resetVariants()
+        }
+        self.currentLyrics = Self.forDisplay(result)
         self.activeProvider = provider ?? Self.source(of: result)
         self.loadingProvider = nil
         self.currentLyricsVideoId = videoId
@@ -279,6 +343,21 @@ final class SyncedLyricsService {
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
         }
+    }
+
+    /// The result as the display wants it: a synced sheet gains a pause row for every
+    /// interlude its provider left as a gap in the timeline (see
+    /// `SyncedLyrics.withPauseInterludes`).
+    ///
+    /// Done here rather than in the parsers because the gaps are a property of the sheet,
+    /// not of any one format — a word-synced TTML and a line-synced one both leave their
+    /// interludes implicit — and rather than in the views, because what the dots need is a
+    /// line: every index the display works with has to agree on it. The cached result is
+    /// left as parsed, so the rows are not written to disk twice over and a cache written
+    /// before this existed still gets them.
+    private static func forDisplay(_ result: LyricResult) -> LyricResult {
+        guard case let .synced(lyrics) = result else { return result }
+        return .synced(lyrics.withPauseInterludes())
     }
 
     private static func source(of result: LyricResult) -> String? {

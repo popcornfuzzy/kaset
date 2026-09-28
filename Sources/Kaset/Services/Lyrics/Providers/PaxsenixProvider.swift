@@ -263,7 +263,13 @@ final class PaxsenixProvider: LyricsProvider {
 
             guard let (timeMs, rest) = Self.parseLRCTime(line) else { continue }
             let text = Self.stripAgents(rest).trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty else { continue }
+            // An empty timed line is an instrumental gap: it is kept (unlike in
+            // plain LRC) so the renderer can show the pause dots there.
+            guard !text.isEmpty else {
+                timed.append((timeMs, text, nil))
+                pendingWords = nil
+                continue
+            }
             timed.append((timeMs, text, pendingWords))
             pendingWords = nil
         }
@@ -314,14 +320,48 @@ final class PaxsenixProvider: LyricsProvider {
                 let text = words.isEmpty
                     ? (rawUnits.compactMap(\.text).joined())
                     : words.map(\.word).joined()
-                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+                // A line the provider flagged as backing vocals is sung over the
+                // lead: keep it out of the line's own words so it never glues onto
+                // the lead text or drags the karaoke fill backwards.
+                let isBackground = line.background == true
+                let backgroundWords = isBackground && !words.isEmpty
+                    ? words.map { TimedWord(timeInMs: $0.timeInMs, word: $0.word, isBackground: true) }
+                    : nil
+                let lineText = backgroundWords == nil ? text : ""
+                let lineWords = backgroundWords == nil && !words.isEmpty ? words : nil
+
                 let startMs = line.timestamp ?? 0
-                let nextMs = index + 1 < content.count ? (content[index + 1].timestamp ?? startMs) : startMs + 4_000
+                // How long this entry lasts: until the next entry that *has* a timestamp.
+                // An entry with none cannot place a line on the timeline, and taking it as
+                // "no time at all" gave this entry a one-millisecond duration — a line the
+                // highlight steps over without ever showing it, and an instrumental gap too
+                // short for the pause dots even when this entry is the gap.
+                let nextMs = content[(index + 1)...].lazy.compactMap(\.timestamp).first ?? (startMs + 4_000)
+
+                // An empty timed entry is an instrumental gap, not noise: keep it so
+                // the renderer can show the pause dots there, exactly as line-synced
+                // lyrics already do.
+                guard !lineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || backgroundWords != nil
+                else {
+                    guard line.timestamp != nil else { continue }
+                    lines.append(SyncedLyricLine(
+                        timeInMs: startMs,
+                        duration: max(1, nextMs - startMs),
+                        text: "",
+                        words: nil,
+                        backgroundWords: nil
+                    ))
+                    continue
+                }
+
                 lines.append(SyncedLyricLine(
                     timeInMs: startMs,
                     duration: max(1, nextMs - startMs),
-                    text: text,
-                    words: words.isEmpty ? nil : words
+                    text: lineText,
+                    words: lineWords,
+                    backgroundWords: backgroundWords
                 ))
             }
             guard !lines.isEmpty else { return .unavailable }

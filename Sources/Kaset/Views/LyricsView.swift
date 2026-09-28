@@ -250,7 +250,7 @@ struct LyricsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.clear)
 
-                self.sourceFooter(synced.source)
+                self.sourceFooter(source: synced.source)
             }
             .onAppear {
                 self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
@@ -258,57 +258,98 @@ struct LyricsView: View {
         }
     }
 
-    private func sourceFooter(_ source: String) -> some View {
+    /// Sticky footer under the panel: which provider supplied the lyrics, and a
+    /// picker when it offers more than one community version. The submitter's
+    /// credit is not pinned here — it lives at the end of the lyric sheet.
+    @ViewBuilder
+    private func sourceFooter(source: String?) -> some View {
         VStack(spacing: 0) {
             Divider().opacity(0.3)
-            Text("Source: \(source)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+            HStack(spacing: 8) {
+                if let source {
+                    Text(source.hasPrefix("Source:") ? source : "Source: \(source)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 8)
+                self.variantPicker
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+    }
+
+    /// Menu for switching between the community versions the current provider
+    /// offers. Hidden unless there is more than one.
+    @ViewBuilder
+    private var variantPicker: some View {
+        let variants = self.syncedLyricsService.availableLyricsVariants
+        if variants.count > 1 {
+            Menu {
+                ForEach(variants) { variant in
+                    Button {
+                        self.syncedLyricsService.selectLyricsVariant(id: variant.id)
+                    } label: {
+                        if variant.id == self.syncedLyricsService.selectedLyricsVariantID {
+                            Label(variant.label, systemImage: "checkmark")
+                        } else {
+                            Text(variant.label)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "square.stack.3d.up")
+                    Text(String(localized: "\(variants.count) versions"))
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .help(String(localized: "Switch between community lyric versions"))
+            .accessibilityLabel(String(localized: "Lyric versions"))
         }
     }
 
     private func plainLyricsContentView(_ lyrics: Lyrics) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                // AI Explanation section (streaming or complete)
-                if self.isExplaining, let partial = partialSummary {
-                    self.streamingExplanationSection(partial)
-                    Divider()
-                        .padding(.vertical, 12)
-                } else if self.showExplanation, let summary = lyricsSummary {
-                    self.explanationSection(summary)
-                    Divider()
-                        .padding(.vertical, 12)
-                } else if let error = explanationError {
-                    self.errorSection(error)
-                    Divider()
-                        .padding(.vertical, 12)
-                }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // AI Explanation section (streaming or complete)
+                    if self.isExplaining, let partial = partialSummary {
+                        self.streamingExplanationSection(partial)
+                        Divider()
+                            .padding(.vertical, 12)
+                    } else if self.showExplanation, let summary = lyricsSummary {
+                        self.explanationSection(summary)
+                        Divider()
+                            .padding(.vertical, 12)
+                    } else if let error = explanationError {
+                        self.errorSection(error)
+                        Divider()
+                            .padding(.vertical, 12)
+                    }
 
-                // Lyrics text
-                Text(lyrics.text)
-                    .font(.system(size: 15, weight: .medium))
-                    .lineSpacing(8)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 20)
-
-                // Source attribution
-                if let source = lyrics.source {
-                    Divider()
+                    // Lyrics text
+                    Text(lyrics.text)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineSpacing(8)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
                         .padding(.horizontal, 16)
+                        .padding(.vertical, 20)
 
-                    Text(source.hasPrefix("Source:") ? source : "Source: \(source)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                    // The submitter credit sits at the end of the lyrics.
+                    if let attribution = lyrics.attribution, attribution.hasSubmitter {
+                        LyricsSubmitterCredit(attribution: attribution)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 20)
+                    }
                 }
             }
+
+            self.sourceFooter(source: lyrics.source)
         }
     }
 

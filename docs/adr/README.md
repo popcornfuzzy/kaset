@@ -59,3 +59,6 @@ What becomes easier or more difficult because of this change?
 | [0021](0021-betterlyrics-provider.md) | BetterLyrics Provider and Shared TTML Parser | Accepted |
 | [0022](0022-per-provider-lyrics-settings.md) | Per-Provider Lyrics Settings with Priority and Status | Accepted |
 | [0023](0023-playlist-search-and-sort.md) | Whole-Playlist Search and Server-Synced Playlist Sorting | Accepted |
+| [0024](0024-unison-provider.md) | Unison Community Lyrics Provider | Accepted |
+| [0025](0025-background-vocals.md) | Background Vocals in the Shared Lyrics Model | Accepted |
+| [0026](0026-fullscreen-key-routing.md) | Fullscreen Player Key Routing | Accepted |

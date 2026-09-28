@@ -36,7 +36,7 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Home")
-            .navigationDestinations(client: self.viewModel.client)
+            .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()

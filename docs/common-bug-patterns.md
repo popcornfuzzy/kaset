@@ -324,6 +324,84 @@ subsystems with one global flag need an explicit hand-off. The WebView's high-fr
 one flag consumed by two views, so the sidebar panel and the fullscreen lyrics pass it over instead of
 stopping it (`LyricsPollHandoff`, covered by `LyricsPollHandoffTests`).
 
+## ❌ Doing a Page's Navigation from Somewhere Other Than the Page
+
+A view that is pushed onto a `NavigationStack` can be navigated *by value*, or by a path it is handed.
+Two shapes look right and are not:
+
+```swift
+// ❌ BAD: an environment action for a pushed page, set on the stack that pushed it
+NavigationStack(path: $path) { content }
+    .environment(\.someAction, actionThatPushes)   // the pushed page reads the default, not this
+```
+
+```swift
+// ❌ BAD: a destination on a page that is itself a destination — the app hangs
+var body: some View {
+    content.navigationDestination(item: self.$selection) { … }   // main thread never returns
+}
+
+// ✅ GOOD: a value-based link, the way the context menus' Go to Artist does it
+NavigationLink(value: artist) { Text(artist.name) }
+
+// ✅ GOOD: a control that cannot be a link — one in a List row, say — pushes through the path the page
+// was handed when its destination was registered
+Button { onNavigateToArtist(artist) } label: { Text(artist.name) }
+```
+
+The environment form is invisible until it is clicked: `navigateToArtist` was handed to every stack that
+could show a playlist or album page, and in the running app the credit still read the default action on
+every click — the unified log said so thirty times in one session. Hosted tests that push pages onto a
+stack pass, which is why `ArtistCreditTests` guards the shape at the source instead. The page's root is
+also not free to add its own `navigationDestination`: the page is a destination already, and a second
+destination on the same stack does not push — it pins the main thread in `NSHostingView.layout` until
+the window stops answering, which also does not reproduce without the real page's `List` and toolbar.
+
+Values that reach pushed pages reliably are the ones injected far above them — `KasetApp`'s
+`playerService`, `MainWindow`'s `libraryViewModel` — not ones set on the stack in between. A path handed
+in as an initializer parameter is better still: it is not an environment lookup at all.
+`navigationDestinations(client:artistPath:)` takes the path of the stack the destinations are registered
+on, so a page that needs to push itself gets, from whoever pushed it, the path it is shown in. Every
+stack that can show such a page has to pass its own — the eight top-level views, `LibraryView`, and the
+`DetailNavigationStack` routes in `MainWindow`, which is why that stack now hands its path to its content
+closure.
+
+### …and one `List` row can carry only one link
+
+A row's tap area is the whole row, so a second value-based link in the same row is not a second target:
+**both links fire on one click and the stack lands on the last one.** A row is also what the list
+decorates: a `NavigationLink` — and a `Menu`, whose items inherit the row's activation — makes the table
+treat the row as the navigation source, so the row is selected (its highlight painted over the whole row
+for as long as the page lives, accent while the window is key and gray while it is not) and keeps its
+activation, which swallows the next click on the same control.
+
+```swift
+// ❌ BAD: one link per credited artist in the header row — clicking a name opens the *last* artist
+List {
+    HStack {
+        ForEach(artists) { artist in
+            NavigationLink(value: artist) { Text(artist.name) }
+        }
+    }
+}
+```
+
+```swift
+// ✅ GOOD: one button per artist, each pushing through the path the page was handed
+HStack {
+    ForEach(artists) { artist in
+        Button { onNavigateToArtist(artist) } label: { Text(artist.name) }
+            .buttonStyle(.plain)
+    }
+}
+```
+
+Links inside a `Menu` or a `contextMenu` are fine when the row they hang off is not itself the thing that
+navigates — `PlaylistTrackRow` navigates from the menu of a row that plays when it is clicked. What is not
+fine is a navigation the row starts. The multi-artist credit looked like a parsing bug because a
+single-credit album worked: one link in the row is a row target, several are a lottery. See
+[adr/0023](adr/0023-playlist-search-and-sort.md).
+
 ## Pre-Submit Checklists
 
 ### Performance
@@ -361,3 +439,21 @@ stopping it (`LyricsPollHandoff`, covered by `LyricsPollHandoffTests`).
 - [ ] No `static var shared` pattern with mutable assignment in `init`
 - [ ] WebView message handlers removed in `dismantleNSView`
 - [ ] `WKNavigationDelegate` implements `webViewWebContentProcessDidTerminate`
+
+### Navigation
+
+- [ ] A view that is itself a destination registers no `navigationDestination` of its own: a second
+      destination on the same stack freezes the app, and a hosted test does not reproduce it — see
+      [adr/0023](adr/0023-playlist-search-and-sort.md)
+- [ ] A `List` row starts no navigation of its own: a `NavigationLink`, and a `Menu` whose items
+      navigate, make the table select that row — its selection is painted over the row (accent while the
+      window is key, gray otherwise) for as long as the page lives, and the row's activation is kept, so
+      a second click on the same control is swallowed. A row's tap also reaches *every* link in it, so
+      two links are one click that fires both. Navigate from a button that appends to the stack's path
+      instead — see [adr/0023](adr/0023-playlist-search-and-sort.md)
+- [ ] A page that pushes from a button is handed the stack's path
+      (`navigationDestinations(client:artistPath:)`, `DetailNavigationStack { path in … }`); a stack that
+      can show such a page must pass its own — see [adr/0023](adr/0023-playlist-search-and-sort.md)
+- [ ] A header block that scrolls with the content is the list's **first row**, not a section header:
+      on macOS a section header is a floating group row that sticks on top of the tracks for the whole
+      scroll — see [adr/0023](adr/0023-playlist-search-and-sort.md)

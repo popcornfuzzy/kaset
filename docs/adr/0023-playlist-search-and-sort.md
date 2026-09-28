@@ -71,10 +71,21 @@ that did nothing. `changeSortOrder` compares the requested order with the one th
 reports and, when they differ, says so next to the header controls instead of leaving the user to
 guess whether the click registered.
 
-**The header is the list's first row, and scrolls with the tracks.** It started that way. It was then
-moved out into a `VStack` above the list to escape the table's row model, which introduced a worse
-problem: a header outside the list is a flexible child of the page's stack, and the pages that
-followed both overflowed the window and stopped scrolling (see below). It is back in the list.
+**The header is the list's first row, and scrolls with the tracks** (2026-09-28). It was a row first,
+then a page's first child above the list, then the tracks section's `header:`, and the row is where it
+belongs: a header outside the list is a flexible child of the page's stack, and the pages that followed
+both overflowed the window and stopped scrolling (see below), while a section header on macOS is a
+*floating group row* — it parks itself on top of the tracks for the rest of the scroll, a stickier
+header than the page ever wanted. The row model's cost is real, but it is a property of the *control*
+and not of the header: the row model decorates the row that *starts* a navigation. Clicking a credit
+used to select the header row, and the table's selection stayed painted over the whole header for the
+rest of the page's life, accent while the window was key and gray while it was not, on single- and
+multi-artist albums alike — with the credit as a link and again with it as a menu.
+`.listRowBackground(Color.clear)`, `.selectionDisabled(true)`, `.listRowSelectionDisabled` (which does
+not exist on macOS) and rebuilding the row on return all left the decoration in place — the same
+conclusion ADR-0014 reached for the list's other row decoration. What removes it is not touching the row
+but not navigating from it: the credit is a plain button that pushes the artist onto the stack's own
+path (below), and the table does not treat a button as a navigation source.
 
 **The header's height is definite, so the row cannot stretch.** The action row is aligned to the
 thumbnail's bottom edge by a `ZStack(alignment: .bottomLeading)` instead of a `Spacer` above it, and
@@ -94,24 +105,59 @@ the page: the list then answered the layout pass with the container's full heigh
 The `ZStack` version needs neither `Spacer` nor `fixedSize`, and it still grows if a title or the
 credit list wraps.
 
-**The credit pushes programmatically instead of using a `NavigationLink`.** Inside a `List` row a
-value-based link makes the whole row selectable, which produced both defects the header-row layout is
-remembered for, and both are reproducible with `PlaylistArtistNavigationUITests`:
+**Every credit is a button that pushes onto the stack's own path** (2026-09-28). `NavigationLink(value:)`
+is the usual way to push: it is what the song context menus use for **Go to Artist**, and it resolves
+against the nearest enclosing `NavigationStack` with nothing installed for it. In the header row it cost
+two things — the table's selection staying painted across the header, and the row's activation being kept
+once its link had pushed the artist page, so a second click on the same credit was swallowed. Neither
+`.borderless` on the link nor `.selectionDisabled` nor rebuilding the row removed either. The credit is
+therefore a plain `Button` per artist — one control per name, so a two-artist album opens the artist whose
+name was clicked — calling `PlaylistDetailView.onNavigateToArtist`. The page is handed that closure by
+whoever registered the destinations: `navigationDestinations(client:artistPath:)` takes the enclosing
+stack's path and passes `artistPath.wrappedValue.append` down, `LibraryView` does the same for its own
+hand-rolled destination, `MainWindow`'s `DetailNavigationStack` hands its path to its content closure for
+the sidebar-playlist and Liked Music routes, and the `#Preview` passes a no-op. A pushed page cannot reach
+the stack's path itself, so this is the one thing that has to be handed in; everything else the page needs
+comes from the environment.
 
-- The table kept *its* selection painted over the whole header — accent red while the window was key,
-  gray while it was not — and it stayed painted across a push and pop. `.listRowBackground(Color.clear)`
-  does not reach that decoration (ADR-0014), `.selectionDisabled(true)` did not stop it, and nor did
-  `.listRowSelectionDisabled` — that modifier does not exist on macOS, despite existing on iOS.
-- Once the link had pushed the artist page it kept the activation, so a second click on the same
-  credit was swallowed and the artist page stopped opening. `.borderless` on the link, rebuilding the
-  row on return, and a one-second settle before the next click all failed.
+**A `List` row hands a click to every link in it, so the credits are not links** (2026-09-28). The header
+row's tap area covers the row, and with one link per credited artist *all* of them fired: on a
+multi-artist album the stack opened the **last** artist whichever name was clicked, while a single-credit
+album worked — which is what made the bug read like a parsing problem at first. A `Menu` of those same
+links fixed the multi-artist case and kept the inline comma-separated look, but a menu still starts its
+navigation from the row, so the painted header came back with it, and the names ended up one click away.
+With one plain button per name there is nothing left for the row to activate: the click goes to the button
+under the pointer, which pushes exactly its own artist. `AccessibilityID.PlaylistDetail.artistCredit(_:)`
+is per artist, so `PlaylistArtistNavigationUITests` — which clicks a credit, presses Back and clicks it
+again — addresses one name directly.
 
-The credit is now a plain `Button` that pushes through `NavigateToArtistAction` from the environment,
-which `DetailNavigationStack` provides from the path it owns. With no link in the row there is no row
-selection to paint and no activation to go stale; the artist page is still built by the same
-`navigationDestination(for: Artist.self)` registration. (An earlier attempt at a programmatic push
-added a *second* `navigationDestination` inside a view that is already a destination, which makes
-SwiftUI loop and freeze — the destination registration must stay where it is.)
+Two mechanisms were built and abandoned before settling there. Both are recorded here because the first
+looks obviously right and the second is the shape every "let the page own its navigation" suggestion
+arrives as.
+
+**An environment action the stack provides does not reach the page** (abandoned 2026-09-28).
+`navigateToArtist` was injected with `pushesArtists(onPath:)` on the `NavigationStack` — in the nine
+top-level views, in the detail column's own stack, and in `DetailNavigationStack` — and the credit was a
+plain `Button` calling it. In the running app the credit read the *default* action on every click; the
+unified log recorded about thirty `Artist credit … was clicked with no navigation stack providing an
+action` lines from one session, so an album opened from a list did nothing while the page the stack was
+created with (Liked Music) worked. Hosted tests that push pages onto a stack — including pages whose
+credit sits in a `List` row — pass, so no test in this project catches it. The default action logging
+instead of doing nothing was what made the failure visible at all.
+
+**A page must not register a destination of its own** (abandoned 2026-09-28). `PlaylistDetailView` is
+already a destination of the stack that shows it, and a second destination on that same stack — `for:`
+*or* `item:` — does not push: the app stops answering and the main thread never returns. The `item:`
+form (with the artist in the page's `@State`) was tried as the natural fix and hung the app on the
+first click, with the main thread pinned in `NSHostingView.layout` under `PlaylistDetailView.body` and
+an `OutlineListCoordinator` update, re-entering layout for as long as it was sampled. A hosted test that
+pushes text pages does not reproduce it; the real page, with its `List` and toolbar, does.
+`ArtistCreditTests` fails if `PlaylistDetailView` ever contains a `navigationDestination` again.
+
+`ArtistCreditTests` guards the three rules this control has cost the most time to learn: the credit
+pushes through the page's `onNavigateToArtist` closure and never through a `NavigationLink` or a `Menu`
+in the header row, the page registers no destination of its own, and the header is the list's first row
+rather than a section header.
 
 `testHeaderActionRowSitsOnTheThumbnail` asserts the geometry and the scrolling: the action row ends
 with the thumbnail, the gap above it stays under 100 pt, the thumbnail stays inside the window, and
@@ -133,8 +179,12 @@ presses Back and clicks it again, which is the click that used to be ignored.
 - The header's height is the thumbnail's 180 pt plus the row insets, so it cannot be squeezed for a
   short window the way a flexible height could; the action row clips instead of shrinking below it.
   Scrolling does recover the space, since the header scrolls with the tracks.
-- The credit is not a `NavigationLink`, so it has no link affordances (no ⌘-click, no hover cursor
-  treatment). Pushing is a plain button action through the environment.
+- Every stack that can show the page has to hand it the artist path: `navigationDestinations(client:artistPath:)`
+  takes the stack's `NavigationPath`, `LibraryView` passes its own to its hand-rolled destination, and
+  `MainWindow`'s `DetailNavigationStack` routes use the binding it gives their content. A stack that
+  forgets it does not compile, because the parameter is required.
+- A credit is a button, so it has no link cursor, and Return does not open it the way a `NavigationLink`
+  would.
 - A whole-playlist scan issues one continuation request per page; a very large playlist takes
   noticeable time on first search (once per view model, then cached in memory).
 - The live YT Music header shape for sort could not be verified in this environment; if it differs,

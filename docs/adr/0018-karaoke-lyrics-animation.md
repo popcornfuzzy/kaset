@@ -376,14 +376,45 @@ own); 10 Hz while the fullscreen player covers the panel, which is one frame per
 keeps the clock correct without paying for frames nobody can see; and 20 Hz while playback is paused,
 where the fill is frozen and a frame only exists to take up a sample correction or a seek. Reduce Motion
 uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so 60 Hz is already smoother than the motion
-needs; on a 120 Hz display, halving the rate is the single largest saving. The one row that must not be
-throttled is the bouncing pause dot, which is decorative motion that only exists while it is moving.
+needs; on a 120 Hz display, halving the rate is the single largest saving. A row's rate is about how
+often it may redraw *while it is live*; when it is not, its timeline is paused entirely (see below),
+and the rate it would have had is not paid.
 
 **A settled row draws nothing.** It is not merely throttled: its timeline is paused
 (`KaraokeTimeSource`), so it is handed its settled position once and then not drawn again until the
 highlight comes back for it. That is what the third defect above was — a departed line redrawing its
 frozen fill, scaled — and it is also the cheapest frame in the sheet, since a sheet is mostly lines that
 have already been sung.
+
+## Amendment: rows that have nothing to change do not redraw
+
+Two rows used to be on the display clock that had no business being there, and on a heavy sheet that is
+where the animation's cost was going.
+
+**The line after the current one ran on the clock for the whole of the line before it.** Throughout that
+time every frame it drew was the frame already on screen: a row that has not reached its own first ramp
+renders every word unsung, and `staticTimeMs(for: .upcoming, …)` hands it the position just before that
+ramp, so the settled frame *is* the live frame. It now takes the clock at `armBoundaryMs` — just before
+its own first ramp opens, from its lead or its backing words, whichever comes in first, with a
+`KaraokeTiming.armLeadMs` margin so a late 10 Hz sample cannot have the line first seen part-filled.
+Nothing about the picture changes; a third of the redraws stop happening.
+
+**Nothing in a lyric row is a hit-test target.** The row above it owns the tap that seeks, through its
+own content shape, and everything inside `KaraokeLyricsLineView` is a responder that hit testing would
+otherwise walk: a text layer per word, the rectangle masks the fill and the lift are cut with, the shape
+layers those are made of. A word-synced row with a backing vocal is forty-odd words of them. That walk
+happens for every mouse move over the sheet and, because the sheet is redrawing underneath the pointer,
+for every frame the pointer spends there — sampling the running app with the pointer over heavy lyrics
+puts `ViewResponder.hitTest` and `ContentShapeResponder.containsGlobalPoints` at the top of the profile,
+ahead of any drawing. `.allowsHitTesting(false)` on the karaoke line prunes the whole subtree from it and
+leaves the row's gesture, which was attached to the row's own shape, untouched.
+
+Measured with the harness on a row shaped like the heavy end of a real song — thirteen lead words and
+ten backing words at the fullscreen size — one frame of that row is ~4.7 ms of rasterization, against
+~2.6 ms for the lead alone; the backing vocal is a whole second line of words and costs like one. What
+the amendment removes is the frames, not the cost of a frame: a sheet now animates the line being sung
+at 60 Hz, the line after it for the ~200 ms before it has anything to show, and the line that has just
+finished until its content lands (which a held backing word can put a few seconds into the next line).
 
 ### Line transitions, emphasis and Reduce Motion
 
@@ -421,10 +452,12 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
 
 - **Per-frame cost is real, though bounded**: one animating line measures ~1.9 ms/frame in
   `KaraokeLyricsPerformanceTests` (construction, layout, masking, blur and rasterization into a bitmap
-  — the part the app does on the GPU), which is roughly 11% of one core per surface at 60 Hz plus ~3.5%
-  for the armed line. It remains the most expensive per-frame work in the app, and the frame budgets
-  and the measured-layout cache are what keep it from growing; the harness test fails if a frame's
-  cost regresses past its (loose) budget.
+  — the part the app does on the GPU), which is roughly 11% of one core per surface at 60 Hz for a line
+  of ordinary length, and ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of
+  thirteen lead words plus ten backing words at the fullscreen size). It remains the most expensive
+  per-frame work in the app, and the frame budgets, the measured-layout cache, the row arming rule and
+  the hit-testing prune are what keep it from growing; the harness test fails if a frame's cost
+  regresses past its (loose) budget.
 - **The clock is stateful and outside SwiftUI's model**: it must be reset on track change
   (`onChange(of: lyrics)`), and it must be fed on `isPlaying` changes as well as position samples.
 - **The highlight and the scroll are separate indices now** (`currentLineIndex`/`scrollLineId` on both

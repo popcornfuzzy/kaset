@@ -45,18 +45,16 @@ struct SyncedLyricsDisplayView: View {
 
     /// How often a row may redraw.
     ///
-    /// The line being sung gets the full live rate; the line after it, and the line that
-    /// has just finished while it settles, lean on the same clock at the lower *armed*
-    /// rate — nothing on them is moving, and their own transitions are Core Animation's,
-    /// not ours, so the redraw rate does not affect how they look.
-    /// - Parameter animatesWhilePaused: the bouncing pause dot is decorative motion that
-    ///   only exists while it is moving, so it keeps its rate when playback is paused.
-    private func frameInterval(lineIndex: Int, animatesWhilePaused: Bool = false) -> Double? {
+    /// The line being sung gets the full live rate; a row that is on the display clock but is
+    /// not the one being sung leans on the same clock at the lower *armed* rate — nothing on
+    /// it is moving yet, and its own transitions are Core Animation's, not ours, so the redraw
+    /// rate does not affect how they look.
+    private func frameInterval(lineIndex: Int) -> Double? {
         // Covered by the fullscreen player: the clock still has to move so the highlight
         // is correct the moment it is visible again, but no one can see the frames.
         if self.isCovered { return KaraokeFrameBudget.covered }
         if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
-        if !self.isPlaying, !animatesWhilePaused { return KaraokeFrameBudget.paused }
+        if !self.isPlaying { return KaraokeFrameBudget.paused }
         return lineIndex == self.currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
     }
 
@@ -107,7 +105,10 @@ struct SyncedLyricsDisplayView: View {
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
-                        if self.lyrics.isPauseLine(at: index) || (line.words == nil && line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                        // A line with nothing to sing is a pause, and a pause is the dots. The
+                        // test is the same one the dots themselves use, so the row that draws
+                        // them and the state they are drawn from cannot disagree.
+                        if self.lyrics.isPauseLine(at: index) {
                             KaraokeTimeSource(
                                 line: line,
                                 status: status,
@@ -116,9 +117,8 @@ struct SyncedLyricsDisplayView: View {
                                 minimumFrameInterval: self.frameInterval(lineIndex: index)
                             ) { displayTimeMs in
                                 SyncedPauseDotsLineView(
-                                    dotStatuses: self.lyrics.pauseDotStatuses(forLineAt: index, at: Int(displayTimeMs)),
+                                    dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
                                     status: status,
-                                    minimumFrameInterval: self.frameInterval(lineIndex: index, animatesWhilePaused: true),
                                     onTap: { self.onSeek(line.timeInMs) }
                                 )
                             }
@@ -137,6 +137,14 @@ struct SyncedLyricsDisplayView: View {
                             )
                             .id(line.id)
                         }
+                    }
+
+                    // The submitter credit belongs to the lyrics, not to the panel:
+                    // it sits at the end of the sheet, out of the way until read to
+                    // the bottom.
+                    if let attribution = self.lyrics.attribution, attribution.hasSubmitter {
+                        LyricsSubmitterCredit(attribution: attribution)
+                            .padding(.top, 28)
                     }
 
                     Spacer().frame(height: 120)
@@ -325,9 +333,11 @@ enum KaraokeFrameBudget {
     /// animation's cost, and it changes nothing about the animation itself.
     static let live = 1.0 / 60.0
 
-    /// The line *after* the one being sung redraws at half that. It is on screen and filled
-    /// by the same clock so it arrives without a jump, but nothing on it moves until its own
-    /// start — and by then it is the current line, at the live rate.
+    /// A row that is on the clock but is not the one being sung redraws at half that: the line
+    /// after the current one once it is close enough to its own first ramp to take the clock
+    /// (`KaraokeFillModel.isLiveRow`), and the line that has just finished until its content is
+    /// settled. They are filled by the same clock so they arrive without a jump, and the rate
+    /// costs nothing because what is on them is Core Animation's, not a redraw of ours.
     static let armed = 1.0 / 30.0
 
     /// While the panel is covered by the fullscreen player there is nothing to see, but the
@@ -408,24 +418,21 @@ struct KaraokeTimeSource<Content: View>: View {
 
 @available(macOS 26.0, *)
 struct SyncedPauseDotsLineView: View {
-    let dotStatuses: [SyncedLyrics.PauseDotStatus]
+    let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
-    /// The bouncing dot is the only thing here that redraws; it shares the karaoke
-    /// frame budget rather than running at the display's refresh rate.
-    var minimumFrameInterval: Double?
     let onTap: () -> Void
 
     var body: some View {
         HStack(spacing: 5) {
             ForEach(0 ..< 3, id: \.self) { dotIndex in
-                self.dotView(for: self.safeDotStatus(at: dotIndex))
+                self.dotView(for: self.status(of: dotIndex))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 7)
         .opacity(self.lineOpacity(for: self.status))
         .scaleEffect(self.lineScale(for: self.status), anchor: .leading)
-        .animation(.easeInOut(duration: 0.35), value: self.dotStatuses)
+        .animation(.easeInOut(duration: 0.35), value: self.dots.statuses)
         .animation(AppAnimation.lyricLine, value: self.status)
         .contentShape(Rectangle())
         .onTapGesture {
@@ -435,27 +442,19 @@ struct SyncedPauseDotsLineView: View {
 
     @ViewBuilder
     private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View {
-        let dot = Circle()
+        // The bounce is a value off the row's own display clock, not a timeline of its
+        // own: the row is already redrawing per frame while it is the one being sung, and
+        // two clocks on one row are two chances to disagree about when that is.
+        Circle()
             .fill(Color.primary)
             .frame(width: 7, height: 7)
             .opacity(self.dotOpacity(for: dotStatus))
-
-        if dotStatus == .active {
-            TimelineView(.animation(minimumInterval: self.minimumFrameInterval)) { timeline in
-                let elapsed = timeline.date.timeIntervalSinceReferenceDate
-                let phase = elapsed.truncatingRemainder(dividingBy: 0.72) / 0.72
-                let yOffset = -2.8 * (0.5 + 0.5 * sin(phase * 2 * .pi))
-
-                dot.offset(y: yOffset)
-            }
-        } else {
-            dot
-        }
+            .offset(y: dotStatus == .active ? -2.8 * self.dots.lift : 0)
     }
 
-    private func safeDotStatus(at index: Int) -> SyncedLyrics.PauseDotStatus {
-        guard self.dotStatuses.indices.contains(index) else { return .notSung }
-        return self.dotStatuses[index]
+    private func status(of index: Int) -> SyncedLyrics.PauseDotStatus {
+        guard self.dots.statuses.indices.contains(index) else { return .notSung }
+        return self.dots.statuses[index]
     }
 
     private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double {
@@ -511,8 +510,11 @@ struct SyncedLineView: View {
 
     var body: some View {
         // Measured once per line, not once per frame or per sheet re-render: a frame of
-        // the wipe of this line is then arithmetic and drawing only.
+        // the wipe of this line is then arithmetic and drawing only. The backing vocal is
+        // measured at its own smaller size and cached under its own key, so the two
+        // layouts of one row never evict each other.
         let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
+        let backgroundLayout = self.layoutCache.backgroundLayout(for: self.line, fontSize: Self.fontSize - 2)
 
         return KaraokeTimeSource(
             line: self.line,
@@ -522,7 +524,7 @@ struct SyncedLineView: View {
             clock: self.clock,
             minimumFrameInterval: self.minimumFrameInterval
         ) { displayTimeMs in
-            self.content(at: displayTimeMs, layout: layout)
+            self.content(at: displayTimeMs, layout: layout, backgroundLayout: backgroundLayout)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(self.opacity(for: self.status))
@@ -540,22 +542,42 @@ struct SyncedLineView: View {
     }
 
     @ViewBuilder
-    private func content(at displayTimeMs: Double, layout: KaraokeLineLayout) -> some View {
-        if self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    private func content(at displayTimeMs: Double, layout: KaraokeLineLayout, backgroundLayout: KaraokeLineLayout?) -> some View {
+        let hasLead = !self.line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if !hasLead, backgroundLayout == nil {
             // A short instrumental gap that is not long enough for the pause dots.
             Text("♪")
                 .font(.system(size: Self.fontSize, weight: .bold))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            KaraokeLyricsLineView(
-                layout: layout,
-                displayTimeMs: displayTimeMs,
-                color: .primary,
-                emphasis: self.emphasis,
-                lineSpacing: 2
-            )
-            .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                if hasLead {
+                    KaraokeLyricsLineView(
+                        layout: layout,
+                        displayTimeMs: displayTimeMs,
+                        color: .primary,
+                        emphasis: self.emphasis,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                if let backgroundLayout {
+                    // The backing vocal runs the same per-character wipe as the lead,
+                    // driven by the same display clock position — it overlaps the line
+                    // in time, so synchrony is simply sharing the clock. It is dimmer
+                    // and smaller so it reads as accompaniment, nothing else differs.
+                    KaraokeLyricsLineView(
+                        layout: backgroundLayout,
+                        displayTimeMs: displayTimeMs,
+                        color: .secondary,
+                        emphasis: self.emphasis,
+                        lineSpacing: 2
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

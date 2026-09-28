@@ -98,7 +98,8 @@ struct LibraryView: View {
                     viewModel: PlaylistDetailViewModel(
                         playlist: playlist,
                         client: self.viewModel.client
-                    )
+                    ),
+                    onNavigateToArtist: { artist in self.navigationPath.append(artist) }
                 )
             }
             .navigationDestination(for: Artist.self) { artist in

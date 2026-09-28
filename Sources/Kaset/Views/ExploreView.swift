@@ -33,7 +33,7 @@ struct ExploreView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Explore")
-            .navigationDestinations(client: self.viewModel.client)
+            .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()

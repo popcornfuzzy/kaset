@@ -412,9 +412,15 @@ struct KaraokeFillModelTests {
             )
         }
 
-        // The line being sung and the line after it always run on the clock.
+        // The line being sung always runs on the clock.
         #expect(isLive(5, 5, finished, 0))
-        #expect(isLive(6, 5, following, 0))
+
+        // The line after it runs from just before its own first word, and not for the whole of
+        // the line before it: until then every frame it drew was the one already on screen
+        // (see `KaraokeRowArmingTests`).
+        #expect(!isLive(6, 5, following, 0))
+        #expect(!isLive(6, 5, following, 10_779))
+        #expect(isLive(6, 5, following, 10_780))
 
         // The line that just finished draws until the clock reaches the point where its content
         // is settled — its declared end here — and stops there. That instant is the same one the
