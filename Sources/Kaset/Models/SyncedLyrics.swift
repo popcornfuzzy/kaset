@@ -214,6 +214,73 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         self.lineStatuses(at: timeMs).lastIndex(of: .current)
     }
 
+    /// Whether a line carries nothing to sing: no lead text and no backing vocal.
+    ///
+    /// This is the shape a pause row has, and the shape an instrumental interlude takes
+    /// when a provider spells it out instead of leaving it to the timeline.
+    static func isSilent(_ line: SyncedLyricLine) -> Bool {
+        line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (line.backgroundWords ?? []).isEmpty
+    }
+
+    /// The sheet with a pause row inserted for every interlude the provider left implicit
+    /// as a gap in the timeline.
+    ///
+    /// Providers say "nothing is sung here" in one of two ways, and only the first gives
+    /// the renderer a row to hang the dots on:
+    ///
+    /// - **Explicitly**, as a line with no text: an LRC line with nothing after its
+    ///   timestamp, or a word-synced `<p begin end/>`. The parsers keep those.
+    /// - **Implicitly**, as nothing at all — the previous line simply ends earlier than
+    ///   the next one begins. This is what Apple Music's word-synced TTML does: its
+    ///   paragraphs are contiguous *within* a line but skip whole bars *between* them, so
+    ///   there is no empty paragraph anywhere in it.
+    ///
+    /// Without this the dots never appear in word-by-word mode, which is the mode they
+    /// are wanted in: every word-synced source takes the second route, so the sheet it
+    /// produces has no silent line anywhere for the renderer to find. Measured against
+    /// the real payloads, that is the whole of the bug — a played-and-parsed Autobahn
+    /// library has 21 gaps of ≥600 ms between its 52 paragraphs and not one empty
+    /// paragraph.
+    ///
+    /// The synthesized row covers the gap exactly, from the previous line's end to the
+    /// next line's start. A gap whose far side is *already* a silent line is left alone:
+    /// that line is the row the dots will render on, and adding another would put two rows
+    /// in the same stretch of silence.
+    ///
+    /// Applied once, where a result is installed (see `SyncedLyricsService.apply`), never
+    /// per frame: the rows are part of the sheet afterwards, so every index the display
+    /// uses — the highlight, the scroll target, the row statuses — counts them.
+    func withPauseInterludes(minimumGapMs: Int = Self.defaultPauseGapThresholdMs) -> SyncedLyrics {
+        guard self.lines.count > 1 else { return self }
+
+        var filled: [SyncedLyricLine] = []
+        filled.reserveCapacity(self.lines.count)
+
+        for (index, line) in self.lines.enumerated() {
+            filled.append(line)
+
+            guard index + 1 < self.lines.count else { continue }
+            let next = self.lines[index + 1]
+            // A silent line on the far side of the gap is already the pause row.
+            guard !Self.isSilent(next) else { continue }
+
+            let gapStart = line.timeInMs + max(line.duration, 0)
+            let gapEnd = next.timeInMs
+            guard gapEnd - gapStart >= minimumGapMs else { continue }
+
+            filled.append(SyncedLyricLine(
+                timeInMs: gapStart,
+                duration: gapEnd - gapStart,
+                text: "",
+                words: nil,
+                backgroundWords: nil
+            ))
+        }
+
+        return SyncedLyrics(lines: filled, source: self.source, attribution: self.attribution)
+    }
+
     func pauseInterlude(
         at timeMs: Int,
         minimumGapMs: Int = Self.defaultPauseGapThresholdMs

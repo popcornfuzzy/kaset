@@ -17,9 +17,10 @@ struct LyricsCacheStore: Sendable {
     ///
     /// A stale payload still decodes cleanly — the model is the same, only the
     /// parse that produced it changed (backing vocals were once folded into the
-    /// lead line, for example) — so the version, not the schema, is the only
-    /// signal that a cache file must be discarded and re-fetched.
-    static let schemaVersion = 2
+    /// lead line, for example, and instrumental-gap paragraphs were once dropped,
+    /// which hid the pause dots from word-synced lyrics) — so the version, not the
+    /// schema, is the only signal that a cache file must be discarded and re-fetched.
+    static let schemaVersion = 3
 
     /// Directory that holds one file per cached song.
     let directoryURL: URL

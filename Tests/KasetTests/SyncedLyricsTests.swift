@@ -50,6 +50,38 @@ struct SyncedLyricsServiceTests {
         #expect(service.isLoading == false)
     }
 
+    /// The display reads `currentLyrics`, so this is the seam the pause rows have to cross:
+    /// a provider that leaves its interlude as a gap in the timeline must still reach the
+    /// panel with a row for the dots, in either mode and whatever produced it.
+    @Test("an interlude a provider left as a gap reaches the display as a pause row")
+    func interludeGapReachesTheDisplay() async {
+        let sheet = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "First", words: nil),
+                SyncedLyricLine(timeInMs: 9_000, duration: 2_000, text: "Second", words: nil),
+            ],
+            source: "Unison"
+        )
+        let service = SyncedLyricsService(providers: [
+            MockLyricsProvider(name: "Unison", result: .synced(sheet)),
+        ])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-interlude"))
+
+        guard case let .synced(displayed) = service.currentLyrics else {
+            Issue.record("no synced lyrics were installed")
+            return
+        }
+        #expect(displayed.lines.count == 3)
+        #expect(displayed.lines[1].timeInMs == 2_000)
+        #expect(displayed.lines[1].duration == 7_000)
+        #expect(displayed.isPauseLine(at: 1))
+        #expect(displayed.currentLineIndex(at: 5_000) == 1)
+        // The rows are the display's business, not the cache's: what was fetched is what
+        // was already on disk and what stays there.
+        #expect(service.currentLyrics != .synced(sheet))
+    }
+
     @Test("a variant provider's alternatives are listed and the first is selected")
     func variantProviderListsAlternatives() async {
         let first = Self.makeWordSyncedLyrics(source: "Unison", lineText: "First version")

@@ -164,6 +164,95 @@ struct LyricsBackgroundVocalsTests {
         #expect(line.words?.first?.isBackground == false)
     }
 
+    // MARK: - Pause dots in word-synced lyrics
+
+    @Test("word-synced TTML keeps instrumental-gap paragraphs as pause lines")
+    func ttmlKeepsInstrumentalGap() throws {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+          <body><div>
+            <p begin="0:01.000" end="0:02.000">
+              <span begin="0:01.000" end="0:02.000">Hello</span>
+            </p>
+            <p begin="0:02.000" end="0:05.000" />
+            <p begin="0:05.000" end="0:06.000">
+              <span begin="0:05.000" end="0:06.000">World</span>
+            </p>
+          </div></body>
+        </tt>
+        """
+
+        let lyrics = try #require(TTMLParser.parse(raw, source: "Test"))
+        #expect(lyrics.lines.count == 3)
+        #expect(lyrics.lines[1].text.isEmpty)
+        #expect(lyrics.lines[1].timeInMs == 2_000)
+        #expect(lyrics.lines[1].duration == 3_000)
+        // The gap line is a pause interlude, so the renderer shows the dots there.
+        #expect(lyrics.isPauseLine(at: 1))
+    }
+
+    @Test("a TTML paragraph with no timing at all is still dropped")
+    func ttmlDropsUntimedEmptyParagraph() throws {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+          <p begin="0:01.000" end="0:02.000"><span begin="0:01.000" end="0:02.000">Hello</span></p>
+          <p></p>
+        </div></body></tt>
+        """
+
+        let lyrics = try #require(TTMLParser.parse(raw, source: "Test"))
+        #expect(lyrics.lines.count == 1)
+    }
+
+    @Test("Paxsenix syllable content keeps empty timed entries as pause lines")
+    func paxsenixKeepsEmptyTimedEntry() {
+        let content: [PaxsenixLyricsResponse.ContentLine] = [
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 1_000,
+                background: nil,
+                oppositeTurn: nil,
+                text: [.init(text: "Hello", timestamp: 1_000, endtime: nil)]
+            ),
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 2_000,
+                background: nil,
+                oppositeTurn: nil,
+                text: []
+            ),
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 5_000,
+                background: nil,
+                oppositeTurn: nil,
+                text: [.init(text: "World", timestamp: 5_000, endtime: nil)]
+            ),
+        ]
+
+        guard case let .synced(lyrics) = PaxsenixProvider.parseContent(content, syllable: true) else {
+            Issue.record("Expected synced result")
+            return
+        }
+
+        #expect(lyrics.lines.count == 3)
+        #expect(lyrics.lines[1].text.isEmpty)
+        #expect(lyrics.lines[1].duration == 3_000)
+        #expect(lyrics.isPauseLine(at: 1))
+    }
+
+    @Test("Paxsenix ELRC keeps empty timed lines as pause lines")
+    func elrcKeepsEmptyTimedLine() throws {
+        let raw = """
+        [00:01.000]{v1}Hello
+        [00:02.000]
+        [00:05.000]{v1}World
+        """
+
+        let lyrics = try #require(PaxsenixProvider.parseELRC(raw))
+        #expect(lyrics.lines.count == 3)
+        #expect(lyrics.lines[1].text.isEmpty)
+        #expect(lyrics.lines[1].timeInMs == 2_000)
+        #expect(lyrics.isPauseLine(at: 1))
+    }
+
     // MARK: - Karaoke animation
 
     /// A lead line with one backing vocal that starts later and ends later, the shape the

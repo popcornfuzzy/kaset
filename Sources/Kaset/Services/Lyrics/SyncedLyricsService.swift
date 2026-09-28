@@ -332,7 +332,7 @@ final class SyncedLyricsService {
         if self.currentLyricsVideoId != videoId {
             self.resetVariants()
         }
-        self.currentLyrics = result
+        self.currentLyrics = Self.forDisplay(result)
         self.activeProvider = provider ?? Self.source(of: result)
         self.loadingProvider = nil
         self.currentLyricsVideoId = videoId
@@ -343,6 +343,21 @@ final class SyncedLyricsService {
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
         }
+    }
+
+    /// The result as the display wants it: a synced sheet gains a pause row for every
+    /// interlude its provider left as a gap in the timeline (see
+    /// `SyncedLyrics.withPauseInterludes`).
+    ///
+    /// Done here rather than in the parsers because the gaps are a property of the sheet,
+    /// not of any one format — a word-synced TTML and a line-synced one both leave their
+    /// interludes implicit — and rather than in the views, because what the dots need is a
+    /// line: every index the display works with has to agree on it. The cached result is
+    /// left as parsed, so the rows are not written to disk twice over and a cache written
+    /// before this existed still gets them.
+    private static func forDisplay(_ result: LyricResult) -> LyricResult {
+        guard case let .synced(lyrics) = result else { return result }
+        return .synced(lyrics.withPauseInterludes())
     }
 
     private static func source(of result: LyricResult) -> String? {

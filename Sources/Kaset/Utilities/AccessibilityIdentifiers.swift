@@ -145,7 +145,7 @@ enum AccessibilityID {
             "playlistDetailView.track.\(index)"
         }
 
-        /// The credited artist in the header, which pushes that artist's page.
+        /// A credited artist in the header: one button per artist, each pushing its own page.
         static func artistCredit(_ artistId: String) -> String {
             "playlistDetailView.artistCredit.\(artistId)"
         }

@@ -39,7 +39,7 @@ struct PodcastsView: View {
             .navigationDestination(for: PodcastShow.self) { show in
                 PodcastShowView(show: show, client: self.viewModel.client)
             }
-            .navigationDestinations(client: self.viewModel.client)
+            .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()

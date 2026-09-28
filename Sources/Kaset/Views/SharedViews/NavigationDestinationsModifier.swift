@@ -4,9 +4,20 @@ import SwiftUI
 
 /// View modifier that adds common navigation destinations for Playlist, Artist, MoodCategory, and TopSongsDestination.
 /// Note: Lyrics sidebar is handled globally in MainWindow, outside the NavigationSplitView.
+///
+/// It also forwards the enclosing stack's path to the pages that need to push something themselves —
+/// currently only the album/playlist header's artist credit. A pushed page cannot append to the stack's
+/// path on its own, and it must not declare a second `navigationDestination` for the artist instead: the
+/// page is itself a destination, and a second destination on the same stack re-lays out the page in a
+/// loop and freezes the app (ADR-0023).
 @available(macOS 26.0, *)
 struct NavigationDestinationsModifier: ViewModifier {
     let client: any YTMusicClientProtocol
+
+    /// The path of the stack these destinations are registered on. `NavigationLink(value:)` pushes onto
+    /// it by itself; pages that push with a button need it handed to them.
+    let artistPath: Binding<NavigationPath>
+
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
     func body(content: Content) -> some View {
@@ -34,7 +45,8 @@ struct NavigationDestinationsModifier: ViewModifier {
                             viewModel: PlaylistDetailViewModel(
                                 playlist: playlist,
                                 client: self.client
-                            )
+                            ),
+                            onNavigateToArtist: { artist in self.artistPath.wrappedValue.append(artist) }
                         )
                     }
                 } else {
@@ -43,7 +55,8 @@ struct NavigationDestinationsModifier: ViewModifier {
                         viewModel: PlaylistDetailViewModel(
                             playlist: playlist,
                             client: self.client
-                        )
+                        ),
+                        onNavigateToArtist: { artist in self.artistPath.wrappedValue.append(artist) }
                     )
                 }
             }
@@ -99,8 +112,9 @@ struct NavigationDestinationsModifier: ViewModifier {
 
 @available(macOS 26.0, *)
 extension View {
-    /// Adds common navigation destinations for Playlist, Artist, MoodCategory, and TopSongsDestination.
-    func navigationDestinations(client: any YTMusicClientProtocol) -> some View {
-        modifier(NavigationDestinationsModifier(client: client))
+    /// Adds common navigation destinations for Playlist, Artist, MoodCategory, and TopSongsDestination,
+    /// and hands `artistPath` to the pages that push an artist with a button.
+    func navigationDestinations(client: any YTMusicClientProtocol, artistPath: Binding<NavigationPath>) -> some View {
+        modifier(NavigationDestinationsModifier(client: client, artistPath: artistPath))
     }
 }

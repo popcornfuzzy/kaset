@@ -33,7 +33,7 @@ struct ChartsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Charts")
-            .navigationDestinations(client: self.viewModel.client)
+            .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()

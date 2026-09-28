@@ -520,8 +520,8 @@ struct SyncedLineView: View {
     var body: some View {
         // Measured once per line, not once per frame or per sheet re-render: a frame of
         // the wipe of this line is then arithmetic and drawing only. The backing vocal is
-        // measured at its own smaller size — the cache keys by size, so the two layouts
-        // of one row never evict each other.
+        // measured at its own smaller size and cached under its own key, so the two
+        // layouts of one row never evict each other.
         let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
         let backgroundLayout = self.layoutCache.backgroundLayout(for: self.line, fontSize: Self.fontSize - 2)
 

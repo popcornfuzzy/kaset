@@ -8,12 +8,16 @@ import SwiftUI
 struct PlaylistDetailView: View {
     let playlist: Playlist
     @State var viewModel: PlaylistDetailViewModel
+
+    /// Pushes an artist page onto the stack this page is shown in. Handed in by whoever registered the
+    /// page's navigation destinations, because a pushed page cannot reach the enclosing stack's path
+    /// itself and must not declare a second `navigationDestination` (see `contentView(_:)`).
+    let onNavigateToArtist: (Artist) -> Void
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.navigateToArtist) private var navigateToArtist
 
     /// Tracks whether this playlist has been added to library in this session.
     @State private var isAddedToLibrary: Bool = false
@@ -88,9 +92,14 @@ struct PlaylistDetailView: View {
 
     private let logger = DiagnosticsLogger.ai
 
-    init(playlist: Playlist, viewModel: PlaylistDetailViewModel) {
+    init(
+        playlist: Playlist,
+        viewModel: PlaylistDetailViewModel,
+        onNavigateToArtist: @escaping (Artist) -> Void
+    ) {
         self.playlist = playlist
         _viewModel = State(initialValue: viewModel)
+        self.onNavigateToArtist = onNavigateToArtist
     }
 
     var body: some View {
@@ -198,21 +207,27 @@ struct PlaylistDetailView: View {
     /// on every scroll frame, which made the per-frame cost proportional to the rows' view-tree size
     /// — see ADR-0014 for the measurements.
     ///
-    /// The header sits **above** the list rather than as its first row. As a row it belonged to the
-    /// table's row model, which turned every interaction with its controls into row activation: the
-    /// row kept the table's highlight painted over the whole header afterwards (accent red while the
-    /// window was key, gray while it was not), and once its artist link had pushed the artist page,
-    /// clicking that same link again did nothing. Neither `.borderless` nor `.selectionDisabled` nor
-    /// rebuilding the row on return changed either behaviour, so the header is no longer a row.
+    /// The header is the list's **first row**: it scrolls away with the tracks, and the table measures
+    /// it, so the page never has to guess its height (ADR-0023).
+    ///
+    /// It is deliberately not a section header. On macOS a `List`'s section header is a floating group
+    /// row: it parks itself on top of the tracks for the rest of the scroll, and a navigation started
+    /// from it still selects it, so the sticky band and the highlight come together.
+    ///
+    /// Nothing in the header navigates on its own either. A `NavigationLink` (and a `Menu`, which hands
+    /// its items the same activation) inside a row makes the table treat the row as the navigation
+    /// source: it selects the row, paints that selection across the whole header — accent while the
+    /// window is key, gray while it is not — and keeps the row's activation, so a second click on the
+    /// same control is swallowed. `.listRowBackground(Color.clear)`, `.borderless`, `.selectionDisabled`
+    /// and rebuilding the row on return all left it in place. The credited artists are plain buttons that
+    /// push the artist onto the stack's own path instead; see `artistCredit(_:)` and ADR-0023.
     private func contentView(_ detail: PlaylistDetail) -> some View {
         let tracks = self.visibleTracks(detail)
 
         return self.withScrollObservers(
             List {
-                // The header scrolls away with the tracks. It is a row, so the table lays it out and
-                // the page never has to guess how tall it is: a header outside the list became a
-                // flexible child of the page's stack, which shared the tracks list's leftover space
-                // with it (see ADR-0023).
+                // The header is a row, so the table lays it out and the page never has to guess how
+                // tall it is; being a row is also what lets it scroll away with the tracks.
                 self.headerView(detail)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 24, trailing: 24))
@@ -343,6 +358,7 @@ struct PlaylistDetailView: View {
                     Text(detail.title)
                         .font(.title)
                         .fontWeight(.bold)
+                        .foregroundStyle(.primary)
 
                     self.creditsView(detail)
                 }
@@ -368,9 +384,12 @@ struct PlaylistDetailView: View {
         )
     }
 
-    /// The playlist's creators or the album's artists. Names that carry a channel ID link to that
-    /// artist's page via the stack's existing `navigationDestination(for: Artist.self)`; the rest
-    /// (and the whole line when no links were exposed) stay plain text.
+    /// The playlist's creators or the album's artists, on one line: semibold names, secondary
+    /// separators. Every name that carries a channel ID is its own control, so an album crediting
+    /// several artists opens the one that was clicked — the row's activation, which handed a single
+    /// click to every link in the row and always pushed the last of them, is no longer involved.
+    ///
+    /// A header that exposed no artists at all falls back to the author string.
     @ViewBuilder
     private func creditsView(_ detail: PlaylistDetail) -> some View {
         if detail.artists.isEmpty {
@@ -387,7 +406,7 @@ struct PlaylistDetailView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    self.artistLink(artist)
+                    self.artistCredit(artist)
                 }
             }
             .font(.subheadline)
@@ -396,22 +415,28 @@ struct PlaylistDetailView: View {
 
     /// A credited artist that opens its page on click.
     ///
-    /// Pushes the artist through the stack's `navigateToArtist` action rather than a value-based
-    /// `NavigationLink`. The header is a `List` row, and a link in a row makes the whole row
-    /// selectable: the table paints its selection over the header, and after the link has pushed its
-    /// page it keeps the activation, so a second click on the same credit is swallowed. See
-    /// `NavigateToArtistAction` and ADR-0023.
+    /// A button, not a `NavigationLink`: the credit lives in the header row, and a link in a row makes
+    /// the table select that row — painting its highlight over the header and swallowing the row's next
+    /// click — as well as handing one click to every link the row contains. Pushing through the stack's
+    /// own path, which the page is handed as `onNavigateToArtist`, is the only navigation that does
+    /// neither. Names without a channel ID stay plain text.
     ///
-    /// Kept in sync with `PlaylistArtistNavigationUITests`, which clicks this credit, presses Back and
-    /// clicks it again — twice in a row, because the second click is what used to be ignored.
+    /// The page must not declare its own `navigationDestination` instead: `PlaylistDetailView` is itself
+    /// a destination, and a second destination on the same stack re-lays out the page in a loop and
+    /// freezes the app (ADR-0023).
+    ///
+    /// Kept in sync with `PlaylistArtistNavigationUITests`, which clicks a single credit, presses Back
+    /// and clicks it again.
     @ViewBuilder
-    private func artistLink(_ artist: Artist) -> some View {
+    private func artistCredit(_ artist: Artist) -> some View {
         if artist.hasNavigableId {
             Button {
-                self.navigateToArtist(artist)
+                self.onNavigateToArtist(artist)
             } label: {
                 Text(artist.name)
                     .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(AccessibilityID.PlaylistDetail.artistCredit(artist.id))
@@ -1303,7 +1328,9 @@ private struct RefinePlaylistSheet: View {
         viewModel: PlaylistDetailViewModel(
             playlist: playlist,
             client: client
-        )
+        ),
+        // The preview has no navigation stack to push onto.
+        onNavigateToArtist: { _ in }
     )
     .environment(PlayerService())
 }

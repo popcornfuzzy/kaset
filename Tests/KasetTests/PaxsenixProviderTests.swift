@@ -142,6 +142,58 @@ struct PaxsenixProviderTests {
         #expect(result?.lines[0].words?.map(\.word) == ["And", " you", " conver", "sation", " with"])
     }
 
+    /// A syllable response is a list of entries, not every one of which says when it starts.
+    /// An entry's duration is the distance to the next entry that *does*, and reading an
+    /// untimed neighbour as "no time at all" collapsed the entry before it to a single
+    /// millisecond: an instrumental gap too short to hold the pause dots, and a sung line
+    /// the highlight would step straight over.
+    @Test("An entry lasts until the next timed entry, not until an untimed one")
+    func entryDurationSkipsUntimedNeighbours() {
+        let content = [
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 1000,
+                background: nil,
+                oppositeTurn: nil,
+                text: [PaxsenixLyricsResponse.ContentWord(text: "Hey", timestamp: 1000, endtime: 1300)]
+            ),
+            // The instrumental gap: timed, but nothing is sung in it.
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 5000,
+                background: nil,
+                oppositeTurn: nil,
+                text: []
+            ),
+            // Untimed and empty: it cannot be placed, so it is dropped, and it must not be
+            // what the gap above is measured against.
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: nil,
+                background: nil,
+                oppositeTurn: nil,
+                text: []
+            ),
+            PaxsenixLyricsResponse.ContentLine(
+                timestamp: 9000,
+                background: nil,
+                oppositeTurn: nil,
+                text: [PaxsenixLyricsResponse.ContentWord(text: "Later", timestamp: 9000, endtime: 9500)]
+            ),
+        ]
+
+        let result = PaxsenixProvider.parseContent(content, syllable: true)
+        guard case let .synced(lyrics) = result else {
+            Issue.record("Expected synced result")
+            return
+        }
+
+        #expect(lyrics.lines.map(\.timeInMs) == [1000, 5000, 9000])
+        #expect(lyrics.lines.map(\.duration) == [4000, 4000, 4000])
+        // Which is what makes the gap a row the dots can render on.
+        #expect(SyncedLyrics.isSilent(lyrics.lines[1]))
+        #expect(lyrics.isPauseLine(at: 1))
+        #expect(lyrics.lines[0].text == "Hey")
+        #expect(lyrics.lines[2].text == "Later")
+    }
+
     @Test("Converts non-syllable content arrays to plain lyrics")
     func parsesPlainContent() {
         let content = [

@@ -206,6 +206,10 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
     private func beginLine() {
         self.inLine = true
         self.spanStack.removeAll()
+        // The paragraph's own window is not cleared here: `didStartElement` assigns both from
+        // the new `<p>`'s attributes, which writes `nil` when it declares neither. A `<p>`
+        // therefore never inherits the one before it — see
+        // `SyncedLyricsPauseGapTests.untimedParagraphDoesNotInherit`, which is what holds that.
         self.leadPlainText = ""
         self.leadSpanJoinedText = ""
         self.hasLeadSpan = false
@@ -239,13 +243,32 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         self.leadWords.removeAll()
         self.backgroundWords.removeAll()
 
-        guard !leadText.isEmpty || !backgroundText.isEmpty else { return }
-
         let begin = self.lineBeginMs
             ?? leadWords?.first?.timeInMs
             ?? backgroundWords?.first?.timeInMs
             ?? 0
         let end = self.lineEndMs ?? (begin + 4_000)
+
+        // An empty `<p begin end>` is an instrumental interlude spelled out rather than
+        // left to the timeline, and the renderer turns such a line into the pause dots. It
+        // is the *rare* spelling: the Apple Music TTML these providers serve has no empty
+        // paragraph anywhere in it and leaves every interlude as a gap between two
+        // contiguous paragraphs, which `SyncedLyrics.withPauseInterludes` turns into rows
+        // of its own. Keeping this case means a document that does spell one out gets a
+        // row even if nothing about its neighbours looks like a gap. A paragraph with no
+        // declared window at all cannot be placed on the timeline and is still dropped.
+        guard !leadText.isEmpty || !backgroundText.isEmpty else {
+            guard self.lineBeginMs != nil || self.lineEndMs != nil else { return }
+            self.lines.append(SyncedLyricLine(
+                timeInMs: begin,
+                duration: max(1, end - begin),
+                text: "",
+                words: nil,
+                backgroundWords: nil
+            ))
+            return
+        }
+
         self.lines.append(SyncedLyricLine(
             timeInMs: begin,
             duration: max(1, end - begin),

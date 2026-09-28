@@ -64,10 +64,13 @@ machinery as the lead:
   which reads `words` — can measure the backing words with the machinery it
   already has. The synthetic line keeps the original `id`, so layout caching and
   SwiftUI identity stay per row.
-- `KaraokeLayoutCache` is keyed by (line id, font size) instead of line id alone:
-  one row now measures a lead layout and a smaller backing layout side by side,
-  and keying by the line alone would clear on every alternating lookup,
-  re-measuring one of the two every frame.
+- `KaraokeLayoutCache` is keyed by (line id, font size, lead-or-backing) instead
+  of line id alone: one row now measures a lead layout and a smaller backing
+  layout side by side, and keying by the line alone would clear on every
+  alternating lookup, re-measuring one of the two every frame. The kind is part
+  of the key rather than implied by the size, because the two are different text
+  — a size that happened to coincide would otherwise draw one of them with the
+  other's words.
 - `settleBoundaryMs` now also counts the backing ramps. A held backing note can
   outlast the lead's last word; without this the row would leave the display
   clock — and freeze the backing wipe mid-word — while the accompaniment was
@@ -84,6 +87,52 @@ Model and parsing are unchanged by the amendment, so the lyrics cache schema
 version is untouched: a cached backing-vocal payload animates identically to a
 freshly parsed one.
 
+## Amendment: pause dots in word-synced lyrics
+
+The pause-dots interlude only ever showed for line-synced lyrics. The renderer
+was not the problem — it routes any empty line to the dots in either mode. The
+problem is that **word-synced sources never emit an empty line**, and the first
+attempt at this fix assumed they did.
+
+That attempt added "keep an empty timed entry" to `TTMLParser` and
+`PaxsenixProvider` (`parseContent` and `parseELRC`), on the theory that a
+word-synced source marks an interlude with a `<p begin end>` carrying no spans.
+Reading a real payload disproves it: Apple Music TTML writes its paragraphs
+**contiguous within a line and absent across an interlude** — a played-and-parsed
+Autobahn library (`ZJ5VMKDm1Vs`) has 52 paragraphs, 21 gaps of ≥ 600 ms between
+them, and **not one empty paragraph**. Every word-synced song in a 41-song real
+cache is the same. So the parser change added no rows, fixed no dots, and could
+not have caused the performance regression it was blamed for: it was a no-op.
+
+The interlude is the **gap in the timeline** — the previous line's end to the
+next line's start — and that is now what the dots are derived from, in
+`SyncedLyrics.withPauseInterludes(minimumGapMs:)`. It is applied once, where a
+result is installed (`SyncedLyricsService.apply`), rather than in the parsers or
+the renderers:
+
+- Not in the parsers, because the gap is a property of the sheet and not of any
+  one format. A word-synced TTML and a line-synced one both leave their
+  interludes implicit, and providers re-encode each other's documents freely.
+- Not in the renderers, because the dots need a **line**. Every index the
+  display reads — the highlight, the scroll target, the row statuses — has to
+  count the same rows, so the rows have to exist in the sheet before the sheet
+  is drawn.
+
+The synthesized row spans the gap exactly. A gap whose far side is already a
+silent line is left alone: that line is the row the dots render on, and adding
+another would put two rows in one stretch of silence. The cached result is still
+what the provider returned, so the rows are not written to disk twice over and a
+cache written before this existed gets them too.
+
+The empty-entry retention in the parsers is kept — it is the right reading of an
+explicitly empty paragraph, and an ELRC or `content` entry is the only place a
+gap between two of its neighbours can be observed at all — but it is no longer
+what the dots depend on. For that path to work, a `content` entry's duration has
+to run to the next entry that actually carries a timestamp: measuring it against
+an untimed neighbour collapsed it to a single millisecond, which is both too
+short to be a pause row and too short for the highlight to show at all. Because it does change what is parsed,
+`LyricsCacheStore.schemaVersion` stays at 3.
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
@@ -98,4 +147,9 @@ freshly parsed one.
   [ADR-0024](0024-unison-provider.md) for attribution.
 - Cache invalidation is now coupled to the schema version: any future change to
   how lyrics are parsed must bump `LyricsCacheStore.schemaVersion`, or stale
-  text will keep being served for already-played songs.
+  text will keep being served for already-played songs. (Currently at 3: the
+  backing-vocal fix, then the retention of instrumental-gap lines.)
+- Pause dots no longer depend on any provider writing an empty line: the
+  interlude is read from the timeline itself, so line-synced and word-synced
+  sheets behave the same way, and a source that spells its interludes out
+  explicitly still gets exactly one row for each.
