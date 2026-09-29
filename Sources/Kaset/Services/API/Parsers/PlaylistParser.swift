@@ -1,8 +1,6 @@
-// swiftlint:disable file_length
 import Foundation
 import os
 
-// swiftlint:disable type_body_length
 /// Parser for playlist-related responses from YouTube Music API.
 enum PlaylistParser {
     private static let logger = DiagnosticsLogger.api
@@ -1719,5 +1717,3 @@ enum PlaylistParser {
         return browseEndpoint["browseId"] as? String
     }
 }
-
-// swiftlint:enable type_body_length

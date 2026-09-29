@@ -52,8 +52,7 @@ Every task should be broken into phases. Each phase must have:
 ### Phase 4: Quality Assurance
 | Deliverable | Exit Criteria |
 |-------------|---------------|
-| Linting passes | `swiftlint --strict` reports 0 errors |
-| Formatting applied | `swiftformat .` makes no changes |
+| Build warnings addressed | No new warnings from the changed code |
 | Full test suite passes | `xcodebuild test` succeeds |
 
 **Exit gate**: CI-equivalent checks pass locally.
@@ -76,8 +75,8 @@ Phase 3: Implementation
 ├── Exit: `xcodebuild test -only-testing:KasetTests/NewServiceTests` passes
 
 Phase 4: QA
-├── Run swiftlint, swiftformat
-├── Exit: Full test suite passes, no lint errors
+├── Run the full test suite
+├── Exit: Full test suite passes, no new build warnings
 ```
 
 ## Implementation Discipline

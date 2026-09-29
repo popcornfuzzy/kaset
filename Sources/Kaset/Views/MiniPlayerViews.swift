@@ -5,11 +5,15 @@ import SwiftUI
 
 /// A SwiftUI view that displays the singleton WebView.
 /// The WebView is created once and reused for all playback.
+///
+/// `videoId` is `nil` before anything is played: the layer is hosted from launch so the WebView (and
+/// the YouTube Music shell inside it) exists before the user asks for music, and a nil id means this
+/// pass is only here for that warm-up.
 struct PersistentPlayerView: NSViewRepresentable {
     @Environment(WebKitManager.self) private var webKitManager
     @Environment(PlayerService.self) private var playerService
 
-    let videoId: String
+    let videoId: String?
     let isExpanded: Bool
     let prefersVideo: Bool
     let viewportSize: CGSize
@@ -17,7 +21,7 @@ struct PersistentPlayerView: NSViewRepresentable {
     private let logger = DiagnosticsLogger.player
 
     func makeNSView(context _: Context) -> NSView {
-        self.logger.info("PersistentPlayerView.makeNSView for videoId: \(self.videoId)")
+        self.logger.info("PersistentPlayerView.makeNSView for videoId: \(self.videoId ?? "none")")
 
         let container = NSView(frame: .zero)
         container.wantsLayer = true
@@ -42,15 +46,35 @@ struct PersistentPlayerView: NSViewRepresentable {
             viewportSize: self.viewportSize
         )
 
-        // Restored sessions keep the hidden WebView inert until the user explicitly resumes.
-        if self.playerService.shouldAutoloadPendingVideo,
-           SingletonPlayerWebView.shared.currentVideoId != self.videoId
-        {
-            self.logger.info("Initial load for videoId: \(self.videoId)")
-            SingletonPlayerWebView.shared.loadVideo(videoId: self.videoId)
-        }
+        self.loadPageIfNeeded()
 
         return container
+    }
+
+    /// Gives the WebView its page: the track that is playing, the track that will be played, or the
+    /// shell when there is no track at all (see ``PlayerWebViewPreload``).
+    ///
+    /// A restored session is the case worth naming: it knows its song and its position before anything
+    /// is played, so its watch page is loaded early and held silent instead of being loaded from
+    /// scratch by the first press of play.
+    private func loadPageIfNeeded() {
+        guard let videoId = self.videoId else {
+            SingletonPlayerWebView.shared.loadShellIfNeeded()
+            return
+        }
+
+        if self.playerService.shouldAutoloadPendingVideo,
+           SingletonPlayerWebView.shared.currentVideoId != videoId
+        {
+            self.logger.info("Initial load for videoId: \(videoId)")
+            SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
+            return
+        }
+
+        SingletonPlayerWebView.shared.preloadVideo(
+            videoId: videoId,
+            startAt: self.playerService.deferredResumePosition
+        )
     }
 
     func updateNSView(_ container: NSView, context _: Context) {
@@ -76,9 +100,7 @@ struct PersistentPlayerView: NSViewRepresentable {
             viewportSize: self.viewportSize
         )
 
-        if self.playerService.shouldAutoloadPendingVideo {
-            SingletonPlayerWebView.shared.loadVideo(videoId: self.videoId)
-        }
+        self.loadPageIfNeeded()
     }
 }
 

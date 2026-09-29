@@ -19,7 +19,9 @@ Our solution: A **singleton WebView** that loads YouTube Music watch pages and p
 | Component | File | Purpose |
 |-----------|------|---------|
 | `SingletonPlayerWebView` | `MiniPlayerWebView.swift` | Manages the one-and-only WebView |
-| `PersistentPlayerView` | `MiniPlayerWebView.swift` | SwiftUI wrapper for the WebView |
+| `PersistentPlayerView` | `MiniPlayerViews.swift` | SwiftUI wrapper for the WebView |
+| `PlayerWebViewPreload` | `PlayerWebViewLoading.swift` | When the layer is hosted and the shell loaded |
+| `PlayerBarLoadingWash` | `PlayerBarLoadingWash.swift` | The wash in the bar's capsule while it waits |
 | `PlayerService` | `PlayerService.swift` | Playback state and control |
 | `PlayerService+WebQueueSync` | `PlayerService+WebQueueSync.swift` | Keeps native queue state authoritative when WebView events drift |
 | `AppDelegate` | `AppDelegate.swift` | Window lifecycle for background audio |
@@ -63,14 +65,61 @@ This sets:
 
 ### 2. WebView Loads
 
-`MainWindow` observes `pendingPlayVideoId`:
+`MainWindow` hosts the player layer for the whole signed-in session, not only while a video is
+pending, so the WebView exists — and is already showing the YouTube Music shell — before the first
+play ([ADR-0027](adr/0027-player-webview-preload-and-loading-strip.md)):
 
 ```swift
-if let videoId = playerService.pendingPlayVideoId {
-    PersistentPlayerView(videoId: videoId, isExpanded: playerService.showMiniPlayer)
+if PlayerWebViewPreload.shouldHostPlayerWebView(
+    isSignedIn: authService.state.isLoggedIn,
+    hasPendingVideo: playerService.pendingPlayVideoId != nil
+) {
+    PersistentPlayerView(videoId: playerService.pendingPlayVideoId, isExpanded: playerService.showMiniPlayer)
         .frame(width: showMiniPlayer ? 160 : 1, height: showMiniPlayer ? 90 : 1)
 }
 ```
+
+With nothing playing yet, the representable gives the empty WebView one of two pages:
+
+- the **active track's watch page**, when a restored session has a song that has not been resumed.
+  It is loaded with `kaset_preload=1` and, when the session has a position, YouTube's own `t`
+  parameter, so the page is already in place and at the right position when play is pressed;
+- the **shell** (`music.youtube.com`, also preload-flagged) when there is no track to be ready for.
+
+Both are *held*: Kaset permits autoplay, so a page left to itself would start playing on its own. The
+document-start gate (`SingletonPlayerWebView.preloadGateScript`) swallows the page's `play()` calls
+until a control Kaset drives lifts the hold, the user clicks or types in the page, or the mini player
+is revealed for the user to use.
+
+While a page is `empty`, `shell` or `preloaded`, it may only report what
+`PlayerWebViewPage.observation` (`PlayerWebViewObservation`) allows. The shell has no track and
+reports nothing; a preloaded page is a player that was told it started when its autoplay was
+swallowed, so it reports **only which track it is holding** — title, artist, artwork, video id — and
+none of its playback state, ads, end-of-track or remote-control signals. Taking those would put a
+track that is not playing into the app's state and would zero the progress a restored session is
+showing, and would let a silent page drive the queue.
+
+What a preloaded page does contribute goes to `PlayerService.reconcilePreloadedTrackMetadata` rather
+than `updateTrackMetadata`: the artist byline is normalized, the complete observation is published to
+`observedWebMetadata` (which is what the lyrics pipeline waits on), the playback kind is refined, and
+the page's artwork is adopted when the held track has none. The queue stays the authority on what is
+playing, on the order and on the rest of its row (album, duration, like state), and the
+queue-divergence handlers are never fed from a page that is not playing.
+
+Its title and artist are the exception: when the page reports a byline that is not equivalent to the
+held row's — shelf rows carry the album and year as extra artist entries, so their display
+("SXTN, Leben am Limit, 2017") never matches the player-bar byline ("SXTN") — those two strings are
+taken from the page, because that is exactly what pressing play used to do and nothing did at rest. It
+only happens when the page also reports the held track's video ID, so a shell, a half-rendered page or
+an ad cannot rename the track.
+
+Both waits are reported into `PlayerService` and drawn by the player bar's loading wash
+(`PlayerBarLoadingRule`): the **bar's own capsule is the mask**, the wash sits under the controls, and it
+is drawn in the bar's foreground colour rather than the brand accent — which is what keeps it legible on
+the light bar. A page load deepens it from the left, from WebKit's own `estimatedProgress`; a wait with
+nothing to measure is the pulse on its own. A page load that ends keeps pulsing for a fixed tail
+(`PlayerBarLoadingLinger.tail`), because the launch preload can be over before the window has finished
+appearing: without it the wash is a flash nobody sees.
 
 ### 3. Video Starts
 

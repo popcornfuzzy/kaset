@@ -7,6 +7,9 @@ import SwiftUI
 struct PlayerBar: View {
     private static let brandAccent = PackageResourceLookup.brandAccent
 
+    /// The bar's height, and the height of the capsule its glass — and its loading wash — are drawn in.
+    private static let height: CGFloat = 52
+
     @Environment(PlayerService.self) private var playerService
     @Environment(WebKitManager.self) private var webKitManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
@@ -41,24 +44,33 @@ struct PlayerBar: View {
 
     private var barBody: some View {
         GlassEffectContainer(spacing: 0) {
-            HStack(spacing: 0) {
-                // Left section: Playback controls
-                self.playbackControls
+            ZStack(alignment: .leading) {
+                // Under the controls, over the glass: the bar's own capsule is what the wash is masked
+                // to, so the bar itself looks busy and nothing the user is reaching for is covered.
+                self.loadingWash
 
-                Spacer()
+                HStack(spacing: 0) {
+                    // Left section: Playback controls
+                    self.playbackControls
 
-                // Center section: Track info OR seek bar (on hover)
-                self.centerSection
+                    Spacer()
 
-                Spacer()
+                    // Center section: Track info OR seek bar (on hover)
+                    self.centerSection
 
-                // Right section: Volume control
-                self.volumeControl
+                    Spacer()
+
+                    // Right section: Volume control
+                    self.volumeControl
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 8)
-            .frame(height: 52)
+            // Pinned here rather than on the controls: the wash is a flexible layer, and an inset's
+            // content is offered a tall proposal, which without this it would take.
+            .frame(height: Self.height)
             .modifier(PlayerBarGlassModifier(namespace: self.playerNamespace))
+            .animation(AppAnimation.standard, value: self.playerService.playerBarLoading)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
@@ -144,6 +156,23 @@ struct PlayerBar: View {
         .onAppear {
             // Sync local volume value from saved state on initial load
             self.volumeValue = self.playerService.volume
+        }
+    }
+
+    // MARK: - Loading Wash
+
+    /// The wash shown while the WebView is loading a page or bringing a track up.
+    ///
+    /// It fills the bar's glass capsule end to end and sits *under* the controls, so it never covers a
+    /// button or the track it is loading: the whole bar takes on a light grey that deepens as the page
+    /// comes in, which is the feedback and all of it. The capsule it is masked to is the same one the
+    /// glass is drawn in, so the two cannot drift apart.
+    @ViewBuilder
+    private var loadingWash: some View {
+        if let indicator = self.playerService.playerBarLoading {
+            PlayerBarLoadingWash(indicator: indicator)
+                .allowsHitTesting(false)
+                .transition(.opacity)
         }
     }
 

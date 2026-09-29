@@ -62,7 +62,6 @@ new issue using the "Prompt Request" issue template instead of a pull request.
 <!-- Mark completed items with an 'x' -->
 
 - [ ] My code follows the project's style guidelines
-- [ ] I have run `swiftlint --strict && swiftformat .`
 - [ ] I have added tests that prove my fix/feature works
 - [ ] New and existing unit tests pass locally
 - [ ] I have updated documentation if needed

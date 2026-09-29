@@ -145,11 +145,12 @@ struct MainWindow: View {
                     .zIndex(9)
             }
 
-            // Persistent WebView - always present once a video has been requested
-            // Uses a SINGLETON WebView instance that persists for the app lifetime
-            // The mini player can be resized by dragging any edge.
-            if let videoId = playerService.pendingPlayVideoId, self.showsWebLayer, !showsPodcastFullscreen {
-                self.miniPlayerLayer(videoId: videoId)
+            // Persistent WebView - present as soon as the app is signed in, not only once a video
+            // has been requested, so the YouTube Music shell can be preloaded before the first play
+            // (see `PlayerWebViewPreload`). Uses a SINGLETON WebView instance that persists for the
+            // app lifetime. The mini player can be resized by dragging any edge.
+            if self.hostsPlayerWebView(showsPodcastFullscreen: showsPodcastFullscreen) {
+                self.miniPlayerLayer(videoId: playerService.pendingPlayVideoId)
             }
         }
         // The episode video is drawn in an overlay rather than as a stack child: the fullscreen
@@ -315,11 +316,24 @@ struct MainWindow: View {
         !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
     }
 
+    /// Whether the player layer should be hosted at all.
+    ///
+    /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
+    /// a pending video (a queue song, or a restored session waiting to resume) needs it regardless.
+    private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
+        guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
+        return PlayerWebViewPreload.shouldHostPlayerWebView(
+            isSignedIn: self.authService.state.isLoggedIn,
+            hasPendingVideo: self.playerService.pendingPlayVideoId != nil
+        )
+    }
+
     // MARK: - Player WebView Layer
 
-    /// The floating mini player, resizable by dragging any edge.
+    /// The floating mini player, resizable by dragging any edge. `videoId` is `nil` until a track is
+    /// asked for; the layer is still hosted then, purely so the WebView can preload.
     @ViewBuilder
-    private func miniPlayerLayer(videoId: String) -> some View {
+    private func miniPlayerLayer(videoId: String?) -> some View {
         let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
         let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
 
@@ -612,7 +626,7 @@ struct MainWindow: View {
     }
 
     /// Returns the view for a specific navigation item.
-    private func viewForNavigationItem(_ item: NavigationItem) -> some View { // swiftlint:disable:this cyclomatic_complexity
+    private func viewForNavigationItem(_ item: NavigationItem) -> some View {
         Group {
             switch item {
             case .home:

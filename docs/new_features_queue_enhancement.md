@@ -810,7 +810,7 @@ extension UserDefaults {
 - [ ] "Add to Bottom" appears in same locations
 - [ ] Both actions work from QueueView (side panel) context menu
 - [ ] Optional: toast/notification feedback (if a shared toast pattern exists; otherwise omit)
-- [ ] `swiftlint --strict && swiftformat .` passes
+- [ ] Unit tests pass (`swift test --skip KasetUITests`)
 
 ---
 

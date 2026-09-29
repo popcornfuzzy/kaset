@@ -13,7 +13,6 @@ LOCK_DIR="${TMPDIR:-/tmp}/kaset-compile-and-run-${LOCK_KEY}"
 LOCK_PID_FILE="${LOCK_DIR}/pid"
 WAIT_FOR_LOCK=0
 RUN_TESTS=0
-RUN_LINT=0
 
 log()  { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -103,12 +102,10 @@ for arg in "$@"; do
   case "${arg}" in
     --wait|-w) WAIT_FOR_LOCK=1 ;;
     --test|-t) RUN_TESTS=1 ;;
-    --lint|-l) RUN_LINT=1 ;;
     --help|-h)
-      log "Usage: $(basename "$0") [--wait] [--test] [--lint]"
+      log "Usage: $(basename "$0") [--wait] [--test]"
       log "  --wait, -w    Wait if another compile is in progress"
       log "  --test, -t    Run tests before packaging"
-      log "  --lint, -l    Run swiftformat and swiftlint before building"
       exit 0
       ;;
     *)
@@ -122,21 +119,15 @@ acquire_lock
 log "==> Killing existing Kaset instances"
 kill_all_kaset
 
-# 3) Lint (optional).
-if [[ "${RUN_LINT}" == "1" ]]; then
-  run_step "swiftformat" swiftformat .
-  run_step "swiftlint" swiftlint --strict
-fi
-
-# 4) Test (optional).
+# 3) Test (optional).
 if [[ "${RUN_TESTS}" == "1" ]]; then
   run_step "swift test" swift test -q
 fi
 
-# 5) Package.
+# 4) Package.
 run_step "package app" "${ROOT_DIR}/Scripts/build-app.sh"
 
-# 6) Launch the packaged app.
+# 5) Launch the packaged app.
 log "==> Launching app"
 if ! open "${APP_BUNDLE}"; then
   log "WARN: launch app returned non-zero; falling back to direct binary launch."

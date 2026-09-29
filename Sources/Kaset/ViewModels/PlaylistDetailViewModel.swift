@@ -29,10 +29,8 @@ final class PlaylistDetailViewModel {
     private var inFlightPageLoad: Task<Bool, Never>?
 
     /// Background task that keeps a page of headroom below the loaded tracks.
-    // swiftformat:disable modifierOrder
     /// nonisolated(unsafe) required for deinit access; Swift 6.2 warning is expected.
     nonisolated(unsafe) private var prefillTask: Task<Void, Never>?
-    // swiftformat:enable modifierOrder
 
     /// Generation counter so a cancelled prefill can't clear the handle of a newer one.
     private var prefillGeneration = 0
@@ -46,10 +44,8 @@ final class PlaylistDetailViewModel {
     private(set) var isLoadingAllTracks = false
 
     /// Shared in-flight full-scan task, so repeated keystrokes don't restart the scan.
-    // swiftformat:disable modifierOrder
     /// nonisolated(unsafe) required for deinit access; Swift 6.2 warning is expected.
     nonisolated(unsafe) private var loadAllTracksTask: Task<Void, Never>?
-    // swiftformat:enable modifierOrder
 
     /// Whether a sort-order change is on its way to the server.
     private(set) var isChangingSortOrder = false
