@@ -7,6 +7,7 @@ struct FullscreenNowPlayingView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
     @Environment(CanvasService.self) private var canvasService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let client: any YTMusicClientProtocol
 
@@ -15,7 +16,16 @@ struct FullscreenNowPlayingView: View {
         /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
         /// artwork surface in the app — render slightly upscaled from its own downloaded data.
         static let artworkMaxDimension: CGFloat = 380
+        /// Corner radius of the artwork card. Apple Music's full-screen artwork is only gently rounded —
+        /// noticeably squarer than the 22pt card this replaced.
+        static let artworkCornerRadius: CGFloat = 14
+        /// Where the artwork settles while playback is paused. Apple Music lets the art — and the
+        /// shadow under it — dip away from the viewer when the song stops, and springs it back on resume.
+        static let pausedArtworkScale: CGFloat = 0.94
     }
+
+    /// How far a new track's artwork travels in from the side it was skipped from, in points.
+    private static let trackArrivalDistance: CGFloat = 26
 
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
@@ -49,6 +59,12 @@ struct FullscreenNowPlayingView: View {
     @State private var keyMonitorWindowNumber: Int?
     @State private var canvasReady = false
     @State private var canvasFailed = false
+    /// How far the incoming artwork is currently nudged off its resting place: positive for a skip
+    /// forward, negative for a skip back, zero when nothing is arriving.
+    @State private var trackArrivalOffset: CGFloat = 0
+    /// Queue row the last track change animated from, so a change can tell which way it went.
+    /// `nil` while the queue has no highlight (YouTube autoplay, standalone episodes).
+    @State private var lastTrackQueueIndex: Int?
 
     private var hasLyricsForCurrentTrack: Bool {
         guard let videoId = self.playerService.currentTrack?.videoId else { return false }
@@ -121,6 +137,7 @@ struct FullscreenNowPlayingView: View {
         }
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
             self.startLyricsLoad(for: newVideoId)
+            self.animateTrackArrival()
         }
         .onChange(of: self.playerService.observedWebMetadata) { _, _ in
             self.retryLyricsLoadIfMetadataImproved()
@@ -176,11 +193,51 @@ struct FullscreenNowPlayingView: View {
         let contentWidth = min(width, 440)
         let mediaWidth = min(contentWidth, artworkMaxHeight)
         return VStack(alignment: .center, spacing: columnSpacing) {
-            self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight).padding(.bottom, 12)
-            self.trackMeta.frame(width: mediaWidth, alignment: .leading)
+            // The art and the song's name move as one on a skip: Apple Music hands the new
+            // song in from the side it was skipped from instead of cutting to it.
+            VStack(alignment: .center, spacing: columnSpacing) {
+                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight).padding(.bottom, 12)
+                self.trackMeta.frame(width: mediaWidth, alignment: .leading)
+            }
+            .offset(x: self.trackArrivalOffset)
+            .opacity(self.trackArrivalOpacity)
+
             self.transportControls(contentWidth: mediaWidth).frame(width: mediaWidth).padding(.top, 6)
         }
         .frame(width: width, height: availableHeight, alignment: .center)
+    }
+
+    /// The arriving artwork's opacity: it fades up as it travels back to its resting place, so a
+    /// skip reads as one motion rather than a jump.
+    private var trackArrivalOpacity: Double {
+        let travelled = min(abs(self.trackArrivalOffset) / Self.trackArrivalDistance, 1)
+        return 1 - 0.55 * travelled
+    }
+
+    /// Falls the artwork back to full size and full presence from the side a skip came from, and
+    /// does nothing at all when the track changed for another reason (the first song of a session,
+    /// YouTube autoplay, a station) or when Reduce Motion is on.
+    @MainActor
+    private func animateTrackArrival() {
+        let queueIndex = self.playerService.queueHighlightIndex
+        defer { self.lastTrackQueueIndex = queueIndex }
+
+        guard self.playerService.showFullscreenNowPlaying,
+              !self.reduceMotion,
+              let queueIndex,
+              let previousIndex = self.lastTrackQueueIndex,
+              queueIndex != previousIndex
+        else {
+            self.trackArrivalOffset = 0
+            return
+        }
+
+        // The nudge has to be on screen for a frame before it can be animated away from, so the
+        // fall back to rest happens in the next update.
+        self.trackArrivalOffset = queueIndex > previousIndex ? Self.trackArrivalDistance : -Self.trackArrivalDistance
+        Task { @MainActor in
+            withAnimation(AppAnimation.smooth) { self.trackArrivalOffset = 0 }
+        }
     }
 
     private var fullscreenCloseButton: some View {
@@ -195,18 +252,14 @@ struct FullscreenNowPlayingView: View {
 
     private var artworkCard: some View {
         ZStack {
-            // The YouTube Music still album art is always the base layer; the
-            // animated canvas crossfades in above it once ready.
-            CachedAsyncImage(
-                url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
-                fallbackURL: self.playerService.currentTrack?.thumbnailURL,
-                identity: self.playerService.currentTrack?.videoId,
-                targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
-            ) { image in
-                image.resizable().aspectRatio(contentMode: .fit)
-            } placeholder: {
-                ZStack { RoundedRectangle(cornerRadius: 22).fill(.white.opacity(0.08)); CassetteIcon(size: 76).foregroundStyle(.white.opacity(0.7)) }
-            }
+            // The clear square the card *is*. Both artwork layers are sized to it and the card's
+            // own clip crops them, so art that is not 1:1 — a video thumbnail, a 4:3 upload —
+            // covers the square proportionally instead of letterboxing inside it. The artwork sits
+            // in an `overlay` so the oversized `aspectRatio(contentMode: .fill)` layer cannot
+            // stretch the square itself.
+            Rectangle()
+                .fill(.clear)
+                .overlay { self.artworkStill }
 
             if self.shouldShowCanvas, let canvasURL = self.canvasService.currentCanvasURL {
                 CanvasVideoView(
@@ -224,8 +277,35 @@ struct FullscreenNowPlayingView: View {
                 .animation(self.shouldAnimateCanvas ? .easeInOut(duration: 0.6) : nil, value: self.canvasReady)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 22)).aspectRatio(1, contentMode: .fit)
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: Layout.artworkCornerRadius, style: .continuous))
         .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
+        .scaleEffect(self.artworkScale)
+        .animation(self.reduceMotion ? nil : AppAnimation.spring, value: self.artworkScale)
+    }
+
+    /// The YouTube Music still album art: always the base layer, always filling the square card.
+    private var artworkStill: some View {
+        CachedAsyncImage(
+            url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
+            fallbackURL: self.playerService.currentTrack?.thumbnailURL,
+            identity: self.playerService.currentTrack?.videoId,
+            targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
+        ) { image in
+            image.resizable().aspectRatio(contentMode: .fill)
+        } placeholder: {
+            ZStack {
+                RoundedRectangle(cornerRadius: Layout.artworkCornerRadius, style: .continuous).fill(.white.opacity(0.08))
+                CassetteIcon(size: 76).foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    /// Full size while the song plays, a little smaller while it is paused — the way Apple Music
+    /// settles the artwork down when playback stops. Reduce Motion keeps the full size: the shrink
+    /// is decoration, nothing reads from it.
+    private var artworkScale: CGFloat {
+        (self.reduceMotion || self.playerService.isPlaying) ? 1 : Layout.pausedArtworkScale
     }
 
     private var trackMeta: some View {
@@ -250,15 +330,87 @@ struct FullscreenNowPlayingView: View {
                 Text(self.formatTime(max(0, self.playerService.duration - self.playerService.progress))).font(.system(size: 12, weight: .medium)).foregroundStyle(.white).monospacedDigit().frame(width: timeLabelWidth, alignment: .trailing)
             }.frame(width: contentWidth)
             HStack(spacing: buttonRowSpacing) {
-                Button { HapticService.toggle(); self.playerService.dislikeCurrentTrack() } label: { Image(systemName: self.playerService.currentTrackLikeStatus == .dislike ? "hand.thumbsdown.fill" : "hand.thumbsdown").font(.system(size: 18, weight: .semibold)).foregroundStyle(self.playerService.currentTrackLikeStatus == .dislike ? .red : .white) }.buttonStyle(.plain)
-                Button { HapticService.toggle(); self.playerService.toggleShuffle() } label: { Image(systemName: "shuffle").font(.system(size: 17, weight: .semibold)).foregroundStyle(self.playerService.shuffleEnabled ? .red : .white) }.buttonStyle(.plain)
-                Button { HapticService.playback(); Task { await self.playerService.previous() } } label: { Image(systemName: "backward.fill").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white) }.buttonStyle(.plain)
-                Button { HapticService.playback(); Task { await self.playerService.playPause() } } label: { Image(systemName: self.playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 54)).foregroundStyle(.white) }.buttonStyle(.plain)
-                Button { HapticService.playback(); Task { await self.playerService.next() } } label: { Image(systemName: "forward.fill").font(.system(size: 20, weight: .semibold)).foregroundStyle(.white) }.buttonStyle(.plain)
-                Button { HapticService.toggle(); self.playerService.cycleRepeatMode() } label: { Image(systemName: self.repeatIcon).font(.system(size: 17, weight: .semibold)).foregroundStyle(self.playerService.repeatMode != .off ? .red : .white) }.buttonStyle(.plain)
-                Button { HapticService.toggle(); self.playerService.likeCurrentTrack() } label: { Image(systemName: self.playerService.currentTrackLikeStatus == .like ? "hand.thumbsup.fill" : "hand.thumbsup").font(.system(size: 18, weight: .semibold)).foregroundStyle(self.playerService.currentTrackLikeStatus == .like ? .red : .white) }.buttonStyle(.plain)
+                self.transportButton(
+                    systemImage: self.playerService.currentTrackLikeStatus == .dislike ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                    size: 18,
+                    tint: self.playerService.currentTrackLikeStatus == .dislike ? .red : .white,
+                    accessibilityLabel: String(localized: "Dislike"),
+                    accessibilityValue: self.playerService.currentTrackLikeStatus == .dislike ? String(localized: "Disliked") : String(localized: "Not disliked")
+                ) { HapticService.toggle(); self.playerService.dislikeCurrentTrack() }
+
+                self.transportButton(
+                    systemImage: "shuffle",
+                    size: 17,
+                    tint: self.playerService.shuffleEnabled ? .red : .white,
+                    accessibilityLabel: String(localized: "Shuffle"),
+                    accessibilityValue: self.playerService.shuffleEnabled ? String(localized: "On") : String(localized: "Off")
+                ) { HapticService.toggle(); self.playerService.toggleShuffle() }
+
+                self.transportButton(
+                    systemImage: "backward.fill",
+                    size: 20,
+                    accessibilityLabel: String(localized: "Previous track")
+                ) { HapticService.playback(); Task { await self.playerService.previous() } }
+
+                // The play/pause button is the row's anchor: it dips further on press and its
+                // glyph morphs between the two states rather than swapping.
+                self.transportButton(
+                    systemImage: self.playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill",
+                    size: 54,
+                    weight: .regular,
+                    pressScale: 0.92,
+                    accessibilityLabel: self.playerService.isPlaying ? String(localized: "Pause") : String(localized: "Play")
+                ) { HapticService.playback(); Task { await self.playerService.playPause() } }
+
+                self.transportButton(
+                    systemImage: "forward.fill",
+                    size: 20,
+                    accessibilityLabel: String(localized: "Next track")
+                ) { HapticService.playback(); Task { await self.playerService.next() } }
+
+                self.transportButton(
+                    systemImage: self.repeatIcon,
+                    size: 17,
+                    tint: self.playerService.repeatMode != .off ? .red : .white,
+                    accessibilityLabel: String(localized: "Repeat"),
+                    accessibilityValue: self.repeatAccessibilityValue
+                ) { HapticService.toggle(); self.playerService.cycleRepeatMode() }
+
+                self.transportButton(
+                    systemImage: self.playerService.currentTrackLikeStatus == .like ? "hand.thumbsup.fill" : "hand.thumbsup",
+                    size: 18,
+                    tint: self.playerService.currentTrackLikeStatus == .like ? .red : .white,
+                    accessibilityLabel: String(localized: "Like"),
+                    accessibilityValue: self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked")
+                ) { HapticService.toggle(); self.playerService.likeCurrentTrack() }
             }.frame(width: contentWidth)
         }
+    }
+
+    /// One button of the transport row.
+    ///
+    /// The press dip is Apple Music's: the glyph shrinks under the pointer and springs back, and
+    /// whichever glyphs *change* — play ⇄ pause, repeat ⇄ repeat-one, like ⇄ liked — morph between
+    /// their two states instead of swapping.
+    private func transportButton(
+        systemImage: String,
+        size: CGFloat,
+        tint: Color = .white,
+        weight: Font.Weight = .semibold,
+        pressScale: CGFloat = 0.86,
+        accessibilityLabel: String,
+        accessibilityValue: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: size, weight: weight))
+                .foregroundStyle(tint)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(PressableButtonStyle(pressScale: pressScale))
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(accessibilityValue ?? "")
     }
 
     private var lyricsPanel: some View {
@@ -310,6 +462,13 @@ struct FullscreenNowPlayingView: View {
 
     private var normalizedProgress: Double { guard self.playerService.duration > 0 else { return 0 }; return min(max(self.playerService.progress / self.playerService.duration, 0), 1) }
     private var repeatIcon: String { switch self.playerService.repeatMode { case .off, .all: "repeat"; case .one: "repeat.1" } }
+    private var repeatAccessibilityValue: String {
+        switch self.playerService.repeatMode {
+        case .off: String(localized: "Off")
+        case .all: String(localized: "All")
+        case .one: String(localized: "One")
+        }
+    }
     private func formatTime(_ time: TimeInterval) -> String { guard time.isFinite else { return "0:00" }; let totalSeconds = max(Int(time), 0); return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60) }
     private func updateLyricsPolling(for result: LyricResult) { if case .synced = result { SingletonPlayerWebView.shared.startLyricsPoll() } else { SingletonPlayerWebView.shared.stopLyricsPoll() } }
     private func closeFullscreenNowPlaying() { withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false } }
