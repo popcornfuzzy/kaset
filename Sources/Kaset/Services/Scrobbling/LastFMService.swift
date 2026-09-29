@@ -23,10 +23,8 @@ final class LastFMService: ScrobbleServiceProtocol {
     /// Session key for authenticated Last.fm API calls.
     private var sessionKey: String?
 
-    // swiftformat:disable modifierOrder
     /// Task for polling auth session, cancelled on deinit or disconnect.
     nonisolated(unsafe) private var authPollingTask: Task<Void, Never>?
-    // swiftformat:enable modifierOrder
 
     /// Creates a LastFMService with the given credential store and worker URL.
     /// - Parameters:
@@ -302,7 +300,6 @@ final class LastFMService: ScrobbleServiceProtocol {
 
     // MARK: - Network Helpers
 
-    // swiftformat:disable modifierOrder
     nonisolated private func postJSON(endpoint: String, bodyData: Data, baseURL: URL) async throws -> [String: Any] {
         let url = baseURL.appendingPathComponent(endpoint)
         var request = URLRequest(url: url)
@@ -323,7 +320,6 @@ final class LastFMService: ScrobbleServiceProtocol {
         return json
     }
 
-    // swiftformat:disable modifierOrder
     nonisolated private func checkForErrors(_ response: [String: Any]) throws {
         // Handle Last.fm integer error codes
         if let errorCode = response["error"] as? Int {
@@ -353,7 +349,6 @@ final class LastFMService: ScrobbleServiceProtocol {
 
     // MARK: - Response Parsing
 
-    // swiftformat:disable modifierOrder
     nonisolated static func parseScrobbleResponse(
         _ response: [String: Any],
         tracks: [ScrobbleTrack]

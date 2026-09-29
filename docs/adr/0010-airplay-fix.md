@@ -103,7 +103,7 @@ Button {
 
 Notes:
 - `HapticService.toggle()` matches other PlayerBar buttons
-- `self.` prefix per SwiftFormat `--self insert` rule
+- `self.` prefix written explicitly, matching the rest of the app
 - Disabled when no track to avoid silent failures (requires video element)
 
 ### Step 4: Add accessibility identifier constant

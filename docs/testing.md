@@ -28,12 +28,6 @@ Scripts/build-app.sh
 Scripts/compile_and_run.sh
 ```
 
-### Lint & Format
-
-```bash
-swiftlint --strict && swiftformat .
-```
-
 ## Test Structure
 
 ```
@@ -574,7 +568,6 @@ Four workflows, each with a single responsibility:
 |----------|---------|------|
 | `tests.yml` | push/PR to `main`, nightly | Unit + UI tests; integration suites nightly |
 | `dev-build.yml` | push/PR touching Swift sources | Builds a dev DMG |
-| `lint.yml` | push/PR to `main` | `swiftlint --strict`, `swiftformat` |
 | `release.yml` | tag push `v*` | Gated build, draft GitHub release |
 | `appcast.yml` | release published | Signs the DMG, commits `appcast.xml` |
 

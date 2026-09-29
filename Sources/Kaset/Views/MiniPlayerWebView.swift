@@ -224,6 +224,68 @@ final class SingletonPlayerWebView {
     var coordinator: Coordinator?
     let logger = DiagnosticsLogger.player
 
+    /// What the page in the WebView is for. A page that is not being played from must not report, and
+    /// a page loaded early must not be replaced (see ``PlayerWebViewPage``).
+    private(set) var page: PlayerWebViewPage = .empty
+
+    /// Progress observation for the page load in flight, replaced with each WebView.
+    private var estimatedProgressObservation: NSKeyValueObservation?
+
+    /// The YouTube Music shell: the cheapest page that warms the app, and one that carries no track.
+    /// It is held silent like a preloaded track — a shell left to itself could play something the app
+    /// is not tracking.
+    private static var shellURL: URL? {
+        Self.url(path: "/", queryItems: [Self.preloadHoldQueryItem])
+    }
+
+    /// Name of the query flag that marks a page Kaset loads only to have ready. The page's own gate
+    /// reads it (see ``preloadGateScript``) so a warm page cannot make a sound before the user asks.
+    static let preloadQueryFlagName = "kaset_preload"
+
+    /// Value of the query flag that marks a page loaded only to be ready.
+    static let preloadQueryFlagValue = "1"
+
+    /// The query item that marks a page as loaded only to be ready.
+    private static var preloadHoldQueryItem: URLQueryItem {
+        URLQueryItem(name: Self.preloadQueryFlagName, value: Self.preloadQueryFlagValue)
+    }
+
+    /// Builds a YouTube Music URL.
+    private static func url(path: String, queryItems: [URLQueryItem]) -> URL? {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "music.youtube.com"
+        components.path = path
+        components.queryItems = queryItems
+        return components.url
+    }
+
+    /// A watch URL for the shared WebView.
+    ///
+    /// - Parameter startAt: position the player should begin from, passed as YouTube's own `t`
+    ///   parameter. A restored session resumes from where it left off, and having the page *start*
+    ///   there is what makes the resume instant instead of a seek after the fact.
+    /// - Parameter holdsSilent: marks the page as one loaded only to be ready, so its own autoplay is
+    ///   held until Kaset or the user asks for sound.
+    static func watchURL(videoId: String, startAt: TimeInterval? = nil, holdsSilent: Bool = false) -> URL? {
+        var queryItems = [URLQueryItem(name: "v", value: videoId)]
+
+        if let startAt, startAt >= 1 {
+            queryItems.append(URLQueryItem(name: "t", value: "\(Int(startAt.rounded(.down)))s"))
+        }
+        if holdsSilent {
+            queryItems.append(Self.preloadHoldQueryItem)
+        }
+
+        return Self.url(path: "/watch", queryItems: queryItems)
+    }
+
+    /// Whether this URL is the shell rather than a watch page.
+    static func isShellURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.host() == "music.youtube.com" && (url.path().isEmpty || url.path() == "/")
+    }
+
     /// How `loadVideo` behaves when Swift already tracks a `videoId` (repeat-one vs queue drift recovery).
     enum VideoLoadStrategy: Equatable {
         /// Skip navigation when `videoId` matches `currentVideoId`.
@@ -309,6 +371,15 @@ final class SingletonPlayerWebView {
         )
         configuration.userContentController.addUserScript(script)
 
+        // The preload gate, ahead of everything: a page Kaset loads only to have ready must not be
+        // able to make a sound before the user asks for it. See `preloadGateScript`.
+        let preloadGateScript = WKUserScript(
+            source: Self.preloadGateScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(preloadGateScript)
+
         let newWebView = WKWebView(frame: .zero, configuration: configuration)
         newWebView.navigationDelegate = self.coordinator
         newWebView.customUserAgent = WebKitManager.userAgent
@@ -317,8 +388,97 @@ final class SingletonPlayerWebView {
             newWebView.isInspectable = true
         #endif
 
+        // The page load's own estimate, which is what the player bar's loading strip fills from. It
+        // is the only measurable wait the player has, so it is read from WebKit rather than
+        // guessed at: nothing about a YouTube Music page load is observable from the outside.
+        self.estimatedProgressObservation = newWebView.observe(\.estimatedProgress, options: [.new]) { webView, _ in
+            MainActor.assumeIsolated {
+                playerService.updateWebViewPageLoadProgress(webView.estimatedProgress)
+            }
+        }
+
         self.webView = newWebView
         return newWebView
+    }
+
+    /// Loads the YouTube Music shell into a WebView that has nothing in it, so the first play of a
+    /// session does not have to wait for the app to boot (see ``PlayerWebViewPreload``).
+    ///
+    /// Safe to call on every layout pass: it does nothing once a page has been navigated to.
+    func loadShellIfNeeded() {
+        guard let webView,
+              PlayerWebViewPreload.canLoadShell(currentVideoId: self.currentVideoId, page: self.page),
+              let shellURL = Self.shellURL
+        else { return }
+
+        self.page = .shell
+        self.logger.info("Preloading the YouTube Music shell")
+        webView.load(URLRequest(url: shellURL))
+    }
+
+    /// Loads a track's watch page early, held silent, so the first press of play starts the song
+    /// instead of loading it (see ``PlayerWebViewPreload``).
+    ///
+    /// - Parameter startAt: position to resume from, for a restored session that has not been resumed
+    ///   yet. Passing it in the URL means the page is already in place when play is pressed.
+    ///
+    /// Safe to call on every layout pass: it does nothing once a watch page is up.
+    func preloadVideo(videoId: String, startAt: TimeInterval? = nil) {
+        guard let webView,
+              PlayerWebViewPreload.canLoadPreload(currentVideoId: self.currentVideoId, page: self.page),
+              let url = Self.watchURL(videoId: videoId, startAt: startAt, holdsSilent: true)
+        else { return }
+
+        self.logger.info("Preloading watch page for \(videoId)")
+        self.currentVideoId = videoId
+        self.page = .preloaded
+        webView.load(URLRequest(url: url))
+    }
+
+    /// Lifts the preload hold, so the page may make sound again.
+    ///
+    /// Called by every control Kaset drives. The page's own player was told it started playing when
+    /// the hold swallowed its autoplay, so the gate also brings the page back in line with reality:
+    /// without that, the first play/pause click in a preloaded page would be a *pause*.
+    func releasePreloadHold() {
+        guard self.page == .preloaded else { return }
+        self.page = .playback
+        self.logger.info("Releasing the preload hold")
+        self.webView?.evaluateJavaScript(
+            "window.__kasetPreloadStandDown && window.__kasetPreloadStandDown();",
+            completionHandler: nil
+        )
+    }
+
+    /// Hands a page the user can now see back to them.
+    ///
+    /// The mini player *is* the page's own controls, so a visible page is no longer a placeholder and
+    /// no longer held: whatever it plays, the user asked for it there and the app tracks it like any
+    /// other page. Nothing else makes a silent page authoritative.
+    func handOverToUser() {
+        guard self.page.isSilent else { return }
+        self.logger.info("Handing the visible page over to the user")
+        self.releasePreloadHold()
+        self.page = .playback
+    }
+
+    /// Whether the page in the WebView has finished loading.
+    ///
+    /// A preload still in flight is not ready to be asked to play: its own scripts have not run yet.
+    var isPageReady: Bool {
+        !(self.webView?.isLoading ?? true)
+    }
+
+    /// Whether a page for `videoId` is up and usable for playback.
+    ///
+    /// Kaset's own watch page for the track qualifies, and so does a finished preload of it — that is
+    /// the case the preload exists for, and playing it needs no navigation. A preload still loading
+    /// does not: the track then takes the ordinary path, which navigates properly rather than asking a
+    /// page that is not there yet to play.
+    func canPlay(videoId: String) -> Bool {
+        guard self.currentVideoId == videoId else { return false }
+        guard self.page == .preloaded else { return true }
+        return self.isPageReady
     }
 
     /// Ensures the WebView is in the given container's view hierarchy.
@@ -345,6 +505,12 @@ final class SingletonPlayerWebView {
             width: max(1, viewportSize.width),
             height: max(1, viewportSize.height)
         )
+
+        // A page the user can see is the page's own controls: if the mini player has just been
+        // revealed, a silent page stops being silent and stops being treated as a placeholder.
+        if isExpanded, !previousIsExpanded {
+            self.handOverToUser()
+        }
 
         // Ignore pure size changes while staying expanded; the container now scales with 100% sizing.
         guard previousIsExpanded != isExpanded || previousPrefersVideo != prefersVideo else {
@@ -636,8 +802,26 @@ final class SingletonPlayerWebView {
         switch strategy {
         case .standard:
             if videoId == previousVideoId {
-                self.logger.debug("Video \(videoId) already loaded, skipping")
-                return
+                // That page may be the preload for this very track, which is already where the
+                // navigation would have gone. It only has to be let go of and started, exactly as a
+                // fresh page would have started itself — and the hold *must* be lifted here, because
+                // this path returns before any control could ask for it, leaving the track silent.
+                if self.page == .preloaded, self.isPageReady {
+                    self.logger.info("Using the preloaded page for \(videoId)")
+                    self.releasePreloadHold()
+                    self.play()
+                    return
+                }
+
+                // A preload that has not finished is not ready to play from, and the hold it carries
+                // cannot be lifted into a document that does not exist yet: the track is loaded
+                // properly below instead, which cancels the held load and plays the ordinary way.
+                if self.page == .preloaded {
+                    self.logger.info("Preload for \(videoId) is still loading; loading it for playback")
+                } else {
+                    self.logger.debug("Video \(videoId) already loaded, skipping")
+                    return
+                }
             }
         case .preferInPlaceWhenSameVideoId:
             if videoId == previousVideoId {
@@ -657,13 +841,16 @@ final class SingletonPlayerWebView {
 
         // Update currentVideoId immediately to prevent duplicate loads
         self.currentVideoId = videoId
+        // A watch page is a playback page: from here the page's observations are the app's own.
+        self.page = .playback
 
         // Get current volume from PlayerService via coordinator
         let currentVolume = self.coordinator?.playerService.volume ?? 1.0
         self.logger.info("Will apply volume \(currentVolume) after page load")
 
-        // Stop current playback first, then load new video
-        let urlToLoad = URL(string: "https://music.youtube.com/watch?v=\(videoId)")!
+        // Stop current playback first, then load new video. A playback load carries no preload hold:
+        // this page is meant to play.
+        guard let urlToLoad = Self.watchURL(videoId: videoId) else { return }
         webView.evaluateJavaScript("document.querySelector('video')?.pause()") { [weak self] _, _ in
             guard let self, let webView = self.webView else { return }
 
@@ -684,10 +871,38 @@ final class SingletonPlayerWebView {
             self.playerService = playerService
         }
 
+        // MARK: Page loads
+
+        /// A page load started: the player bar's strip has a fraction to fill now.
+        func webView(_: WKWebView, didStartProvisionalNavigation _: WKNavigation!) {
+            self.playerService.beginWebViewPageLoad()
+        }
+
+        /// A page load ended without a document. Nothing measurable is left, so the strip's fraction
+        /// goes away; whether the bar keeps waiting is `PlayerBarLoadingRule`'s question.
+        func webView(_: WKWebView, didFailProvisionalNavigation _: WKNavigation!, withError _: Error) {
+            self.playerService.finishWebViewPageLoad()
+        }
+
         func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any],
                   let type = body["type"] as? String
             else { return }
+
+            // A page that is not being played from must not report: the shell has no track, and a
+            // preloaded page is a player that was told it started when its autoplay was swallowed.
+            // Believing either would put a track that is not playing into the app's state.
+            let observation = SingletonPlayerWebView.shared.page.observation
+            guard observation != .none else { return }
+
+            // A page Kaset is not playing from gets to report one thing only: which track it is
+            // showing. Everything else it could say — its player's position, its end-of-track and
+            // remote-control signals, its ads — describes playback Kaset does not want; see
+            // `PlayerWebViewObservation`.
+            let isAuthoritative = observation == .playback
+            if !isAuthoritative, type != "STATE_UPDATE" {
+                return
+            }
 
             let observedVideoId: String? = if let videoId = body["videoId"] as? String, !videoId.isEmpty {
                 videoId
@@ -762,6 +977,20 @@ final class SingletonPlayerWebView {
             }
 
             Task { @MainActor in
+                guard isAuthoritative else {
+                    // A preloaded page describes a performance that never happened, so none of its
+                    // playback state applies — but the track it is holding does, and reconciling it
+                    // here is what leaves the first press of play landing on a song that is already
+                    // fully described rather than one that fills itself in seconds later.
+                    self.playerService.reconcilePreloadedTrackMetadata(
+                        title: title,
+                        artist: artist,
+                        thumbnailUrl: thumbnailUrl,
+                        videoId: observedVideoId
+                    )
+                    return
+                }
+
                 self.playerService.updatePlaybackState(
                     isPlaying: isPlaying,
                     progress: Double(progress),
@@ -810,6 +1039,10 @@ final class SingletonPlayerWebView {
             DiagnosticsLogger.player.info(
                 "Singleton WebView finished loading: \(webView.url?.absoluteString ?? "nil")"
             )
+
+            // The document is up; anything still to wait for is the player starting, which has no
+            // fraction to report.
+            self.playerService.finishWebViewPageLoad()
 
             SingletonPlayerWebView.shared.reapplyMiniPlayerPresentationIfNeeded()
 
@@ -868,6 +1101,10 @@ final class SingletonPlayerWebView {
             // WebView content process crashed - attempt recovery
             DiagnosticsLogger.player.error("Singleton WebView content process terminated, attempting recovery")
 
+            // The crashed page's load is over whether or not it ever finished. What the reload shows
+            // is unchanged — the same URL comes back — so which page this is stays as it was.
+            self.playerService.finishWebViewPageLoad()
+
             // Get the current video ID before reloading
             let currentVideoId = SingletonPlayerWebView.shared.currentVideoId
 
@@ -884,6 +1121,71 @@ final class SingletonPlayerWebView {
                 }
             }
         }
+    }
+
+    /// Keeps a page Kaset loaded only to have ready from making a sound.
+    ///
+    /// Kaset permits autoplay (`mediaTypesRequiringUserActionForPlayback` is empty — that is what
+    /// makes playback work at all), so a watch page left to itself starts playing the moment it is up.
+    /// A warm page sitting in the background must not: it would be audio the user did not ask for, on a
+    /// track the app is deliberately not tracking yet. So a page carrying the preload flag swallows its
+    /// own `play()` calls until the hold is lifted — by Kaset driving a control, or by the user
+    /// clicking or typing in the page (the mini player's own play button is the user asking the page).
+    ///
+    /// Lifting the hold also realigns the page: YouTube's player was told playback started and would
+    /// otherwise take the next play/pause click as a *pause*.
+    private static var preloadGateScript: String {
+        """
+        (function() {
+            'use strict';
+            if (window.__kasetPreloadGateInstalled) { return; }
+            window.__kasetPreloadGateInstalled = true;
+
+            const preloadFlag = /[?&]\(Self.preloadQueryFlagName)=\(Self.preloadQueryFlagValue)/;
+            window.__kasetPreloadHold = preloadFlag.test(window.location.search);
+
+            const originalPlay = HTMLMediaElement.prototype.play;
+            HTMLMediaElement.prototype.play = function() {
+                if (!window.__kasetPreloadHold) {
+                    return originalPlay.apply(this, arguments);
+                }
+
+                // Swallowed rather than started-and-paused: the track must not sound at all. The promise
+                // is resolved so the page's own player continues as if the call had succeeded.
+                try { this.pause(); } catch (error) {}
+                return Promise.resolve();
+            };
+
+            function holdPlaying(event) {
+                if (!window.__kasetPreloadHold) { return; }
+                try { event.target.pause(); } catch (error) {}
+            }
+
+            function standDown() {
+                const wasHolding = window.__kasetPreloadHold;
+                window.__kasetPreloadHold = false;
+                document.removeEventListener('pointerdown', standDown, true);
+                document.removeEventListener('keydown', standDown, true);
+                document.removeEventListener('play', holdPlaying, true);
+
+                if (!wasHolding) { return; }
+
+                // The page's player believes it is playing. Tell it otherwise, so the next play/pause
+                // click in the page is a play.
+                const player = document.querySelector('ytmusic-player');
+                if (player && player.playerApi && typeof player.playerApi.pauseVideo === 'function') {
+                    try { player.playerApi.pauseVideo(); } catch (error) {}
+                }
+                const video = document.querySelector('video');
+                if (video) { try { video.pause(); } catch (error) {} }
+            }
+
+            window.__kasetPreloadStandDown = standDown;
+            document.addEventListener('pointerdown', standDown, true);
+            document.addEventListener('keydown', standDown, true);
+            document.addEventListener('play', holdPlaying, true);
+        })();
+        """
     }
 
     /// Removes known ad payload keys from YTM responses in a defensive, no-throw way.

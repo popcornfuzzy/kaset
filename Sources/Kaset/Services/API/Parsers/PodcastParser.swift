@@ -355,7 +355,7 @@ enum PodcastParser {
     // MARK: - Podcast Show Detail Parsing
 
     /// Parses a podcast show detail page (MPSPP{id}).
-    static func parseShowDetail( // swiftlint:disable:this function_body_length cyclomatic_complexity
+    static func parseShowDetail(
         _ data: [String: Any],
         showId: String
     ) -> PodcastShowDetail {

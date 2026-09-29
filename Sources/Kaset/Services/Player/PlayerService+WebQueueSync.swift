@@ -903,4 +903,143 @@ extension PlayerService {
             }
         }
     }
+
+    /// Reconciles what a *preloaded* page reports about the track it is holding.
+    ///
+    /// The preload loads the track Kaset is about to play — the pending queue song, or the song a
+    /// restored session would resume — into the WebView early and holds it silent. Until the user asks
+    /// for it, that page is not the app's authority on anything: its player was told it started when
+    /// its autoplay was swallowed, so its position, duration and playing flag describe a performance
+    /// that never happened, and its queue and end-of-track signals would drive `next()` and `play()`
+    /// from a page that is deliberately quiet. None of that is taken here, and the page is kept out of
+    /// ``updateTrackMetadata``'s divergence handlers for the same reason.
+    ///
+    /// What the page *is* good for is which song it is showing. The title, artist and artwork its
+    /// player bar renders are the same observations a playing page makes, they are what the artist
+    /// separator normalization, the lyrics gate (``observedWebMetadata``) and the artwork fallback have
+    /// been waiting for, and taking them now is what leaves the first press of play landing on a song
+    /// that is already fully described instead of one that fills itself in seconds later.
+    ///
+    /// Deliberately narrower than ``updateTrackMetadata``: the queue stays the authority on what is
+    /// playing, on the order, and on everything that makes its row richer — the album, the duration,
+    /// the like state. What it does take is the title and artist *as the player bar renders them*,
+    /// because those are what a restored session has been showing wrong: a queue row saved from an
+    /// earlier session can carry a byline that still has the album, year and view count in it, and until
+    /// playback starts nothing corrected it — pressing play did, by replacing `currentTrack` with the
+    /// page's own rendering (see the tail of ``updateTrackMetadata``). Doing that here is what makes the
+    /// bar read the same before and after the first press.
+    func reconcilePreloadedTrackMetadata(
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        videoId observedVideoId: String?
+    ) {
+        guard !self.isAdPlaying else { return }
+
+        let displayArtist = Self.commaSeparatedArtistDisplay(artist)
+        let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+
+        guard let preloaded = self.currentTrack, preloaded.videoId == resolvedVideoId else {
+            self.logger.debug(
+                "Ignoring preloaded metadata for \(resolvedVideoId): it is not the track being held"
+            )
+            return
+        }
+
+        // The lyrics pipeline waits for a *complete* observation, so only one that has both parts
+        // counts — the same rule `updateTrackMetadata` applies. This is the whole point of looking at
+        // a page that is not playing: it is the first time a restored session can know how YouTube
+        // itself renders the track it is about to resume.
+        if !title.isEmpty, !displayArtist.isEmpty {
+            let observation = ObservedWebMetadata(
+                videoId: resolvedVideoId,
+                title: title,
+                artist: displayArtist
+            )
+            // A page settling into place reports repeatedly, and the lyrics view retries on any change
+            // to this value. Only a genuinely new description is worth a write — and worth a log.
+            if observation != self.observedWebMetadata {
+                self.observedWebMetadata = observation
+                self.logger.info("Preloaded track metadata updated: \(title) - \(displayArtist)")
+            }
+        }
+
+        self.updateCurrentPlaybackKind(
+            using: self.queue.first { $0.videoId == resolvedVideoId } ?? preloaded
+        )
+
+        // An observation that does not describe the held track is not about the held track: a page that
+        // is not playing does not get to change what the app considers current, and the queue keeps its
+        // richer row. Only artwork is still worth taking in that case — see below.
+        guard self.metadataMatchesSong(title: title, artist: artist, song: preloaded) else {
+            // The page names a different song, or names this one differently. Both are worth believing
+            // only if the page said *which video* it is describing and it is the one being held: the
+            // fallback in ``resolvedObservedVideoId(observedVideoId:)`` fills in the held id when the
+            // page reports none, and a page that has not said what it is showing (a shell, a page still
+            // settling, an ad) must not be allowed to rename the track.
+            guard self.normalizedObservedVideoId(observedVideoId) == preloaded.videoId, !title.isEmpty,
+                  !displayArtist.isEmpty
+            else {
+                self.logger.debug(
+                    "Preloaded page reports '\(title)' for \(resolvedVideoId); keeping the held track"
+                )
+                self.keepPreloadedArtworkIfMissing(preloaded, thumbnailUrl: thumbnailUrl)
+                return
+            }
+
+            self.currentTrack = self.heldTrack(
+                preloaded,
+                describedAs: title,
+                by: displayArtist,
+                thumbnailUrl: thumbnailUrl
+            )
+            self.logger.info(
+                "Preloaded page described the held track as '\(title)' - '\(displayArtist)'; adopting it"
+            )
+            return
+        }
+
+        self.keepPreloadedArtworkIfMissing(preloaded, thumbnailUrl: thumbnailUrl)
+    }
+
+    /// Takes the page's artwork for a held track that has none.
+    ///
+    /// `fetchSongMetadata` can lose its race against account initialization, and a page load may be the
+    /// only thing that delivers the picture before the user presses play. `keepQueueSongVisible` is
+    /// exactly the rule for taking it: it fills in the picture we do not have while the queue's
+    /// structured artists, album and like status stay on screen. A page settling into place reports
+    /// several times, so this deliberately writes nothing once the track already has its artwork.
+    private func keepPreloadedArtworkIfMissing(_ song: Song, thumbnailUrl: String) {
+        guard song.thumbnailURL == nil, self.normalizedThumbnailURL(thumbnailUrl) != nil else { return }
+        self.keepQueueSongVisible(song, thumbnailUrl: thumbnailUrl)
+    }
+
+    /// The held track with the page's title and artist written over it and every other field left as the
+    /// queue has it.
+    ///
+    /// This is the one place a silent page is allowed to change what the bar shows, and it is bounded to
+    /// the two strings the player bar renders: the album, duration, like state, library membership and
+    /// feedback tokens of the queue's row are carried across untouched, so nothing the queue knows about
+    /// the song is lost to a page that is only being used for its byline.
+    private func heldTrack(
+        _ song: Song,
+        describedAs title: String,
+        by artistsDisplay: String,
+        thumbnailUrl: String
+    ) -> Song {
+        Song(
+            id: song.id,
+            title: title,
+            artists: [Artist(id: "unknown", name: artistsDisplay)],
+            album: song.album,
+            duration: song.duration,
+            thumbnailURL: song.thumbnailURL ?? self.normalizedThumbnailURL(thumbnailUrl),
+            videoId: song.videoId,
+            hasVideo: song.hasVideo,
+            musicVideoType: song.musicVideoType,
+            likeStatus: song.likeStatus,
+            isInLibrary: song.isInLibrary,
+            feedbackTokens: song.feedbackTokens
+        )
+    }
 }

@@ -1,4 +1,3 @@
-// swiftlint:disable file_length
 import CryptoKit
 import Foundation
 import os
@@ -34,7 +33,6 @@ enum PaginatedContentType: String, Hashable {
 
 /// Client for making authenticated requests to YouTube Music's internal API.
 @MainActor
-// swiftlint:disable:next type_body_length
 final class YTMusicClient: YTMusicClientProtocol {
     private let authService: AuthService
     private let webKitManager: WebKitManager
@@ -1947,7 +1945,6 @@ final class YTMusicClient: YTMusicClientProtocol {
 
     // Performs network request off the main thread.
     // Returns raw Data to be parsed on the caller's actor.
-    // swiftformat:disable:next modifierOrder
     nonisolated private static func performNetworkRequest(
         request: URLRequest,
         session: URLSession

@@ -3,7 +3,7 @@ import Foundation
 
 /// A mock implementation of YTMusicClientProtocol for testing.
 @MainActor
-final class MockYTMusicClient: YTMusicClientProtocol { // swiftlint:disable:this type_body_length
+final class MockYTMusicClient: YTMusicClientProtocol {
     private static func normalizedPlaylistId(_ playlistId: String) -> String {
         if playlistId.hasPrefix("VL") {
             return String(playlistId.dropFirst(2))

@@ -87,7 +87,7 @@ body:
         - [ ] Message is helpful and not generic
         - [ ] VoiceOver reads the empty state correctly
         - [ ] Unit tests pass
-        - [ ] No SwiftLint warnings
+        - [ ] No new build warnings
     validations:
       required: true
 

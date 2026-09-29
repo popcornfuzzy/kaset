@@ -7,6 +7,9 @@ extension SingletonPlayerWebView {
     func playPause() {
         guard let webView else { return }
 
+        // The user asked for sound: a preloaded page stops being held before it is toggled.
+        self.releasePreloadHold()
+
         let script = """
             (function() {
                 const playBtn = document.querySelector('.play-pause-button.ytmusic-player-bar');
@@ -29,6 +32,8 @@ extension SingletonPlayerWebView {
     /// Play (resume).
     func play() {
         guard let webView else { return }
+
+        self.releasePreloadHold()
 
         let script = """
             (function() {
@@ -58,6 +63,8 @@ extension SingletonPlayerWebView {
     func next() {
         guard let webView else { return }
 
+        self.releasePreloadHold()
+
         let script = """
             (function() {
                 const nextBtn = document.querySelector('.next-button.ytmusic-player-bar');
@@ -75,6 +82,8 @@ extension SingletonPlayerWebView {
     /// Go to previous track.
     func previous() {
         guard let webView else { return }
+
+        self.releasePreloadHold()
 
         let script = """
             (function() {

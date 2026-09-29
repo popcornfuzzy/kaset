@@ -102,9 +102,27 @@ extension PlayerService {
     }
 
     /// Whether the pending track must be loaded into the WebView before playback can resume.
+    ///
+    /// A page Kaset preloaded for the track is the case this is really about: it counts as loaded, so
+    /// the resume plays it instead of navigating — which is exactly the wait the preload removes. A
+    /// preload that has not finished does not count, and takes the ordinary load instead.
     var shouldLoadPendingVideoBeforePlayback: Bool {
         guard let pendingPlayVideoId = self.pendingPlayVideoId else { return false }
-        return SingletonPlayerWebView.shared.currentVideoId != pendingPlayVideoId
+        return !SingletonPlayerWebView.shared.canPlay(videoId: pendingPlayVideoId)
+    }
+
+    /// The position a restored, not-yet-resumed session should begin from, or `nil` when there is no
+    /// deferred session (a normal play starts at the beginning).
+    ///
+    /// A restored session's track is preloaded into the WebView before the user asks for it, and this
+    /// is what the page is pointed at: beginning *there* is what makes the first press of play start
+    /// the song where the user left off, rather than starting at zero and being corrected afterwards.
+    var deferredResumePosition: TimeInterval? {
+        guard self.isPendingRestoredLoadDeferred,
+              let position = self.pendingRestoredSeek,
+              position >= 1
+        else { return nil }
+        return position
     }
 }
 

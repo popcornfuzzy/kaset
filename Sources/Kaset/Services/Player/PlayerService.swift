@@ -50,6 +50,31 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Current playback state.
     var state: PlaybackState = .idle
 
+    /// Page-load fraction of the shared WebView's current navigation (`0...1`), or `nil` when no
+    /// page load is in flight.
+    ///
+    /// Reported by the WebView layer (see `PlayerService+WebViewLoading`), and `nil` for most of the
+    /// app's life: a load only happens at launch (the preload), on a track change, or on recovery
+    /// from a crashed page.
+    var webViewPageLoadFraction: Double?
+
+    /// Whether the bar is still pulsing after a page load ended, because that load may have been over
+    /// before anyone could see it (see `PlayerService.finishWebViewPageLoad()`).
+    var isWebViewLoadWarmingUp: Bool = false
+
+    /// The pending end of the strip's tail (`PlayerService+WebViewLoading`).
+    @ObservationIgnored
+    var webViewLoadLingerTask: Task<Void, Never>?
+
+    /// How long the stripe keeps pulsing once a page load ends. Injectable for tests.
+    ///
+    /// The preload at launch is often finished before the window is even on screen: the page is loaded
+    /// as soon as the app is signed in, while the window still has to appear and lay itself out. A
+    /// stripe that ends with the load is then a flash the user never sees, which is indistinguishable
+    /// from a bar that never had one — the very thing this stripe exists to avoid.
+    @ObservationIgnored
+    var webViewLoadingLingerDuration: TimeInterval = PlayerBarLoadingLinger.tail
+
     /// Currently playing track.
     var currentTrack: Song?
 
@@ -913,7 +938,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         let shouldLoadPendingVideo = self.shouldLoadPendingVideoBeforePlayback
         if self.isPendingRestoredLoadDeferred {
-            self.beginRestoredPlaybackLoad(autoResumeAfterSeek: self.hasUserInteractedThisSession)
+            // `resume()` is only ever reached because something asked for playback — the play button,
+            // a media key, AppleScript — so a restored session that is being resumed does start
+            // playing once it is at the saved position. It used to be gated on the user having
+            // interacted with the WebView earlier, which left the first press after launch seeking and
+            // then sitting paused, needing a second press.
+            self.beginRestoredPlaybackLoad(autoResumeAfterSeek: true)
         } else {
             self.clearRestoredPlaybackSessionState()
         }
