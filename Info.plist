@@ -21,6 +21,13 @@
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/popcornfuzzy/kaset/main/appcast.xml</string>
 
+	<!-- Kaset is sandboxed, so Sparkle has to install updates from outside the
+	     sandbox through its Installer service. Without this key the updater tries
+	     to submit the installer job itself and every update fails after
+	     downloading. See docs/adr/0007-sparkle-auto-updates.md. -->
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+
 	<key>SUPublicEDKey</key>
 	<string>o1vx9iHiGFhq2hdvof0Zv1pxf3uQSBxwSCW4WBDk2Wo=</string>
 

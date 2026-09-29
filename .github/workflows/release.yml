@@ -136,9 +136,26 @@ jobs:
           echo "::error::Unit tests failed on both attempts."
           exit 1
 
+      - name: Set up the code signing identity
+        id: signing
+        env:
+          KASET_SIGNING_P12: ${{ secrets.KASET_SIGNING_P12 }}
+          KASET_SIGNING_P12_PASSWORD: ${{ secrets.KASET_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          IDENTITY=$(Scripts/import-signing-identity.sh)
+          if [ -z "$IDENTITY" ]; then
+            echo "::warning::No signing identity is configured, so this release is ad-hoc signed: macOS will ask for Keychain access again after every install, because an ad-hoc signature's designated requirement is a cdhash that changes on every build. Add KASET_SIGNING_P12 and KASET_SIGNING_P12_PASSWORD to fix that. See docs/adr/0027-stable-code-signing-identity.md."
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=identity" >> "$GITHUB_OUTPUT"
+            echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build the release app
         env:
-          KASET_SIGNING: adhoc
+          KASET_SIGNING: ${{ steps.signing.outputs.mode }}
+          APP_IDENTITY: ${{ steps.signing.outputs.identity }}
           ARCHES: "arm64 x86_64"
         run: |
           set -euo pipefail
@@ -180,6 +197,36 @@ jobs:
             echo "::error::The packaged app has no SUPublicEDKey, so no update would ever install."
             exit 1
           fi
+
+          # Kaset is sandboxed, so Sparkle can only install an update through its
+          # Installer service. Losing either the key below or the Mach service
+          # exceptions in the entitlements still lets the update download and then
+          # fails at install time, which no unit test would catch.
+          INSTALLER_SERVICE=$(/usr/libexec/PlistBuddy -c "Print SUEnableInstallerLauncherService" "$PLIST" 2>/dev/null || echo "")
+          if [ "$INSTALLER_SERVICE" != "true" ]; then
+            echo "::error::The packaged app does not set SUEnableInstallerLauncherService, so a sandboxed install would fail after downloading."
+            exit 1
+          fi
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$PLIST")
+          ENTITLEMENTS=$(codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -convert xml1 -o - - 2>/dev/null || true)
+          if [ -z "$ENTITLEMENTS" ]; then
+            ENTITLEMENTS=$(codesign -d --entitlements - "$APP" 2>/dev/null || true)
+          fi
+          for service in "-spks" "-spki"; do
+            if [[ "$ENTITLEMENTS" != *"${BUNDLE_ID}${service}"* ]]; then
+              echo "::error::The packaged app is missing the ${BUNDLE_ID}${service} mach-lookup exception, so Sparkle's installer service would be unreachable inside the sandbox."
+              exit 1
+            fi
+          done
+
+          # The Sparkle helpers are re-signed by Scripts/build-app.sh; make sure the
+          # nested signatures still verify, since a broken nested signature is
+          # another install-time-only failure.
+          codesign --verify --deep --strict "$APP" || {
+            echo "::error::The packaged app or its nested code failed signature verification."
+            exit 1
+          }
 
           echo "Kaset $PLIST_VERSION ($(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$PLIST")) for $ARCHS"
           echo "Feed: $(/usr/libexec/PlistBuddy -c 'Print SUFeedURL' "$PLIST")"
@@ -265,3 +312,7 @@ jobs:
               echo "is public, which is why the feed is not touched while the release is a draft."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: Scripts/import-signing-identity.sh --cleanup

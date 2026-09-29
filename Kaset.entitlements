@@ -4,6 +4,20 @@
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+	<!-- Sparkle installs updates from outside the app's sandbox, through helper
+	     tools that register Mach services named after the host bundle identifier
+	     (-spki for the installer connection, -spks for installation status).
+	     Without this lookup exception a sandboxed app downloads the update and
+	     then fails with "An error occurred while launching the installer",
+	     because it is not allowed to submit the installer job itself.
+	     $(PRODUCT_BUNDLE_IDENTIFIER) is expanded by Xcode and by
+	     Scripts/generate-entitlements.sh (used by Scripts/build-app.sh).
+	     See docs/adr/0007-sparkle-auto-updates.md. -->
+	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
+	</array>
 	<key>com.apple.security.cs.jit</key>
 	<true/>
 	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>

@@ -7,6 +7,19 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
+# Values the caller exported have to win over Scripts/.env: that file exists to
+# make local runs work without exporting anything, not to silently override an
+# explicit choice. Scripts/generate-appcast.sh applies the same rule to the
+# signing key. Without this, every caller that sets KASET_BUNDLE_ID or
+# KASET_SU_FEED_URL (Scripts/test-update-flow.sh, for one) quietly builds against
+# the local development values instead.
+KASET_SIGNING_EXPORTED="${KASET_SIGNING:-}"
+KASET_BUNDLE_ID_EXPORTED="${KASET_BUNDLE_ID:-}"
+KASET_SU_FEED_URL_EXPORTED="${KASET_SU_FEED_URL:-}"
+APP_IDENTITY_EXPORTED="${APP_IDENTITY:-}"
+ARCHES_EXPORTED="${ARCHES:-}"
+SPARKLE_PUBLIC_KEY_EXPORTED="${SPARKLE_PUBLIC_KEY:-}"
+
 # Load optional local environment overrides (kept out of git).
 if [[ -f "$ROOT/Scripts/.env" ]]; then
   set -a
@@ -14,6 +27,13 @@ if [[ -f "$ROOT/Scripts/.env" ]]; then
   source "$ROOT/Scripts/.env"
   set +a
 fi
+
+if [[ -n "$KASET_SIGNING_EXPORTED" ]]; then KASET_SIGNING="$KASET_SIGNING_EXPORTED"; fi
+if [[ -n "$KASET_BUNDLE_ID_EXPORTED" ]]; then KASET_BUNDLE_ID="$KASET_BUNDLE_ID_EXPORTED"; fi
+if [[ -n "$KASET_SU_FEED_URL_EXPORTED" ]]; then KASET_SU_FEED_URL="$KASET_SU_FEED_URL_EXPORTED"; fi
+if [[ -n "$APP_IDENTITY_EXPORTED" ]]; then APP_IDENTITY="$APP_IDENTITY_EXPORTED"; fi
+if [[ -n "$ARCHES_EXPORTED" ]]; then ARCHES="$ARCHES_EXPORTED"; fi
+if [[ -n "$SPARKLE_PUBLIC_KEY_EXPORTED" ]]; then SPARKLE_PUBLIC_KEY="$SPARKLE_PUBLIC_KEY_EXPORTED"; fi
 
 # Load version info
 source "$ROOT/version.env"
@@ -204,6 +224,13 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
     <key>SUAllowsAutomaticUpdates</key>
     <true/>
 
+    <!-- Kaset is sandboxed, so Sparkle has to install updates from outside the sandbox
+         through its Installer service. Without this key the updater submits the installer
+         job itself, which the sandbox refuses, and every update fails after downloading.
+         See docs/adr/0007-sparkle-auto-updates.md. -->
+    <key>SUEnableInstallerLauncherService</key>
+    <true/>
+
     <!-- AppleScript Support -->
     <key>NSAppleScriptEnabled</key>
     <true/>
@@ -339,51 +366,95 @@ find "$APP_BUNDLE" -name '._*' -delete 2>/dev/null || true
 # Sign the app
 echo "🔏 Signing app..."
 if [[ "$SIGNING_MODE" == "adhoc" ]]; then
-  CODESIGN_ARGS=(--force --sign -)
+  SIGNING_IDENTITY="-"
+  TIMESTAMP_ARG=""
+  APP_HARDENED_RUNTIME=0
 elif [[ "$SIGNING_MODE" == "dev" ]]; then
   # Use Apple Development certificate
   CODESIGN_HASH=$(security find-identity -v -p codesigning | grep "Apple Development" | head -1 | awk '{print $2}')
   if [[ -z "$CODESIGN_HASH" ]]; then
     echo "WARN: No Apple Development certificate found. Falling back to ad-hoc signing."
-    CODESIGN_ARGS=(--force --sign -)
+    SIGNING_IDENTITY="-"
   else
-    CODESIGN_ARGS=(--force --sign "$CODESIGN_HASH")
+    SIGNING_IDENTITY="$CODESIGN_HASH"
   fi
+  TIMESTAMP_ARG=""
+  APP_HARDENED_RUNTIME=0
 else
-  CODESIGN_ID="${APP_IDENTITY:-Developer ID Application}"
-  CODESIGN_ARGS=(--force --timestamp --options runtime --sign "$CODESIGN_ID")
+  SIGNING_IDENTITY="${APP_IDENTITY:-Developer ID Application}"
+  TIMESTAMP_ARG="--timestamp"
+  APP_HARDENED_RUNTIME=1
 fi
 
-resign() { codesign "${CODESIGN_ARGS[@]}" "$1"; }
+if [[ "$SIGNING_MODE" == "adhoc" ]]; then
+  echo ""
+  echo "WARN: signing ad-hoc. Every build gets a new code hash, so macOS asks for"
+  echo "      Keychain access again after every install (Kaset's cookie archive and"
+  echo "      Last.fm credentials). Sign with a certificate to avoid that:"
+  echo "        KASET_SIGNING=dev Scripts/build-app.sh release          # local"
+  echo "        KASET_SIGNING_P12=<base64 .p12> ... (CI secrets)        # workflow"
+  echo "      See docs/adr/0027-stable-code-signing-identity.md."
+  echo ""
+fi
 
-# Sign Sparkle components (innermost first)
+CODESIGN_ARGS=(--force --sign "$SIGNING_IDENTITY")
+if [[ -n "$TIMESTAMP_ARG" ]]; then
+  CODESIGN_ARGS+=("$TIMESTAMP_ARG")
+fi
+
+# Only a Developer ID build enables the Hardened Runtime on the app itself: it is
+# what a notarized build needs, while ad-hoc and development builds keep the
+# signature they have always used.
+APP_CODESIGN_ARGS=("${CODESIGN_ARGS[@]}")
+if [[ "$APP_HARDENED_RUNTIME" == "1" ]]; then
+  APP_CODESIGN_ARGS+=(--options runtime)
+fi
+
+# Sparkle ships its helpers ad-hoc signed with the Hardened Runtime enabled, and
+# re-signing them without that option changes their code requirements. Sparkle's
+# own instructions for re-signing the framework are followed here, including
+# preserving the Downloader service's entitlements and avoiding --deep (which is
+# what breaks sandboxed installation).
+# https://sparkle-project.org/documentation/sandboxing/#code-signing
+sign_sparkle_component() {
+  local target="$1"
+  shift
+  if [[ -n "$TIMESTAMP_ARG" ]]; then
+    codesign --force --options runtime --timestamp "$@" --sign "$SIGNING_IDENTITY" "$target"
+  else
+    codesign --force --options runtime "$@" --sign "$SIGNING_IDENTITY" "$target"
+  fi
+}
+
 SPARKLE="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 if [[ -d "$SPARKLE" ]]; then
   echo "  → Signing Sparkle.framework..."
-  # Sign nested binaries first
-  [[ -f "$SPARKLE/Versions/B/Sparkle" ]] && resign "$SPARKLE/Versions/B/Sparkle"
-  [[ -f "$SPARKLE/Versions/B/Autoupdate" ]] && resign "$SPARKLE/Versions/B/Autoupdate"
-  [[ -d "$SPARKLE/Versions/B/Updater.app" ]] && {
-    [[ -f "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater" ]] && resign "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater"
-    resign "$SPARKLE/Versions/B/Updater.app"
-  }
-  [[ -d "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" ]] && {
-    [[ -f "$SPARKLE/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader" ]] && resign "$SPARKLE/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
-    resign "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
-  }
-  [[ -d "$SPARKLE/Versions/B/XPCServices/Installer.xpc" ]] && {
-    [[ -f "$SPARKLE/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer" ]] && resign "$SPARKLE/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
-    resign "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
-  }
-  resign "$SPARKLE/Versions/B" 2>/dev/null || true
-  resign "$SPARKLE"
+  # Nested services and helper tools first, then the framework that contains them.
+  if [[ -d "$SPARKLE/Versions/B/XPCServices/Installer.xpc" ]]; then
+    sign_sparkle_component "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+  fi
+  if [[ -d "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" ]]; then
+    sign_sparkle_component --preserve-metadata=entitlements "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" \
+      || sign_sparkle_component "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+  fi
+  if [[ -f "$SPARKLE/Versions/B/Autoupdate" ]]; then
+    sign_sparkle_component "$SPARKLE/Versions/B/Autoupdate"
+  fi
+  if [[ -d "$SPARKLE/Versions/B/Updater.app" ]]; then
+    sign_sparkle_component "$SPARKLE/Versions/B/Updater.app"
+  fi
+  sign_sparkle_component "$SPARKLE"
 fi
 
-# Sign the app bundle with entitlements
+# Sign the app bundle with entitlements. The bundled entitlements file uses
+# $(PRODUCT_BUNDLE_IDENTIFIER), which Xcode expands but codesign does not, and
+# Sparkle's Mach service exceptions are derived from the bundle identifier.
 if [[ -f "$ROOT/Kaset.entitlements" ]]; then
-  codesign "${CODESIGN_ARGS[@]}" --entitlements "$ROOT/Kaset.entitlements" "$APP_BUNDLE"
+  RENDERED_ENTITLEMENTS="$BUILD_DIR/Kaset.entitlements"
+  "$ROOT/Scripts/generate-entitlements.sh" "$BUNDLE_ID" "$RENDERED_ENTITLEMENTS"
+  codesign "${APP_CODESIGN_ARGS[@]}" --entitlements "$RENDERED_ENTITLEMENTS" "$APP_BUNDLE"
 else
-  codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE"
+  codesign "${APP_CODESIGN_ARGS[@]}" "$APP_BUNDLE"
 fi
 
 echo ""

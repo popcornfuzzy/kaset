@@ -524,7 +524,7 @@ The script exists because each missing step fails with an error that reads like 
 | `Application 'com.popcornfuzzy.kaset' does not have a process ID` | A Kaset instance with the same bundle ID was already running. The script quits it first. |
 | `open() failed, errno=1 (Operation not permitted)` while linking the runner | A previously signed runner bundle cannot be re-linked in place. The script deletes it before building. |
 | Tests behave as if mock data were absent | See below. |
-| macOS asks to use the Keychain in "Kaset" on every launch | The run was not in mock mode, so the app read its real cookie and scrobble items. Every build is ad-hoc signed, so its code hash is not in the items' ACL — `securityd` logs `displaying keychain prompt` and asks. Mock mode never touches the Keychain at all. |
+| macOS asks to use the Keychain in "Kaset" on every launch | The run was not in mock mode, so the app read its real cookie and scrobble items. An ad-hoc signed build's code hash is not in the items' ACL — `securityd` logs `displaying keychain prompt` and asks. Mock mode never touches the Keychain at all, and certificate-signed builds do not hit this at all (see [adr/0027](adr/0027-stable-code-signing-identity.md)). |
 
 **Mock mode needs the marker file.** The runner is sandboxed and launches the app through
 `NSWorkspace`, so macOS drops the `-UITestMode` argument and the `UI_TEST_MODE` environment variable
@@ -617,5 +617,29 @@ jobs:
       - run: swift test -q --no-parallel --filter "MusicIntentIntegrationTests"
 ```
 
+### Update Installation (Sparkle)
+
+No unit test can tell whether an update installs. Sparkle downloads inside the app but installs
+from *outside* the app's sandbox, so a missing entitlement or `Info.plist` key only surfaces after
+the download has already succeeded - as an error the user sees, not a failing test.
+`Scripts/test-update-flow.sh` covers that path end to end:
+
+```bash
+Scripts/test-update-flow.sh          # non-zero exit, printing Sparkle's reason, on failure
+```
+
+It builds two versions of Kaset under a throwaway bundle identifier (`…updatetest`, so your real
+preferences and sandbox container are untouched), packages the newer one into a signed DMG, serves
+that DMG plus the generated appcast over `http://localhost`, then launches the older build with
+automatic downloads enabled and waits for it to replace itself. The entitlements and signing come
+from `Scripts/build-app.sh`, because those are what is under test; the only test-only overrides are
+`SUAutomaticallyUpdate`, a one second `SUScheduledCheckInterval`, and an ATS exception for loopback.
+The script writes `version.env` while it runs and restores it afterwards.
+
+Expect it to launch the app briefly (with `open -g`, so it stays in the background), fetch a few
+megabytes, and take a couple of minutes - most of it building. Pass `--keep-work-dir` to keep
+`.build/update-e2e/`, which holds the captured Sparkle log, the server log and both app bundles.
+
 Release mechanics are covered by
-[adr/0019-release-pipeline-and-appcast-publication.md](adr/0019-release-pipeline-and-appcast-publication.md).
+[adr/0019-release-pipeline-and-appcast-publication.md](adr/0019-release-pipeline-and-appcast-publication.md),
+and the update configuration itself by [adr/0007-sparkle-auto-updates.md](adr/0007-sparkle-auto-updates.md#sandboxed-installation).

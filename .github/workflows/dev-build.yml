@@ -46,9 +46,26 @@ jobs:
         id: slug
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      - name: Set up the code signing identity
+        id: signing
+        env:
+          KASET_SIGNING_P12: ${{ secrets.KASET_SIGNING_P12 }}
+          KASET_SIGNING_P12_PASSWORD: ${{ secrets.KASET_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          IDENTITY=$(Scripts/import-signing-identity.sh)
+          if [ -z "$IDENTITY" ]; then
+            echo "::warning::No signing identity is configured, so this DMG is ad-hoc signed: macOS will ask for Keychain access again after every install, because an ad-hoc signature's designated requirement is a cdhash that changes on every build. Add KASET_SIGNING_P12 and KASET_SIGNING_P12_PASSWORD to fix that. See docs/adr/0027-stable-code-signing-identity.md."
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=identity" >> "$GITHUB_OUTPUT"
+            echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build app
         env:
-          KASET_SIGNING: adhoc
+          KASET_SIGNING: ${{ steps.signing.outputs.mode }}
+          APP_IDENTITY: ${{ steps.signing.outputs.identity }}
           ARCHES: "arm64 x86_64"
         run: |
           # Override version for dev builds
@@ -84,3 +101,7 @@ jobs:
           name: kaset-dev-${{ steps.slug.outputs.sha_short }}
           path: kaset-dev.dmg
           retention-days: 30
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: Scripts/import-signing-identity.sh --cleanup
