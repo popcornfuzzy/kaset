@@ -9,7 +9,7 @@ import Testing
 struct CanvasServiceTests {
     // MARK: - Lookup orchestration
 
-    @Test("the first valid canvas wins across concurrent providers")
+    @Test("the highest-priority provider that has a canvas supplies it")
     func firstValidCanvasWins() async {
         let tidalArtwork = Self.makeArtwork(source: "Tidal", name: "tidal-canvas")
         let service = Self.makeService(providers: [
@@ -59,30 +59,40 @@ struct CanvasServiceTests {
         #expect(service.currentCanvas == nil)
     }
 
-    @Test("a fast provider's canvas is delivered without waiting for a slow provider")
-    func fastProviderWinsWithoutWaitingForSlowProvider() async {
-        let slowGate = CanvasSearchGate()
-        let slow = MockCanvasProvider(name: "Slow") { _ in
-            await slowGate.markStarted()
-            await slowGate.waitUntilReleased() // never resolves on its own
-            return Self.makeArtwork(name: "slow-canvas")
+    @Test("the primary provider's canvas wins and later providers are never consulted")
+    func primaryProviderWinsAndSkipsFallbacks() async {
+        let fallbackGate = CanvasSearchGate()
+        let fallback = MockCanvasProvider(name: "Fallback") { _ in
+            await fallbackGate.markStarted()
+            await fallbackGate.waitUntilReleased() // never resolves on its own
+            return Self.makeArtwork(name: "fallback-canvas")
         }
-        let fast = MockCanvasProvider(name: "Fast", result: Self.makeArtwork(name: "fast-canvas"))
-        let service = Self.makeService(providers: [slow, fast])
+        let primary = MockCanvasProvider(name: "Tidal", result: Self.makeArtwork(name: "primary-canvas"))
+        // Tidal is primary, so it must be consulted first.
+        let service = Self.makeService(providers: [primary, fallback])
 
-        let task = Task {
-            await service.loadCanvas(for: Self.makeInfo(videoId: "video-race"))
-        }
-        await slowGate.waitUntilStarted()
+        await service.loadCanvas(for: Self.makeInfo(videoId: "video-priority"))
 
-        // The fast provider's result must be applied even though the slow
-        // provider is still blocked (regression: withTaskGroup awaited every
-        // child, delaying the winner by the slowest provider's runtime).
-        await task.value
-        #expect(service.currentCanvas?.name == "fast-canvas")
-        #expect(service.currentCanvasVideoId == "video-race")
+        #expect(service.currentCanvas?.name == "primary-canvas")
+        #expect(service.activeProvider == "Tidal")
+        #expect(service.currentCanvasVideoId == "video-priority")
+        // A hit on the primary must not touch the fallback.
+        #expect(await fallback.callCount() == 0)
+        await fallbackGate.release()
+    }
 
-        await slowGate.release()
+    @Test("the fallback provider is used when the primary finds nothing")
+    func fallbackUsedWhenPrimaryMisses() async {
+        let primary = MockCanvasProvider(name: "Tidal", result: nil)
+        let fallback = MockCanvasProvider(name: "Apple Music", result: Self.makeArtwork(source: "Apple Music", name: "fallback-canvas"))
+        let service = Self.makeService(providers: [primary, fallback])
+
+        await service.loadCanvas(for: Self.makeInfo(videoId: "video-fallback"))
+
+        #expect(service.currentCanvas?.name == "fallback-canvas")
+        #expect(service.activeProvider == "Apple Music")
+        #expect(await primary.callCount() == 1)
+        #expect(await fallback.callCount() == 1)
     }
 
     @Test("stale canvas results do not overwrite a newer track")

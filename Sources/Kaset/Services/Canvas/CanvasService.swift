@@ -32,11 +32,16 @@ final class CanvasService {
     private let videoFileCache: CanvasVideoFileCache
     private var fetchGeneration = 0
 
+    /// - Parameter providers: Preference-ordered; the first one to return a canvas
+    ///   wins. Defaults to Tidal (primary) with Apple Music as the fallback.
     init(
         providers: [any CanvasProvider]? = nil,
         lookupCache: CanvasCache = .shared,
         videoFileCache: CanvasVideoFileCache = .shared
     ) {
+        // Order is the preference order, so Tidal must stay first: it is the
+        // album-level source and matches the fullscreen artwork far more often than
+        // Apple Music's artist-level motion artwork.
         self.providers = providers ?? [TidalCanvasProvider(), AppleMusicCanvasProvider()]
         self.lookupCache = lookupCache
         self.videoFileCache = videoFileCache
@@ -133,93 +138,33 @@ final class CanvasService {
         }
     }
 
-    /// Runs all providers concurrently; the first valid canvas wins immediately.
+    /// Consults providers in preference order and returns the first canvas found.
     ///
-    /// Note: this must NOT use `withTaskGroup` with an early return — task
-    /// groups wait for every child task to finish before returning, so a slow
-    /// provider would delay a fast provider's result by its full runtime.
+    /// Providers are tried one at a time rather than raced. Racing let whichever
+    /// source returned first win, so "Tidal is primary" was not actually enforced —
+    /// a slower but lower-priority provider could still decide the result for a
+    /// track. It also ran Apple Music's web-player token scrape for every single
+    /// lookup even though Tidal answers almost always, and the fallback is the only
+    /// thing that benefits from starting early. Sequential lookup keeps the winner
+    /// deterministic at the cost of adding the primary's runtime (well under a
+    /// second when it hits) to a miss.
     @MainActor
     private static func searchProviders(
         providers: [any CanvasProvider],
         info: CanvasSearchInfo
     ) async -> CanvasCache.LookupResult {
-        guard !providers.isEmpty else { return .notFound }
-
-        let race = FirstCanvasWins(pendingCount: providers.count)
-        let tasks = providers.map { provider in
-            Task {
-                let artwork = await provider.fetchCanvas(for: info)
-                if let artwork {
-                    DiagnosticsLogger.ui.debug(
-                        "Canvas provider \(provider.name, privacy: .public) FOUND a canvas for \(info.videoId, privacy: .public): \(artwork.videoURL.absoluteString, privacy: .public)"
-                    )
-                } else {
-                    DiagnosticsLogger.ui.debug(
-                        "Canvas provider \(provider.name, privacy: .public) returned nothing for \(info.videoId, privacy: .public)"
-                    )
-                }
-                await race.submit(artwork)
+        for provider in providers {
+            if Task.isCancelled { return .notFound }
+            if let artwork = await provider.fetchCanvas(for: info) {
+                DiagnosticsLogger.ui.debug(
+                    "Canvas provider \(provider.name, privacy: .public) FOUND a canvas for \(info.videoId, privacy: .public): \(artwork.videoURL.absoluteString, privacy: .public)"
+                )
+                return .found(artwork)
             }
-        }
-
-        let winner = await race.value()
-
-        // Cancel stragglers without awaiting them (they may be mid-request).
-        for task in tasks {
-            task.cancel()
-        }
-
-        if let winner {
-            return .found(winner)
+            DiagnosticsLogger.ui.debug(
+                "Canvas provider \(provider.name, privacy: .public) returned nothing for \(info.videoId, privacy: .public)"
+            )
         }
         return .notFound
-    }
-}
-
-/// Delivers the first non-nil canvas across a set of provider tasks without
-/// waiting for the remaining tasks to complete.
-private actor FirstCanvasWins {
-    private var winner: CanvasArtwork?
-    private var pendingCount: Int
-    private var isFinished = false
-    private var waiters: [CheckedContinuation<CanvasArtwork?, Never>] = []
-
-    init(pendingCount: Int) {
-        self.pendingCount = max(0, pendingCount)
-        if self.pendingCount == 0 {
-            self.isFinished = true
-        }
-    }
-
-    func submit(_ artwork: CanvasArtwork?) {
-        guard !self.isFinished else { return }
-        if artwork != nil {
-            self.winner = artwork
-            self.complete()
-        } else {
-            self.pendingCount -= 1
-            if self.pendingCount <= 0 {
-                self.complete()
-            }
-        }
-    }
-
-    func value() async -> CanvasArtwork? {
-        if self.isFinished {
-            return self.winner
-        }
-        return await withCheckedContinuation { continuation in
-            self.waiters.append(continuation)
-        }
-    }
-
-    private func complete() {
-        self.isFinished = true
-        let result = self.winner
-        let waiters = self.waiters
-        self.waiters.removeAll()
-        for waiter in waiters {
-            waiter.resume(returning: result)
-        }
     }
 }

@@ -41,6 +41,107 @@ struct TidalCanvasProviderTests {
         #expect(CanvasMatching.artistComponents("Solo Artist") == ["solo artist"])
     }
 
+    @Test("normalizeForComparison folds diacritics so accented names still match")
+    func normalizeForComparisonFoldsDiacritics() {
+        #expect(CanvasMatching.normalizeForComparison("ROSALÍA") == CanvasMatching.normalizeForComparison("Rosalia"))
+        #expect(CanvasMatching.normalizeForComparison("Beyoncé") == CanvasMatching.normalizeForComparison("Beyonce"))
+        #expect(CanvasMatching.normalizeForComparison("Motörhead") == CanvasMatching.normalizeForComparison("Motorhead"))
+        #expect(CanvasMatching.normalizeForComparison("Björk") == "bjork")
+        // The combining mark itself must not survive as a character.
+        #expect(CanvasMatching.normalizeForComparison("Café") == "cafe")
+    }
+
+    @Test("normalizeForComparison treats punctuation as a separator, not a deletion")
+    func normalizeForComparisonSeparatesPunctuation() {
+        // Regression: deleting the hyphen made "Anti-Hero" normalize to
+        // "antihero", which never equals "Anti Hero"'s "anti hero".
+        #expect(CanvasMatching.normalizeForComparison("Anti-Hero") == CanvasMatching.normalizeForComparison("Anti Hero"))
+        #expect(CanvasMatching.normalizeForComparison("Anti-Hero") == "anti hero")
+        #expect(CanvasMatching.normalizeForComparison("Mr. Brightside") == "mr brightside")
+    }
+
+    @Test("normalizeForComparison keeps non-Latin letters instead of collapsing them away")
+    func normalizeForComparisonKeepsNonLatin() {
+        // The Android reference restricted to [a-z0-9], which would reduce every
+        // Cyrillic/CJK title to the empty string and make it match nothing.
+        #expect(CanvasMatching.normalizeForComparison("сигнал") == "сигнал")
+        #expect(CanvasMatching.normalizeForComparison("夜に駆ける") == "夜に駆ける")
+        #expect(!CanvasMatching.normalizeForComparison("сигнал").isEmpty)
+    }
+
+    // MARK: - Search plan
+
+    @Test("searchAttempts orders song-first and leads with the song + artist track query")
+    func searchAttemptsOrdering() {
+        let attempts = TidalCanvasProvider.searchAttempts(for: CanvasSearchInfo(
+            title: "Blinding Lights",
+            artist: "The Weeknd",
+            album: "After Hours",
+            videoId: "x"
+        ))
+
+        #expect(attempts.map(\.query) == [
+            "The Weeknd Blinding Lights",
+            "After Hours The Weeknd",
+            "The Weeknd Blinding Lights",
+            "After Hours The Weeknd Blinding Lights",
+        ])
+        #expect(attempts.map(\.types) == ["TRACKS", "ALBUMS", "ALBUMS", "TRACKS"])
+
+        let first = attempts[0]
+        #expect(first.songValidation == "Blinding Lights")
+        #expect(first.artistValidation == "The Weeknd")
+        #expect(first.albumValidation == nil)
+
+        // The single lookup validates the album entry against the song title.
+        let single = attempts[2]
+        #expect(single.albumValidation == "Blinding Lights")
+    }
+
+    /// Regression: the song + artist track query must never carry the album.
+    /// Including it makes Tidal rank the song's *album release* first, and that
+    /// entry frequently has no video cover even when the single does ("Flowers"
+    /// vs "Endless Summer Vacation").
+    @Test("the leading track query excludes the album")
+    func leadingTrackQueryExcludesAlbum() {
+        let attempts = TidalCanvasProvider.searchAttempts(for: CanvasSearchInfo(
+            title: "Flowers",
+            artist: "Miley Cyrus",
+            album: "Endless Summer Vacation",
+            videoId: "x"
+        ))
+        #expect(attempts.first?.query == "Miley Cyrus Flowers")
+        #expect(attempts.first?.types == "TRACKS")
+        #expect(attempts.first?.query.contains("Endless Summer Vacation") == false)
+    }
+
+    @Test("searchAttempts skips album attempts when the album is unknown")
+    func searchAttemptsWithoutAlbum() {
+        let attempts = TidalCanvasProvider.searchAttempts(for: CanvasSearchInfo(
+            title: "Flowers",
+            artist: "Miley Cyrus",
+            album: nil,
+            videoId: "x"
+        ))
+        #expect(attempts.count == 2)
+        #expect(attempts.map(\.types) == ["TRACKS", "ALBUMS"])
+        #expect(attempts.allSatisfy { $0.query == "Miley Cyrus Flowers" })
+        #expect(attempts[1].albumValidation == "Flowers")
+    }
+
+    @Test("searchAttempts skips song attempts when the title is blank")
+    func searchAttemptsWithoutSong() {
+        let attempts = TidalCanvasProvider.searchAttempts(for: CanvasSearchInfo(
+            title: "   ",
+            artist: "The Weeknd",
+            album: "After Hours",
+            videoId: "x"
+        ))
+        #expect(attempts.count == 1)
+        #expect(attempts[0].query == "After Hours The Weeknd")
+        #expect(attempts[0].types == "ALBUMS")
+    }
+
     // MARK: - Candidate extraction
 
     @Test("extractCandidate validates song title strictly and reads the album videoCover")
@@ -129,6 +230,61 @@ struct TidalCanvasProviderTests {
             albumValidation: "Dawn FM"
         )
         #expect(wrongAlbum == nil)
+    }
+
+    // MARK: - Album affiliation
+
+    @Test("albumItemsContainTrack reads the wrapped item shape and matches normalized titles")
+    func albumItemsContainTrackWrappedShape() {
+        let response: [String: Any] = [
+            "totalNumberOfItems": 2,
+            "items": [
+                ["item": ["id": 1, "title": "SOS"]],
+                ["item": ["id": 2, "title": "Good Days"]],
+            ],
+        ]
+        #expect(TidalCanvasProvider.albumItemsContainTrack(response, title: "Good Days"))
+        // Normalization applies, so decoration and case do not defeat the check.
+        #expect(TidalCanvasProvider.albumItemsContainTrack(response, title: "good days"))
+        #expect(TidalCanvasProvider.albumItemsContainTrack(response, title: "Good-Days"))
+        #expect(TidalCanvasProvider.albumItemsContainTrack(response, title: "Kill Bill") == false)
+    }
+
+    @Test("albumItemsContainTrack accepts a bare track shape and rejects malformed input")
+    func albumItemsContainTrackBareShape() {
+        let bare: [String: Any] = ["items": [["title": "Blinding Lights"]]]
+        #expect(TidalCanvasProvider.albumItemsContainTrack(bare, title: "Blinding Lights"))
+
+        #expect(TidalCanvasProvider.albumItemsContainTrack([:], title: "Anything") == false)
+        #expect(TidalCanvasProvider.albumItemsContainTrack(["items": [[:]]], title: "Anything") == false)
+        // An empty needle must never match, or affiliation would accept any album.
+        #expect(TidalCanvasProvider.albumItemsContainTrack(bare, title: "   ") == false)
+    }
+
+    @Test("albumId reads Tidal's numeric album ids as well as string ids")
+    func albumIdParsing() {
+        #expect(TidalCanvasProvider.albumId(from: ["id": NSNumber(value: 264617506)]) == "264617506")
+        #expect(TidalCanvasProvider.albumId(from: ["id": "abc"]) == "abc")
+        #expect(TidalCanvasProvider.albumId(from: [:]) == nil)
+    }
+
+    @Test("artistNames prefers the artists array and falls back to the single artist object")
+    func artistNamesParsing() {
+        #expect(TidalCanvasProvider.artistNames(from: ["artists": [["name": "Drake"], ["name": "21 Savage"]]]) == ["Drake", "21 Savage"])
+        #expect(TidalCanvasProvider.artistNames(from: ["artist": ["name": "SZA"]]) == ["SZA"])
+        #expect(TidalCanvasProvider.artistNames(from: [:]).isEmpty)
+    }
+
+    @Test("artistMatches requires every requested artist and passes when unconstrained")
+    func artistMatchesValidation() {
+        #expect(TidalCanvasProvider.artistMatches(validation: "SZA", returned: ["SZA"]))
+        #expect(TidalCanvasProvider.artistMatches(validation: "Drake", returned: ["Drake", "21 Savage"]))
+        #expect(TidalCanvasProvider.artistMatches(validation: "Drake, 21 Savage", returned: ["Drake"]) == false)
+        #expect(TidalCanvasProvider.artistMatches(validation: "Kendrick Lamar", returned: ["Drake"]) == false)
+        #expect(TidalCanvasProvider.artistMatches(validation: "Kendrick Lamar", returned: []) == false)
+        // No constraint asked for.
+        #expect(TidalCanvasProvider.artistMatches(validation: nil, returned: ["Drake"]))
+        #expect(TidalCanvasProvider.artistMatches(validation: "  ", returned: []))
     }
 
     // MARK: - Response section finding

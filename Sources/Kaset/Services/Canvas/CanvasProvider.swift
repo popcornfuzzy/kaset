@@ -42,15 +42,37 @@ protocol CanvasProvider: Sendable {
 /// Shared matching helpers used by canvas providers (ported from the Android
 /// reference implementation's normalization logic).
 enum CanvasMatching {
-    /// Normalizes a string for fuzzy comparison: lowercased, trimmed,
-    /// whitespace collapsed, and punctuation stripped.
+    /// Normalizes a string for fuzzy comparison: diacritics folded away, lowercased,
+    /// punctuation turned into a separator, whitespace collapsed, and trimmed.
+    ///
+    /// Diacritic folding matters because Tidal and YouTube Music disagree on accents
+    /// (Tidal writes "ROSALÍA", YouTube Music may write "Rosalia"; the same split shows
+    /// up on "Beyoncé"/"Beyonce" and "Motörhead"/"Motorhead") and an accent mismatch
+    /// silently rejected an otherwise correct result.
+    ///
+    /// Punctuation becomes a *space* rather than being deleted so hyphenated titles
+    /// still match their unhyphenated spelling: deleting the hyphen makes
+    /// "Anti-Hero" normalize to `antihero`, which does not equal "Anti Hero"'s
+    /// `anti hero`. Both catalogs spell such titles inconsistently.
+    ///
+    /// Unlike the Android reference implementation this keeps non-Latin letters and
+    /// digits (`\p{L}`/`\p{N}`) instead of restricting to `[a-z0-9]`, which would
+    /// collapse every Cyrillic, Greek, Arabic, or CJK title to the empty string —
+    /// and an empty needle matches nothing meaningful.
     static func normalizeForComparison(_ string: String) -> String {
-        let normalized = string
+        // NFD then dropping the Combining Diacritical Marks block mirrors the
+        // reference implementation's `Normalizer` pass without depending on the
+        // current locale (unlike `folding(options:)`, which is locale-sensitive).
+        let decomposed = string.decomposedStringWithCanonicalMapping
+        var folded = String.UnicodeScalarView()
+        for scalar in decomposed.unicodeScalars where !(0x0300 ... 0x036F).contains(scalar.value) {
+            folded.append(scalar)
+        }
+        return String(folded)
             .lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"[^\p{L}\p{N}\s]"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .replacingOccurrences(of: #"[^\p{L}\p{N} ]"#, with: "", options: .regularExpression)
-        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Splits an artist string into individual normalized artist components.

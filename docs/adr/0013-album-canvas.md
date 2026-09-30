@@ -35,10 +35,28 @@ Introduce `CanvasService` as an `@MainActor @Observable` environment service tha
 
 Introduce `CanvasProvider` (`Sendable`) with `func fetchCanvas(for info: CanvasSearchInfo) async -> CanvasArtwork?`. Initial providers:
 
-- **`TidalCanvasProvider`** — searches `api.tidal.com/v1/search` with the public embed-player token, preferring an album-level match (`ALBUMS`, strict normalized album + artist validation) over a track-level match (`TRACKS`, strict song + artist validation). The `videoCover` ID is formatted into a square 1280×1280 MP4 URL.
+- **`TidalCanvasProvider`** — searches `api.tidal.com/v1/search` with the public embed-player token and returns the first candidate that passes strict normalized validation and carries a `videoCover`, which is formatted into a square 1280×1280 MP4 URL. The search plan is ordered (`searchAttempts(for:)`) so the highest-signal query runs first:
+  1. `TRACKS` on **song + artist** (no album). A matched track's nested album carries the same `videoCover` as the album itself, and omitting the album keeps the song's *single* ranked first.
+  2. `ALBUMS` on the known album + artist.
+  3. `ALBUMS` on song + artist, validated against the song title (catches single releases titled after their lead track).
+  4. `TRACKS` on album + artist + song, as the last-resort album-qualified query.
+  5. **Album affiliation** — search `ALBUMS` for song + artist, then prove the song is on the album by reading `/v1/albums/{id}/items` and matching the track title. The first album whose track list actually contains the song supplies the canvas.
+
+  Attempt 1 deliberately excludes the album: Tidal ranks a song's *album release* above the single when the album term is present, and that release frequently has no video cover even when the single does (e.g. "Flowers" vs "Endless Summer Vacation").
+
+  Attempt 5 exists because Tidal attaches a video cover to the *album release*, not to the track. "Good Days" by SZA is the canonical case: the single of that name carries no cover, and the song's other release (`SOS Deluxe: LANA`) carries none either, but the `SOS` album does. When the reported album is absent, the deluxe edition, or the single, **nothing** in the track's metadata names `SOS`, so no query built from the known metadata can ever reach it. The album therefore has to be discovered and then verified against its track list. That verification is what keeps the stage safe: an artist's *other* canvased albums can never be shown, because a canvas only wins when the album genuinely contains the requested track. Candidate albums are checked in preference order (the caller's album, then a release titled after the song, then search order) and capped at three album-items requests so a miss cannot fan out without bound.
+
 - **`AppleMusicCanvasProvider`** — discovers the web-player JWT at runtime by scraping the `music.apple.com` web player scripts (validating `iss`/`exp` on the decoded payload), then searches the AMP catalog for the artist and fetches `extend=editorialVideo,editorialArtwork` motion URLs (HLS).
 
-`CanvasService` runs all providers **concurrently** and the first valid result wins (mirrors the synced-lyrics multi-provider search). Both providers are stateless fetchers; all caching lives in `CanvasService` so "Clear Canvas Cache" is unambiguous.
+`CanvasService` consults providers **in preference order, one at a time**, and returns the first canvas found. Tidal is primary (`providers[0]`) and Apple Music is the fallback, so a track resolves to Tidal's album-level canvas whenever one exists.
+
+Providers are deliberately *not* raced. Racing made the winner depend on network timing rather than on source quality, so a lower-priority source could decide the result for a track, and it ran Apple Music's multi-request web-player token scrape on every lookup even though Tidal answers almost always. Sequential lookup also means a primary hit never starts the expensive fallback. Both providers are stateless fetchers; all caching lives in `CanvasService` so "Clear Canvas Cache" is unambiguous.
+
+### Matching
+
+Providers share `CanvasMatching.normalizeForComparison`, which folds **diacritics** (NFD, then drop the Combining Diacritical Marks block) and rewrites **punctuation to a space** before collapsing whitespace. Diacritic folding is required because the catalogs disagree on accents — Tidal writes "ROSALÍA" where YouTube Music may write "Rosalia" — and an accent mismatch silently rejected correct results. Punctuation becomes a separator rather than being deleted so hyphenated spellings still match: deleting the hyphen makes "Anti-Hero" normalize to `antihero`, which never equals "Anti Hero"'s `anti hero`.
+
+Unlike the Android reference implementation, non-Latin letters and digits are preserved (`\p{L}`/`\p{N}`, not `[a-z0-9]`). Restricting to ASCII would collapse every Cyrillic, Greek, Arabic, or CJK title to the empty string, which matches nothing meaningful.
 
 ### Rendering
 
