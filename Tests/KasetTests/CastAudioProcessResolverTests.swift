@@ -251,7 +251,7 @@ private func fixtureCandidate(
 
 private struct Inputs {
     static let ownPID: pid_t = 1000
-    static let appBundleID = "com.popcornfuzzy.kaset"
+    static let appBundleID = "com.popcornfuzzy.Kaset"
 
     /// Inputs with the app process present, so each test only states what it varies.
     static func fixture(

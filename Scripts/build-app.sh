@@ -42,7 +42,26 @@ source "$ROOT/version.env"
 CONF=${1:-release}
 SIGNING_MODE=${KASET_SIGNING:-dev}
 APP_NAME="Kaset"
-BUNDLE_ID="${KASET_BUNDLE_ID:-com.popcornfuzzy.Kaset}"
+# The one identifier Kaset ships under, and the only correct value for a build anyone
+# installs. It ends up inside the app's code requirement - `codesign` records
+# `identifier "<bundle id>"` - so a build with a different one (a different *case*
+# counts: identifiers are case sensitive) has a different Keychain identity from the
+# released app, and macOS asks for access to its own Keychain items again. Override it
+# only for throwaway builds such as the Scripts/test-update-flow.sh harness.
+CANONICAL_BUNDLE_ID="com.popcornfuzzy.Kaset"
+BUNDLE_ID="${KASET_BUNDLE_ID:-$CANONICAL_BUNDLE_ID}"
+
+# Ad-hoc signing has no stable requirement anyway, so a custom identifier costs nothing
+# there; a certificate-signed build with the wrong identifier loses the "Always Allow"
+# grant that the certificate was supposed to preserve.
+if [[ "$SIGNING_MODE" != "adhoc" && "$BUNDLE_ID" != "$CANONICAL_BUNDLE_ID" ]]; then
+  echo "WARN: building as '$BUNDLE_ID' instead of '$CANONICAL_BUNDLE_ID'."
+  echo "      The bundle identifier is part of the code requirement, so this build has a"
+  echo "      different Keychain identity from the app users install, and macOS will ask for"
+  echo "      access to Kaset's Keychain items again. Only pass KASET_BUNDLE_ID for throwaway"
+  echo "      builds. See docs/adr/0027-stable-code-signing-identity.md."
+  echo ""
+fi
 SU_FEED_URL="${KASET_SU_FEED_URL:-https://raw.githubusercontent.com/popcornfuzzy/kaset/main/appcast.xml}"
 SU_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_KEY:-o1vx9iHiGFhq2hdvof0Zv1pxf3uQSBxwSCW4WBDk2Wo=}"
 BUILD_DIR="$ROOT/.build/app"
@@ -397,7 +416,19 @@ if [[ "$SIGNING_MODE" == "adhoc" ]]; then
   echo ""
 fi
 
+# codesign resolves an identity through the calling user's keychain search list. CI
+# deliberately keeps the imported identity out of that list: Scripts/import-signing-identity.sh
+# imports the .p12 into .build/signing.keychain-db so the build never touches the
+# developer's own keychain. Without --keychain, codesign then reports
+# "<hash>: no identity found" for an identity that `security find-identity <keychain>`
+# lists happily, which is exactly how every signed CI build failed.
+SIGNING_KEYCHAIN="${KASET_SIGNING_KEYCHAIN:-$ROOT/.build/signing.keychain-db}"
+
 CODESIGN_ARGS=(--force --sign "$SIGNING_IDENTITY")
+if [[ -n "$APP_IDENTITY_EXPORTED" && -f "$SIGNING_KEYCHAIN" ]]; then
+  CODESIGN_ARGS+=(--keychain "$SIGNING_KEYCHAIN")
+  echo "  → Identity from: $SIGNING_KEYCHAIN"
+fi
 if [[ -n "$TIMESTAMP_ARG" ]]; then
   CODESIGN_ARGS+=("$TIMESTAMP_ARG")
 fi

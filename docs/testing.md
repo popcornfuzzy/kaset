@@ -515,7 +515,7 @@ The script exists because each missing step fails with an error that reads like 
 | Symptom | Cause |
 |---------|-------|
 | `Test crashed with signal kill before establishing connection` | Runner was built unsigned (`CODE_SIGNING_ALLOWED=NO`). The script signs it ad-hoc. |
-| `Application 'com.popcornfuzzy.kaset' does not have a process ID` | A Kaset instance with the same bundle ID was already running. The script quits it first. |
+| `Application 'com.popcornfuzzy.Kaset' does not have a process ID` | A Kaset instance with the same bundle ID was already running. The script quits it first. |
 | `open() failed, errno=1 (Operation not permitted)` while linking the runner | A previously signed runner bundle cannot be re-linked in place. The script deletes it before building. |
 | Tests behave as if mock data were absent | See below. |
 | macOS asks to use the Keychain in "Kaset" on every launch | The run was not in mock mode, so the app read its real cookie and scrobble items. An ad-hoc signed build's code hash is not in the items' ACL — `securityd` logs `displaying keychain prompt` and asks. Mock mode never touches the Keychain at all, and certificate-signed builds do not hit this at all (see [adr/0027](adr/0027-stable-code-signing-identity.md)). |
@@ -632,6 +632,13 @@ The script writes `version.env` while it runs and restores it afterwards.
 Expect it to launch the app briefly (with `open -g`, so it stays in the background), fetch a few
 megabytes, and take a couple of minutes - most of it building. Pass `--keep-work-dir` to keep
 `.build/update-e2e/`, which holds the captured Sparkle log, the server log and both app bundles.
+
+If Kaset's Keychain items already exist on the machine, macOS shows a Keychain access prompt for them,
+because the ad-hoc test app is a different code signature from whatever created them. Answer it or
+leave it up: the read runs off the main actor, so the app keeps working and the update proceeds either
+way. An update that never starts, on the other hand, means the test app is wedged - check
+`sample <pid>` for main-thread keychain work before blaming Sparkle (see
+[common-bug-patterns.md](common-bug-patterns.md)).
 
 Release mechanics are covered by
 [adr/0019-release-pipeline-and-appcast-publication.md](adr/0019-release-pipeline-and-appcast-publication.md),

@@ -41,6 +41,31 @@ Distributed builds are signed with a certificate instead of ad-hoc:
   the staged `.p12` never leaves the build directory or becomes world readable.
 - When no identity is configured, the build still works: it falls back to ad-hoc signing
   and both the workflow and `build-app.sh` say so loudly in the log.
+- Every build uses the same bundle identifier, `com.popcornfuzzy.Kaset`. The identifier is part
+  of the code requirement (`identifier "<bundle id>"`), and identifiers are case sensitive, so a
+  build that spelled it differently — a local `Scripts/.env` did, in lowercase — had a different
+  Keychain identity from the released app and prompted for its own items. `build-app.sh` warns
+  when a certificate-signed build overrides the identifier; only throwaway builds (the
+  `Scripts/test-update-flow.sh` harness) may.
+- The Keychain reads that produce the prompts run off the main actor, so an unanswered prompt
+  leaves the app usable instead of freezing it — including its scheduled Sparkle check. The
+  prompts are inconvenient; they must not be an outage. See
+  [../common-bug-patterns.md](../common-bug-patterns.md).
+
+The identity lives in a keychain of its own, which `codesign` does not look at by
+default: it resolves identities through the calling user's keychain search list, and
+`security create-keychain` deliberately leaves a new keychain off that list. Signing then
+fails with `<fingerprint>: no identity found` even though
+`security find-identity <keychain>` reports the identity as valid — the failure mode that
+broke every signed `Dev Build`. Two things prevent it now:
+
+- `build-app.sh` passes `--keychain` when a caller supplies `APP_IDENTITY`, which tells
+  `codesign` exactly where the identity is. The normal search path is still consulted for
+  the certificates that complete the chain, so Apple's intermediate certificates keep
+  working.
+- `import-signing-identity.sh` also prepends the keychain to the user search list, for the
+  tooling that only understands that list, and saves the previous list so `--cleanup`
+  restores it instead of leaving a dangling path behind.
 
 A certificate-derived requirement is stable across builds:
 

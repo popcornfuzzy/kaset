@@ -40,7 +40,21 @@ KEYCHAIN_PASSWORD="${KASET_SIGNING_KEYCHAIN_PASSWORD:-kaset-signing}"
 P12_BASE64="${KASET_SIGNING_P12:-}"
 P12_PASSWORD="${KASET_SIGNING_P12_PASSWORD:-}"
 
+# The search list is saved here so --cleanup can put it back exactly as it was.
+SEARCH_LIST_BACKUP="${KEYCHAIN_PATH}.search-list"
+
 if [[ "${1:-}" == "--cleanup" ]]; then
+  if [[ -f "$SEARCH_LIST_BACKUP" ]]; then
+    ORIGINAL_KEYCHAINS=()
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then ORIGINAL_KEYCHAINS+=("$line"); fi
+    done < "$SEARCH_LIST_BACKUP"
+    # bash 3.2 (macOS) treats "${empty[@]}" as an unbound variable under set -u.
+    if [[ ${#ORIGINAL_KEYCHAINS[@]} -gt 0 ]]; then
+      security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" >/dev/null 2>&1 || true
+    fi
+    rm -f "$SEARCH_LIST_BACKUP"
+  fi
   security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
   exit 0
 fi
@@ -98,6 +112,23 @@ fi
 # nobody to click it, so signing would hang.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
   -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+
+# A brand-new keychain is not on the calling user's keychain search list, and that is
+# where codesign looks for an identity. build-app.sh passes --keychain, which is what
+# actually signs; this registration is for everything else that only knows the search
+# list (Xcode's tooling, `security find-identity` without arguments). The original list
+# is saved so --cleanup restores it rather than leaving a dangling path behind.
+security list-keychains -d user \
+  | sed 's/^[[:space:]]*//;s/"//g' > "$SEARCH_LIST_BACKUP"
+PREVIOUS_KEYCHAINS=()
+while IFS= read -r line; do
+  if [[ -n "$line" ]]; then PREVIOUS_KEYCHAINS+=("$line"); fi
+done < "$SEARCH_LIST_BACKUP"
+if [[ ${#PREVIOUS_KEYCHAINS[@]} -gt 0 ]]; then
+  security list-keychains -d user -s "$KEYCHAIN_PATH" "${PREVIOUS_KEYCHAINS[@]}" >/dev/null
+else
+  security list-keychains -d user -s "$KEYCHAIN_PATH" >/dev/null
+fi
 
 # -v lists only identities whose certificate chain Apple trusts. A self-signed
 # certificate is still usable for signing and still gives the app a stable

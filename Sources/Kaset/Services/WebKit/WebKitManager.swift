@@ -518,17 +518,25 @@ final class WebKitManager: NSObject, WebKitManagerProtocol {
         try? await Task.sleep(for: .milliseconds(100))
 
         // Migrate from legacy file-based storage if needed (one-time operation).
-        // Perform file I/O off the main actor.
-        _ = await Task(priority: .utility) {
+        // `Task {}` inherits the enclosing actor, so inside this @MainActor method it
+        // would run the file I/O on the main actor. Only a detached task actually
+        // leaves it.
+        _ = await Task.detached(priority: .utility) {
             LegacyCookieMigration.migrateIfNeeded()
         }.value
 
         let existingCookies = await dataStore.httpCookieStore.allCookies()
         self.logger.info("WebKit has \(existingCookies.count) cookies on startup")
 
-        // Load cookies from Keychain.
-        // Perform Keychain I/O off the main actor; decode on main actor.
-        let archiveData = await Task(priority: .utility) {
+        // Load cookies from Keychain; decode on the main actor.
+        //
+        // This has to be a detached task. `Task {}` inherits the calling actor, so the
+        // waited-on Keychain call would run on the main actor, and macOS answers a
+        // Keychain access prompt by blocking that call until the user responds - the
+        // whole app freezes, including the window server's drawing and the updater's
+        // scheduled check. A detached task keeps the prompt off the main actor, so the
+        // prompt is merely unanswered instead of the app being unusable.
+        let archiveData = await Task.detached(priority: .utility) {
             KeychainCookieStorage.loadArchiveData()
         }.value
 
@@ -724,9 +732,11 @@ final class WebKitManager: NSObject, WebKitManagerProtocol {
         self.logger.info("Force backup: \(authCookies.count) YouTube/Google cookies to Keychain")
         guard let archive = KeychainCookieStorage.makeArchiveData(from: authCookies) else { return }
 
-        // Perform Keychain/file I/O off the main actor.
+        // Perform Keychain/file I/O off the main actor. Detached for the same reason as
+        // in restoreAuthCookiesFromBackup(): this method is @MainActor, and a `Task {}`
+        // here would inherit it and block the UI on a Keychain write prompt.
         // Fire-and-forget: failures are handled inside KeychainCookieStorage.
-        Task(priority: .utility) {
+        Task.detached(priority: .utility) {
             _ = KeychainCookieStorage.saveArchiveData(archive.data, cookieCount: archive.cookieCount)
             #if DEBUG
                 DebugCookieFileExporter.exportAuthCookiesArchiveData(archive.data)

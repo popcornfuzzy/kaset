@@ -402,6 +402,32 @@ fine is a navigation the row starts. The multi-artist credit looked like a parsi
 single-credit album worked: one link in the row is a row target, several are a lottery. See
 [adr/0023](adr/0023-playlist-search-and-sort.md).
 
+## ❌ `Task {}` Used to Leave the Main Actor
+
+`Task {}` inherits the actor it is created in, so inside a `@MainActor` type it runs *on* the main
+actor. `Task.detached` is the only form that actually steps off it. Code that claims to "perform I/O
+off the main actor" while using `Task` is doing the opposite — the call is awaited, but it is still
+main-actor work.
+
+```swift
+// ❌ BAD: this method is @MainActor, so Task {} inherits the main actor despite the comment
+@MainActor func restoreCookies() async {
+    let data = await Task(priority: .utility) { KeychainCookieStorage.loadArchiveData() }.value
+}
+
+// ✅ GOOD: detached really leaves the actor
+@MainActor func restoreCookies() async {
+    let data = await Task.detached(priority: .utility) { KeychainCookieStorage.loadArchiveData() }.value
+}
+```
+
+The cost is not theoretical for blocking APIs. macOS answers a Keychain access prompt by blocking the
+*calling thread* until the user responds, so a main-actor `SecItemCopyMatching` freezes the whole app —
+no drawing, no input, and no scheduled Sparkle update check — until someone clicks. `WebKitManager`
+restored its cookie archive that way, which is why an unattended `Scripts/test-update-flow.sh` run on a
+machine whose Keychain prompt was unanswered looked exactly like a broken updater. A detached task also
+requires the work to be `Sendable`; when it is not, move it into a `nonisolated` function instead.
+
 ## Pre-Submit Checklists
 
 ### Performance
@@ -437,6 +463,8 @@ single-credit album worked: one link in the row is a row target, several are a l
 - [ ] Using `.task` instead of `.onAppear { Task { } }`
 - [ ] Continuation tokens scoped per-request (not shared across types)
 - [ ] No `static var shared` pattern with mutable assignment in `init`
+- [ ] I/O that must not block the UI uses `Task.detached`, not `Task { }`, which inherits the actor —
+      see [the pattern above](#-task--used-to-leave-the-main-actor)
 - [ ] WebView message handlers removed in `dismantleNSView`
 - [ ] `WKNavigationDelegate` implements `webViewWebContentProcessDidTerminate`
 

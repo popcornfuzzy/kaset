@@ -7,7 +7,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.popcornfuzzy.kaset</string>
+			<string>com.popcornfuzzy.Kaset</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>kaset</string>
