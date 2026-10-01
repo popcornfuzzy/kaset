@@ -229,6 +229,35 @@ enum ParsingHelpers {
         return nil
     }
 
+    /// Extracts the music video type from flex-column runs' watch endpoints.
+    ///
+    /// Search results embed it per run: `watchEndpoint.watchEndpointMusicSupportedConfigs
+    /// .watchEndpointMusicConfig.musicVideoType`. Used to tell an audio song from a
+    /// music video when matching variants.
+    static func extractMusicVideoTypeFromFlexColumns(_ data: [String: Any]) -> MusicVideoType? {
+        guard let flexColumns = data["flexColumns"] as? [[String: Any]] else { return nil }
+
+        for column in flexColumns {
+            guard let renderer = column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any],
+                  let text = renderer["text"] as? [String: Any],
+                  let runs = text["runs"] as? [[String: Any]]
+            else { continue }
+
+            for run in runs {
+                guard let endpoint = run["navigationEndpoint"] as? [String: Any],
+                      let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
+                      let configs = watchEndpoint["watchEndpointMusicSupportedConfigs"] as? [String: Any],
+                      let musicConfig = configs["watchEndpointMusicConfig"] as? [String: Any],
+                      let typeString = musicConfig["musicVideoType"] as? String
+                else { continue }
+
+                return MusicVideoType(rawValue: typeString)
+            }
+        }
+
+        return nil
+    }
+
     /// Extracts browse ID from navigation endpoint.
     static func extractBrowseId(from data: [String: Any]) -> String? {
         if let endpoint = data["navigationEndpoint"] as? [String: Any],

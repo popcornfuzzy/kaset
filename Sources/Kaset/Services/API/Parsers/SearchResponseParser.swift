@@ -303,9 +303,10 @@ enum SearchResponseParser {
             title: title,
             artists: artists,
             album: album,
-            duration: nil,
+            duration: ParsingHelpers.extractDurationFromFlexColumns(data),
             thumbnailURL: thumbnailURL,
-            videoId: videoId
+            videoId: videoId,
+            musicVideoType: ParsingHelpers.extractMusicVideoTypeFromFlexColumns(data)
         )
         return .song(song)
     }

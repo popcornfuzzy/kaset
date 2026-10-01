@@ -27,7 +27,8 @@ This is a fork of [Kaset made by sozercan](https://github.com/sozercan/kaset) th
 - 📣 **Share** — Share songs, playlists, albums, and artists via the native macOS share sheet
 - 🧑‍🎤 **Fullscreen View** – Open fullscreen view to focus on the lyrics with beautiful animations
 - ﹗ **Only Youtube Music – no Youtube bloat** – This fork removes the option to watch Youtube videos completely 
-- 📼 **Picture in Picture** – Watch music videos in a small window along with your song (unfortunately not supported with song only tracks)
+- 🎵 **Song/Video Matching** – Music videos play as their song-only version with proper album art; the video stays one miniplayer click away
+- 📼 **Picture in Picture** – Watch music videos in a small window along with your song (not available for tracks with no video counterpart)
   
 
 ## Requirements

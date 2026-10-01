@@ -27,7 +27,7 @@ enum SongMetadataParser {
         let menuData = self.parseMenuData(from: panelVideoRenderer)
         let musicVideoType = self.parseMusicVideoType(from: panelVideoRenderer)
 
-        return Song(
+        var song = Song(
             id: videoId,
             title: title,
             artists: artists,
@@ -40,6 +40,38 @@ enum SongMetadataParser {
             isInLibrary: menuData.isInLibrary,
             feedbackTokens: menuData.feedbackTokens
         )
+
+        // Attach the paired variant when the watch queue wraps the track with a counterpart.
+        if let counterpartRenderer = Self.counterpartRenderer(from: data),
+           let counterpart = PlaylistPanelItemParser.song(fromRenderer: counterpartRenderer)
+        {
+            song = song.paired(with: counterpart)
+        }
+
+        return song
+    }
+
+    /// Extracts the counterpart renderer from the first watch-queue item, when present.
+    static func counterpartRenderer(from data: [String: Any]) -> [String: Any]? {
+        guard let contents = data["contents"] as? [String: Any],
+              let watchNextRenderer = contents["singleColumnMusicWatchNextResultsRenderer"] as? [String: Any],
+              let tabbedRenderer = watchNextRenderer["tabbedRenderer"] as? [String: Any],
+              let watchNextTabbedResults = tabbedRenderer["watchNextTabbedResultsRenderer"] as? [String: Any],
+              let tabs = watchNextTabbedResults["tabs"] as? [[String: Any]],
+              let firstTab = tabs.first,
+              let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
+              let tabContent = tabRenderer["content"] as? [String: Any],
+              let musicQueueRenderer = tabContent["musicQueueRenderer"] as? [String: Any],
+              let queueContent = musicQueueRenderer["content"] as? [String: Any],
+              let playlistPanelRenderer = queueContent["playlistPanelRenderer"] as? [String: Any],
+              let playlistContents = playlistPanelRenderer["contents"] as? [[String: Any]],
+              let firstItem = playlistContents.first,
+              let wrapper = firstItem["playlistPanelVideoWrapperRenderer"] as? [String: Any]
+        else {
+            return nil
+        }
+
+        return PlaylistPanelItemParser.counterpartRenderer(in: wrapper)
     }
 
     /// Extracts the playlistPanelVideoRenderer from the next endpoint response.

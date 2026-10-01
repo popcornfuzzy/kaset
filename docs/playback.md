@@ -500,6 +500,29 @@ log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info |
 | `The audio tap has captured nothing 5s after starting` | The tap is not receiving audio — the device will show a spinner forever. Start the track playing and cast again: the tap set is resolved when casting starts, and WebKit's helper must have opened the audio hardware by then. |
 | `The audio tap has delivered only silence 5s after starting` | The system audio recording permission is missing. Grant it in System Settings → Privacy & Security → Screen & System Audio Recording and cast again. |
 
+## Song/Video Variant Matching
+
+A track often exists as both a song (`MUSIC_VIDEO_TYPE_ATV`) and a music video
+(`MUSIC_VIDEO_TYPE_OMV`); playlists and radio mixes frequently carry the video. Kaset plays the
+song version everywhere — queue, direct play, radio/mix, session restore — so the now-playing and
+queue show the album art, and keeps the video for the PiP miniplayer. See
+[ADR-0028](adr/0028-song-video-variant-matching.md).
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `SongVariantMatcher` | `Sources/Kaset/Services/Player/SongVariantMatcher.swift` | Resolves entries to the song variant, scores search candidates, caches results |
+| `PlaylistPanelItemParser` | `Sources/Kaset/Services/API/Parsers/PlaylistPanelItemParser.swift` | Reads the `playlistPanelVideoWrapperRenderer` counterpart |
+| `SongCounterpart` | `Sources/Kaset/Models/Song.swift` | Flat pairing stored on `Song` |
+
+- The pairing is the API's song/video switcher when present, else a filtered song search scored on
+title, artist and length (`searchSongs`).
+- Resolution runs ahead of playback for the next `PlayerService.variantResolutionWindow` entries,
+so a video is swapped before it starts.
+- A known video counterpart makes `hasVideoSurface` true; expanding the miniplayer clicks
+YouTube's Video tab. `PlayerService+WebQueueSync.canonicalPlaybackVideoId(for:)` folds the video
+page's id back onto the song so the queue does not see drift and the album art is kept.
+- The behavior is gated by **Settings → General → Prefer Audio (Song) Versions** (default on).
+
 ## Video Mode
 
 For floating video window functionality, see [docs/video.md](video.md).

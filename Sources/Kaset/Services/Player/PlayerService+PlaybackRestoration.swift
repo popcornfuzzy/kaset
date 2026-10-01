@@ -33,15 +33,27 @@ extension PlayerService {
         progress: TimeInterval,
         duration: TimeInterval
     ) {
-        guard let currentSong = queue[safe: currentIndex] else { return }
+        guard let originalSong = queue[safe: currentIndex] else { return }
+
+        // Legacy sessions may hold video tracks; resolve them to their song variants on restore.
+        let preparedQueue = self.normalizedVariants(queue)
+        let preferredVideoId = self.audioPreferredVariant(originalSong).videoId
+        let preparedIndex = preparedQueue.firstIndex(where: { $0.videoId == preferredVideoId })
+            ?? min(currentIndex, preparedQueue.count - 1)
+        guard let currentSong = preparedQueue[safe: preparedIndex] else { return }
 
         self.clearRestoredPlaybackSessionState()
         self.clearForwardSkipNavigationStack()
-        self.queue = queue
-        self.currentIndex = currentIndex
+        self.queue = preparedQueue
+        self.currentIndex = preparedIndex
         self.currentTrack = currentSong
+        self.currentTrackVideoVariant = self.preferAudioVersions
+            ? self.variantMatcher.videoVariant(of: currentSong)
+            : nil
         self.pendingPlayVideoId = currentSong.videoId
-        self.currentTrackHasVideo = currentSong.musicVideoType?.hasVideoContent ?? currentSong.hasVideo ?? false
+        self.currentTrackHasVideo = currentSong.isVideoVariant
+            || self.currentTrackVideoVariant != nil
+            || (currentSong.hasVideo ?? false)
         self.showMiniPlayer = false
         self.songNearingEnd = false
         self.isKasetInitiatedPlayback = false
@@ -74,6 +86,9 @@ extension PlayerService {
         if let cachedStatus = SongLikeStatusManager.shared.status(for: currentSong.videoId) {
             self.currentTrackLikeStatus = cachedStatus
         }
+
+        // Resolve the song variants of the upcoming entries ahead of their playback.
+        self.resolveUpcomingVariants()
 
         // At app launch the cache may be empty and the persisted song may lack likeStatus.
         // Fetch metadata from the API to get the correct like status.

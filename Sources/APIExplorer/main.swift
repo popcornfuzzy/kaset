@@ -715,6 +715,142 @@ func exploreContinuation(_ token: String, endpoint: String = "browse", verbose: 
     }
 }
 
+// MARK: - Song / Video Variant Exploration
+
+/// Describes one queue panel renderer as `videoId | musicVideoType | title`.
+private func describePanelRenderer(_ renderer: [String: Any]) -> String {
+    let videoId = renderer["videoId"] as? String ?? "?"
+    let title = joinedRunsText(renderer["title"] as? [String: Any]) ?? "?"
+
+    let videoType: String = {
+        guard let navEndpoint = renderer["navigationEndpoint"] as? [String: Any],
+              let watchEndpoint = navEndpoint["watchEndpoint"] as? [String: Any],
+              let configs = watchEndpoint["watchEndpointMusicSupportedConfigs"] as? [String: Any],
+              let musicConfig = configs["watchEndpointMusicConfig"] as? [String: Any],
+              let type = musicConfig["musicVideoType"] as? String
+        else { return "(no musicVideoType)" }
+        return type
+    }()
+
+    return "\(videoId) | \(videoType) | \(title)"
+}
+
+/// Returns `(primary, counterpart)` renderers from a queue panel item, handling both the direct
+/// and `playlistPanelVideoWrapperRenderer` shapes.
+private func panelRenderers(from item: [String: Any]) -> (primary: [String: Any], counterpart: [String: Any]?)? {
+    if let direct = item["playlistPanelVideoRenderer"] as? [String: Any] {
+        return (direct, nil)
+    }
+
+    guard let wrapper = item["playlistPanelVideoWrapperRenderer"] as? [String: Any],
+          let primary = (wrapper["primaryRenderer"] as? [String: Any])?["playlistPanelVideoRenderer"] as? [String: Any]
+    else {
+        return nil
+    }
+
+    let counterpart: [String: Any]? = if let counterparts = wrapper["counterpart"] as? [[String: Any]],
+                                         let first = counterparts.first,
+                                         let counterpartRenderer = first["counterpartRenderer"] as? [String: Any]
+    {
+        counterpartRenderer["playlistPanelVideoRenderer"] as? [String: Any]
+    } else {
+        nil
+    }
+
+    return (primary, counterpart)
+}
+
+/// Recursively collects playlist panel items from a response.
+private func collectPanelItems(in value: Any, into items: inout [[String: Any]]) {
+    if let dictionary = value as? [String: Any] {
+        if dictionary["playlistPanelVideoRenderer"] != nil || dictionary["playlistPanelVideoWrapperRenderer"] != nil {
+            items.append(dictionary)
+            return
+        }
+        for nested in dictionary.values {
+            collectPanelItems(in: nested, into: &items)
+        }
+    } else if let array = value as? [Any] {
+        for element in array {
+            collectPanelItems(in: element, into: &items)
+        }
+    }
+}
+
+/// Prints the song/video pairing for a video id from `next` and `music/get_queue`.
+func exploreVariants(_ videoId: String, verbose: Bool = false, outputFile: String? = nil) async {
+    print("🎬 Exploring song/video variants for: \(videoId)")
+    print()
+
+    let endpoints: [(String, [String: Any])] = [
+        ("next (audio-only)", ["videoId": videoId, "enablePersistentPlaylistPanel": true, "isAudioOnly": true]),
+        ("next (no isAudioOnly)", ["videoId": videoId, "enablePersistentPlaylistPanel": true]),
+        ("next (RDAMVM radio)", ["videoId": videoId, "playlistId": "RDAMVM\(videoId)", "enablePersistentPlaylistPanel": true]),
+        (
+            "next (music-supported-configs)",
+            [
+                "videoId": videoId,
+                "playlistId": "RDAMVM\(videoId)",
+                "enablePersistentPlaylistPanel": true,
+                "isAudioOnly": true,
+                "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+                "watchEndpointMusicSupportedConfigs": [
+                    "watchEndpointMusicConfig": [
+                        "hasPersistentPlaylistPanel": true,
+                        "musicVideoType": "MUSIC_VIDEO_TYPE_ATV",
+                    ],
+                ],
+            ]
+        ),
+        ("music/get_queue", ["videoIds": [videoId]]),
+    ]
+
+    for (label, body) in endpoints {
+        let endpoint = label.hasPrefix("music/") ? "music/get_queue" : "next"
+        print("── \(label) ─────────────────────────────────────────────")
+        do {
+            let (data, statusCode) = try await makeRequest(endpoint: endpoint, body: body)
+            print("✅ HTTP \(statusCode)")
+
+            var items: [[String: Any]] = []
+            collectPanelItems(in: data, into: &items)
+
+            if items.isEmpty {
+                print("   ⚠️ No playlist panel items found")
+            }
+
+            for (index, item) in items.prefix(verbose ? 50 : 10).enumerated() {
+                guard let renderers = panelRenderers(from: item) else { continue }
+                print("   [\(index)] primary:     \(describePanelRenderer(renderers.primary))")
+                if let counterpart = renderers.counterpart {
+                    print("         counterpart: \(describePanelRenderer(counterpart))")
+                } else {
+                    print("         counterpart: (none)")
+                }
+            }
+
+            if verbose {
+                print("\n📄 Raw response (pretty-printed):")
+                if let prettyData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted),
+                   let prettyString = String(data: prettyData, encoding: .utf8)
+                {
+                    print(prettyString)
+                }
+            }
+
+            if let outputFile {
+                if let prettyData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted) {
+                    try prettyData.write(to: URL(fileURLWithPath: outputFile))
+                    print("   💾 Saved to: \(outputFile)")
+                }
+            }
+        } catch {
+            print("❌ Error: \(error.localizedDescription)")
+        }
+        print()
+    }
+}
+
 func checkAuthStatus() {
     print("🔐 Authentication Status")
     print("========================\n")
@@ -1907,6 +2043,7 @@ func showHelp() {
     Commands:
       browse <browseId> [params]     Explore a browse endpoint
       action <endpoint> <body>       Explore an action endpoint (body as JSON)
+      variants <videoId>             Show the song/video counterpart pairing for a track
       continuation <token> [ep]      Explore a continuation (ep: 'browse' or 'next')
       transcript <videoId>           Explore the transcript (caption) flow for a video
       chapters <videoId>             Explore where a video's chapters live in the payloads
@@ -1940,6 +2077,9 @@ func showHelp() {
       # Action endpoints
       ./api-explorer.swift action search '{"query":"never gonna give you up"}'
       ./api-explorer.swift action player '{"videoId":"dQw4w9WgXcQ"}'
+
+      # Song/video variants
+      ./api-explorer.swift variants dQw4w9WgXcQ
       ./api-explorer.swift action next '{"playlistId":"RDEM...","videoId":"abc123"}'
 
       # Continuation (for pagination / infinite mix)
@@ -2032,6 +2172,14 @@ func runMain() async {
         let endpoint = filteredArgs[1]
         let bodyJson = filteredArgs[2]
         await exploreAction(endpoint, bodyJson: bodyJson, verbose: verbose, outputFile: outputFile)
+
+    case "variants":
+        guard filteredArgs.count >= 2 else {
+            print("❌ Usage: variants <videoId>")
+            print("   Prints the song/video counterpart pairing from `next` and `music/get_queue`.")
+            return
+        }
+        await exploreVariants(filteredArgs[1], verbose: verbose, outputFile: outputFile)
 
     case "continuation":
         guard filteredArgs.count >= 2 else {
