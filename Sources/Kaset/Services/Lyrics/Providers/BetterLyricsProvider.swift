@@ -14,7 +14,9 @@ struct BetterLyricsResponse: Decodable {
 ///
 /// A single `/getLyrics` request maps a title and artist (plus optional
 /// duration and album) to Apple Music TTML, which `TTMLParser` turns into
-/// word-synced lyrics. The exact title and artist are sent — deliberately not
+/// word-synced lyrics. A song that only has unsynced lyrics comes back as a
+/// TTML document with no timing; the provider returns that as `.plain` so it
+/// still reaches the display. The exact title and artist are sent — deliberately not
 /// normalized — because normalizing can match a different edit (radio vs.
 /// album) and return lyrics that drift out of sync.
 final class BetterLyricsProvider: LyricsProvider {
@@ -40,13 +42,19 @@ final class BetterLyricsProvider: LyricsProvider {
 
     func search(info: LyricsSearchInfo) async -> LyricResult {
         do {
-            guard let ttml = try await self.fetchTTML(info: info),
-                  let synced = TTMLParser.parse(ttml, source: self.name),
-                  !synced.isEmpty
-            else {
+            guard let ttml = try await self.fetchTTML(info: info) else {
                 return .unavailable
             }
-            return .synced(synced)
+            if let synced = TTMLParser.parse(ttml, source: self.name), !synced.isEmpty {
+                return .synced(synced)
+            }
+            // A song with only unsynced lyrics still comes back as TTML, but with
+            // no timing. It belongs on the plain path so the lyrics system can
+            // rank it against the other providers' results.
+            if let plain = TTMLParser.plainLyrics(ttml, source: self.name) {
+                return .plain(plain)
+            }
+            return .unavailable
         } catch is CancellationError {
             return .unavailable
         } catch {

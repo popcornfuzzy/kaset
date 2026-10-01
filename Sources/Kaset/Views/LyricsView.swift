@@ -179,12 +179,18 @@ struct LyricsView: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 // A lower-fidelity result is shown, but a better one may still
-                // arrive from another provider.
-                if self.syncedLyricsService.searchingForBetterLyrics {
-                    ShimmerLine(text: String(localized: "Still searching for lyrics"))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+                // arrive from another provider. The animation is scoped to this
+                // caption so a lyrics swap in the same update is not animated
+                // with it.
+                Group {
+                    if self.syncedLyricsService.searchingForBetterLyrics {
+                        ShimmerLine(text: String(localized: "Still searching for lyrics"))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .transition(.lyricsSearchingCaption)
+                    }
                 }
+                .animation(.smooth(duration: 0.4), value: self.syncedLyricsService.searchingForBetterLyrics)
 
                 switch self.syncedLyricsService.currentLyrics {
                 case let .synced(synced):

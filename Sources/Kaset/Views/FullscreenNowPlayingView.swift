@@ -415,10 +415,16 @@ struct FullscreenNowPlayingView: View {
 
     private var lyricsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if self.syncedLyricsService.searchingForBetterLyrics {
-                ShimmerLine(text: String(localized: "Still searching for lyrics"))
-                    .padding(.horizontal, 8)
+            Group {
+                // Scoped so a lyrics swap in the same update is not animated
+                // along with the caption.
+                if self.syncedLyricsService.searchingForBetterLyrics {
+                    ShimmerLine(text: String(localized: "Still searching for lyrics"), onDark: true)
+                        .padding(.horizontal, 8)
+                        .transition(.lyricsSearchingCaption)
+                }
             }
+            .animation(.smooth(duration: 0.4), value: self.syncedLyricsService.searchingForBetterLyrics)
             Group {
                 if self.playerService.currentTrack == nil {
                     self.emptyLyricsState(icon: "play.circle", title: String(localized: "No Song Playing"), message: String(localized: "Play a song to view synced lyrics."))
@@ -451,7 +457,10 @@ struct FullscreenNowPlayingView: View {
                     }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }.padding(.horizontal, 8).padding(.vertical, 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private var lyricsFadeMask: some View { LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08), .init(color: .black, location: 0.92), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom) }

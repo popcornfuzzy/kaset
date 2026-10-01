@@ -19,13 +19,42 @@ import Foundation
 /// overlap the lead in time, so mixing them in would glue their text onto the
 /// lead line and drag the karaoke fill backwards.
 enum TTMLParser {
+    /// Parses TTML into word- or line-synced lyrics.
+    ///
+    /// A document whose paragraphs carry no timing at all is not synced lyrics —
+    /// the same payload BetterLyrics serves for a song that only has unsynced
+    /// lyrics. `parse` returns `nil` for it rather than stacking every paragraph
+    /// on the timeline at zero, leaving the caller to read it with
+    /// `plainLyrics(_:source:)`.
     static func parse(_ raw: String, source: String) -> SyncedLyrics? {
+        guard let delegate = Self.parseDocument(raw), delegate.sawTiming, !delegate.lines.isEmpty else {
+            return nil
+        }
+        return SyncedLyrics(lines: delegate.lines, source: source)
+    }
+
+    /// The document's text as plain lyrics, read only from a document that
+    /// carries text but no timing.
+    ///
+    /// Returns `nil` for a timed document (that belongs to `parse`), for a
+    /// document with no readable text, and for anything that is not TTML.
+    static func plainLyrics(_ raw: String, source: String) -> Lyrics? {
+        guard let delegate = Self.parseDocument(raw), !delegate.sawTiming else { return nil }
+        let text = delegate.lines
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        guard !text.isEmpty else { return nil }
+        return Lyrics(text: text, source: source)
+    }
+
+    private static func parseDocument(_ raw: String) -> TTMLParserDelegate? {
         guard let data = raw.data(using: .utf8) else { return nil }
         let delegate = TTMLParserDelegate()
         let parser = XMLParser(data: data)
         parser.delegate = delegate
-        guard parser.parse(), !delegate.lines.isEmpty else { return nil }
-        return SyncedLyrics(lines: delegate.lines, source: source)
+        guard parser.parse() else { return nil }
+        return delegate
     }
 }
 
@@ -33,6 +62,11 @@ enum TTMLParser {
 
 private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
     var lines: [SyncedLyricLine] = []
+
+    /// Whether the document declared any timing at all — a `<p>` window or a
+    /// timed `<span>`. An untimed document is not synced lyrics; the parser reads
+    /// its text so the caller can fall back to plain lyrics instead.
+    var sawTiming = false
 
     /// The kind of span currently open. A backing-vocal container holds the word
     /// spans of one backing phrase; word spans are the leaves that carry text.
@@ -94,6 +128,9 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             self.beginLine()
             self.lineBeginMs = Self.timeToMs(attributeDict["begin"])
             self.lineEndMs = Self.timeToMs(attributeDict["end"])
+            if self.lineBeginMs != nil || self.lineEndMs != nil {
+                self.sawTiming = true
+            }
         case "span":
             if self.skippedSpanDepth > 0 {
                 self.skippedSpanDepth += 1
@@ -115,6 +152,9 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             self.spanStack.append(isBackground ? .backgroundWord : .leadWord)
             self.spanText = ""
             self.spanBeginMs = Self.timeToMs(attributeDict["begin"])
+            if self.spanBeginMs != nil {
+                self.sawTiming = true
+            }
             if isBackground {
                 // Whitespace between the previous backing span and this one marks a
                 // word boundary; syllable continuations have none.

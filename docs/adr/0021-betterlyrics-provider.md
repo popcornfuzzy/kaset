@@ -29,6 +29,12 @@ BetterLyrics.
   translated/romanized restatements are not appended as out-of-sync words.
 - BetterLyrics is added to the default combined provider chain and exposed as
   its own `BetterLyrics`-only option in General settings.
+- The API also serves songs that only have unsynced lyrics, as a TTML document
+  whose paragraphs carry text but no timing. `TTMLParser.parse` reports such a
+  document as no synced lyrics rather than stacking its paragraphs at zero, and
+  `TTMLParser.plainLyrics` reads its text so `BetterLyricsProvider` can return
+  `.plain` and let the fidelity ranking decide between it and every other
+  provider's result.
 
 ## Consequences
 
@@ -37,4 +43,5 @@ BetterLyrics.
 - The provider is an unofficial, third-party API and may be rate-limited or
   changed without notice.
 - Availability depends on BetterLyrics' Apple Music catalog coverage.
+- A song with only unsynced lyrics still produces text instead of "no lyrics".
 - No credentials, tokens, or cookies are persisted or logged by Kaset.

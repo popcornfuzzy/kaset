@@ -56,6 +56,36 @@ struct BetterLyricsProviderTests {
         #expect(TTMLParser.parse("not xml", source: "BetterLyrics") == nil)
     }
 
+    @Test("Reads a document with text but no timing as plain lyrics, not synced")
+    func untimedTTMLBecomesPlain() {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+          <p>Only unsynced</p>
+          <p>Text without a timeline</p>
+        </div></body></tt>
+        """
+
+        // No paragraph carries a window, so it is not synced lyrics.
+        #expect(TTMLParser.parse(raw, source: "BetterLyrics") == nil)
+
+        let plain = TTMLParser.plainLyrics(raw, source: "BetterLyrics")
+        #expect(plain?.text == "Only unsynced\nText without a timeline")
+        #expect(plain?.source == "BetterLyrics")
+    }
+
+    @Test("Returns no plain lyrics for a timed document")
+    func timedTTMLIsNotPlain() {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+          <p begin="00:00:01.000" end="00:00:02.000">Hello</p>
+          <p begin="00:00:03.000" end="00:00:04.000">World</p>
+        </div></body></tt>
+        """
+
+        #expect(TTMLParser.plainLyrics(raw, source: "BetterLyrics") == nil)
+        #expect(TTMLParser.parse(raw, source: "BetterLyrics")?.lines.count == 2)
+    }
+
     // MARK: - Response decoding
 
     @Test("Decodes a TTML response payload")
@@ -116,6 +146,32 @@ struct BetterLyricsProviderTests {
         #expect(items["a"] == "The Weeknd")
         #expect(items["d"] == "200")
         #expect(items["al"] == "After Hours")
+    }
+
+    @Test("search returns plain lyrics when the API serves untimed TTML")
+    func searchReturnsPlainLyrics() async throws {
+        defer { BetterLyricsURLProtocol.handler = nil }
+        BetterLyricsURLProtocol.handler = { request in
+            let ttml = """
+            <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+              <p>Only unsynced</p>
+              <p>Lyrics here</p>
+            </div></body></tt>
+            """
+            let data = try JSONEncoder().encode(["ttml": ttml])
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, data)
+        }
+
+        let provider = BetterLyricsProvider(session: BetterLyricsURLProtocol.makeSession())
+        let result = await provider.search(info: Self.makeSearchInfo())
+
+        guard case let .plain(lyrics) = result else {
+            Issue.record("Expected plain result")
+            return
+        }
+        #expect(lyrics.text == "Only unsynced\nLyrics here")
+        #expect(lyrics.source == "BetterLyrics")
     }
 
     @Test("search returns unavailable when the service has no lyrics")

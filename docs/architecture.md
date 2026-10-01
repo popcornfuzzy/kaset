@@ -312,7 +312,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 
 **Key Behaviors**:
 - Searches all enabled `LyricsProvider` implementations concurrently using `LyricsSearchInfo`; the enabled set and its priority come from `SettingsManager`
-- Ships with `BetterLyricsProvider`, `PaxsenixProvider`, `UnisonProvider`, `KuGoProvider`, and `LRCLibProvider`; the highest-fidelity result across them wins (word > line > plain)
+- Ships with `BetterLyricsProvider`, `PaxsenixProvider`, `UnisonProvider`, `KuGoProvider`, and `LRCLibProvider`; the highest-fidelity result across them wins (word > line > plain). When BetterLyrics only has unsynced lyrics it serves a TTML document with no timing; the provider returns that as `.plain` rather than "no lyrics".
 - Caches results in memory by `videoId` and can upgrade cached plain lyrics when synced lyrics become available later
 - Persists each resolved result to one file per song via `LyricsCacheStore` (`~/Library/Application Support/Kaset/LyricsCache/<videoId>.json`) when a store is injected
 - Resolves the real home directory (via `getpwuid`) instead of the sandbox container; `Kaset.entitlements` grants the sandboxed app a home-relative temporary exception for `~/Library/Application Support/Kaset/`
@@ -333,7 +333,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 - `Sources/Kaset/Services/Lyrics/Providers/KuGoProvider.swift` — Line-synced LRC via KuGou
 - `Sources/Kaset/Services/Lyrics/Providers/LRCLibProvider.swift` — External synced lyrics provider
 - `Sources/Kaset/Services/API/Parsers/LRCParser.swift` — LRC to `SyncedLyrics` parser
-- `Sources/Kaset/Services/API/Parsers/TTMLParser.swift` — Apple Music TTML to `SyncedLyrics` parser
+- `Sources/Kaset/Services/API/Parsers/TTMLParser.swift` — Apple Music TTML to `SyncedLyrics` (and untimed TTML to plain `Lyrics`) parser
 
 **Integration**: Created once in `KasetApp` and injected through the SwiftUI environment for lyrics views.
 
