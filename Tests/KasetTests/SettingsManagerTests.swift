@@ -72,6 +72,12 @@ struct SettingsManagerTests {
         #expect(manager.rememberPlaybackSettings == false)
     }
 
+    @Test("Default preferAudioVersionsEnabled is true")
+    func defaultPreferAudioVersionsEnabled() {
+        let manager = SettingsManager.shared
+        #expect(manager.preferAudioVersionsEnabled == true)
+    }
+
     @Test("Disabling rememberPlaybackSettings clears persisted values")
     func disablingRememberPlaybackSettingsClearsValues() {
         let manager = SettingsManager.shared

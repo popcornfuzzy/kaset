@@ -1681,15 +1681,26 @@ enum PlaylistParser {
             .flatMap { $0 as? String }
             .flatMap { URL(string: $0) }
 
-        return Song(
+        var song = Song(
             id: videoId,
             title: title,
             artists: [Artist(id: artistId ?? "", name: artistName, thumbnailURL: nil)],
             album: nil,
             duration: durationText.flatMap { ParsingHelpers.parseDuration($0) },
             thumbnailURL: thumbnailURL,
-            videoId: videoId
+            videoId: videoId,
+            musicVideoType: SongMetadataParser.parseMusicVideoType(from: renderer)
         )
+
+        // A wrapped entry carries the paired song/video variant (the UI switcher).
+        if let wrapper = content["playlistPanelVideoWrapperRenderer"] as? [String: Any],
+           let counterpartRenderer = PlaylistPanelItemParser.counterpartRenderer(in: wrapper),
+           let counterpart = PlaylistPanelItemParser.song(fromRenderer: counterpartRenderer)
+        {
+            song = song.paired(with: counterpart)
+        }
+
+        return song
     }
 
     /// Extracts the playlistPanelVideoRenderer from queue content.

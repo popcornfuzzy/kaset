@@ -63,3 +63,4 @@ What becomes easier or more difficult because of this change?
 | [0025](0025-background-vocals.md) | Background Vocals in the Shared Lyrics Model | Accepted |
 | [0026](0026-fullscreen-key-routing.md) | Fullscreen Player Key Routing | Accepted |
 | [0027](0027-stable-code-signing-identity.md) | Stable Code Signing Identity for Distributed Builds | Accepted |
+| [0028](0028-song-video-variant-matching.md) | Song/Video Variant Matching | Accepted |

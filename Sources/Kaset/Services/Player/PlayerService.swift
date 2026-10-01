@@ -248,6 +248,38 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentTrackHasVideo || self.miniPlayerVideoAspectRatio != nil
     }
 
+    /// The video variant paired with the currently playing song, when it has one.
+    ///
+    /// Kaset plays the song version; this is the music video the PiP miniplayer switches to on
+    /// demand. Set by ``play(song:webLoadStrategy:episode:)`` from the song/video matcher.
+    var currentTrackVideoVariant: Song?
+
+    /// Whether the miniplayer is currently showing the video variant rather than the song.
+    var isMiniPlayerShowingVideoVariant: Bool = false
+
+    /// Matches music-video tracks with their song-only counterparts.
+    let variantMatcher = SongVariantMatcher()
+
+    /// Whether Kaset should play the song/audio version of paired tracks (General settings).
+    var preferAudioVersions: Bool {
+        SettingsManager.shared.preferAudioVersionsEnabled
+    }
+
+    /// The entry to play for a song: its audio variant when matching is enabled, else unchanged.
+    func audioPreferredVariant(_ song: Song) -> Song {
+        self.preferAudioVersions ? self.variantMatcher.audioPreferred(song) : song
+    }
+
+    /// Rewrites a batch of queue songs to their audio variants when matching is enabled.
+    func normalizedVariants(_ songs: [Song]) -> [Song] {
+        self.preferAudioVersions ? self.variantMatcher.normalize(songs) : songs
+    }
+
+    /// The video id of the current track's video variant, when known.
+    var currentTrackVideoVariantVideoId: String? {
+        self.currentTrackVideoVariant?.videoId
+    }
+
     /// Whether the Web player currently reports ad playback.
     private(set) var isAdPlaying: Bool = false
 
@@ -416,11 +448,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         if enabled {
             self.showMiniPlayer = true
+            // The miniplayer is the one place the music video appears: switching it on shows the
+            // video variant of a matched track (see `MiniPlayerWebView`), while the queue and the
+            // player bar keep the song's album art.
+            self.isMiniPlayerShowingVideoVariant = self.currentTrackVideoVariant != nil
             self.logger.info("Mini player enabled manually")
             return
         }
 
         self.showMiniPlayer = false
+        self.isMiniPlayerShowingVideoVariant = false
         self.logger.info("Mini player manual override disabled")
     }
 
@@ -692,6 +729,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             videoId: videoId
         )
 
+        // Remember the paired video when the entry (or a prior resolution) knows one.
+        let variantSource = self.queue.first(where: { $0.videoId == videoId }) ?? self.currentTrack
+        self.currentTrackVideoVariant = self.preferAudioVersions
+            ? variantSource.flatMap { self.variantMatcher.videoVariant(of: $0) }
+            : nil
+        self.isMiniPlayerShowingVideoVariant = false
+        self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
+
         self.pendingPlayVideoId = videoId
 
         self.applyMiniPlayerPolicyForPlayback(videoId: videoId, isPodcast: false)
@@ -699,6 +744,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         // Fetch full song metadata in the background to get feedbackTokens
         await self.fetchSongMetadata(videoId: videoId)
+
+        // Resolve the song variants of the upcoming queue entries ahead of their playback.
+        self.resolveUpcomingVariants()
     }
 
     /// Plays a song.
@@ -715,6 +763,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         webLoadStrategy: SingletonPlayerWebView.VideoLoadStrategy,
         episode: ArtistEpisode? = nil
     ) async {
+        // Always play the song/audio variant when one exists; the video is kept as the
+        // counterpart for the PiP miniplayer (see ``currentTrackVideoVariant``).
+        let song = self.audioPreferredVariant(song)
+        self.currentTrackVideoVariant = self.preferAudioVersions
+            ? self.variantMatcher.videoVariant(of: song)
+            : nil
+        self.isMiniPlayerShowingVideoVariant = false
+
         self.logger.info("Playing song: \(song.title)")
         self.logger.debug("Web load strategy: \(String(describing: webLoadStrategy))")
         self.clearRestoredPlaybackSessionState()
@@ -726,6 +782,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.shouldSuppressAutoplayAfterQueueEnd = false
         let previousVideoId = self.currentTrack?.videoId
         self.currentTrack = song
+        // A paired music video is a video surface for the PiP toggle even though the song plays.
+        self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
 
         // Kaset-driven track changes (`next()`, `previous()`, `playFromQueue`) don't produce a
         // WebView metadata change, so `updateTrackMetadata`'s `trackChanged` reconciliation never
@@ -763,6 +821,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         if song.feedbackTokens == nil {
             await self.fetchSongMetadata(videoId: song.videoId)
         }
+
+        // Resolve the song variants of the upcoming queue entries ahead of their playback.
+        self.resolveUpcomingVariants()
     }
 
     /// Called when the mini player confirms playback has started.
@@ -858,6 +919,60 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// (MPRemoteCommandCenter and Web mediaSession).
     var lastRemoteSkipInstant: ContinuousClock.Instant?
     var lastRemoteSkipDirection: RemoteSkipDirection?
+
+    /// Number of upcoming queue entries whose song/video variants are resolved ahead of playback.
+    static let variantResolutionWindow = 4
+
+    /// Resolves the song variants of the next few queue entries so a music video is swapped for
+    /// its song **before** it starts playing.
+    ///
+    /// Safe to call often: entries already paired, cached, or previously found unmatched are skipped.
+    func resolveUpcomingVariants() {
+        guard self.preferAudioVersions, !self.queue.isEmpty else { return }
+        let start = max(0, min(self.currentIndex, self.queue.count - 1))
+        let end = min(start + Self.variantResolutionWindow, self.queue.count - 1)
+        guard start <= end else { return }
+
+        let window = Array(self.queue[start...end])
+        let pending = self.variantMatcher.pendingResolutions(in: window)
+        guard !pending.isEmpty else { return }
+
+        let client = self.ytMusicClient
+        Task { [weak self] in
+            for videoSong in pending {
+                guard let self else { return }
+                await self.variantMatcher.resolveAudioVariant(for: videoSong, client: client)
+                self.applyResolvedVariant(for: videoSong)
+            }
+        }
+    }
+
+    /// Applies a freshly resolved pairing to the queue and to the playing track.
+    ///
+    /// The playing track keeps playing uninterrupted: its display metadata becomes the song (so
+    /// the album art is shown) while the video stays available as ``currentTrackVideoVariant``.
+    private func applyResolvedVariant(for videoSong: Song) {
+        let preferred = self.audioPreferredVariant(videoSong)
+        guard preferred.videoId != videoSong.videoId else { return }
+
+        if let index = self.queue.firstIndex(where: { $0.videoId == videoSong.videoId }) {
+            self.queue[index] = preferred
+        }
+
+        if self.currentTrack?.videoId == videoSong.videoId {
+            // Keep the like/library state: the rating belongs to the track, and the audio variant
+            // has not been fetched yet.
+            var promoted = preferred
+            promoted.likeStatus = self.currentTrack?.likeStatus
+            promoted.isInLibrary = self.currentTrack?.isInLibrary
+            promoted.feedbackTokens = self.currentTrack?.feedbackTokens
+            self.currentTrack = promoted
+            self.currentTrackVideoVariant = videoSong.strippingCounterpart()
+            self.currentTrackHasVideo = true
+        }
+
+        self.saveQueueForPersistence()
+    }
 
     /// Updates whether the current track has video available.
     /// Kept as metadata for current track capabilities.

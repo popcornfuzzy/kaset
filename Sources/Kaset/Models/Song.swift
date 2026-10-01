@@ -20,6 +20,14 @@ struct Song: Identifiable, Codable, Hashable {
     /// Use `musicVideoType?.hasVideoContent` to check if video is worth displaying.
     var musicVideoType: MusicVideoType?
 
+    /// The paired song/video variant of this track, when YouTube Music reports one
+    /// (the UI's song/video switcher).
+    ///
+    /// A `Song` cannot store another `Song` (value types cannot recursively contain
+    /// themselves), so the pairing is stored as a flat ``SongCounterpart``. Use
+    /// ``SongVariantMatcher`` to decide which side should play.
+    var counterpart: SongCounterpart?
+
     /// Like/dislike status of the song (nil if unknown).
     var likeStatus: LikeStatus?
 
@@ -40,6 +48,7 @@ struct Song: Identifiable, Codable, Hashable {
         videoId: String,
         hasVideo: Bool? = nil,
         musicVideoType: MusicVideoType? = nil,
+        counterpart: SongCounterpart? = nil,
         likeStatus: LikeStatus? = nil,
         isInLibrary: Bool? = nil,
         feedbackTokens: FeedbackTokens? = nil
@@ -53,6 +62,7 @@ struct Song: Identifiable, Codable, Hashable {
         self.videoId = videoId
         self.hasVideo = hasVideo
         self.musicVideoType = musicVideoType
+        self.counterpart = counterpart
         self.likeStatus = likeStatus
         self.isInLibrary = isInLibrary
         self.feedbackTokens = feedbackTokens
@@ -69,6 +79,76 @@ struct Song: Identifiable, Codable, Hashable {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+extension Song {
+    /// Whether this track is the video variant (an official music video).
+    ///
+    /// Deliberately strict: without a `musicVideoType` we cannot tell a video from a
+    /// song, and guessing wrong would swap a plain song for nothing.
+    var isVideoVariant: Bool {
+        self.musicVideoType?.hasVideoContent ?? false
+    }
+
+    /// A copy with the counterpart stripped.
+    func strippingCounterpart() -> Song {
+        guard self.counterpart != nil else { return self }
+        var copy = self
+        copy.counterpart = nil
+        return copy
+    }
+
+    /// A copy carrying `counterpart` as the paired variant.
+    func paired(with counterpart: SongCounterpart?) -> Song {
+        var copy = self
+        copy.counterpart = counterpart
+        return copy
+    }
+
+    /// A copy paired with `song` as the other variant.
+    func paired(with song: Song) -> Song {
+        self.paired(with: SongCounterpart(song: song))
+    }
+}
+
+// MARK: - SongCounterpart
+
+/// The paired song/video variant of a track, flattened so it can be stored on a `Song`
+/// without a recursive value type.
+struct SongCounterpart: Codable, Hashable {
+    let videoId: String
+    let title: String
+    let artists: [Artist]
+    let duration: TimeInterval?
+    let thumbnailURL: URL?
+    let musicVideoType: MusicVideoType?
+
+    /// Whether this variant is the music video.
+    var isVideoVariant: Bool {
+        self.musicVideoType?.hasVideoContent ?? false
+    }
+
+    init(song: Song) {
+        self.videoId = song.videoId
+        self.title = song.title
+        self.artists = song.artists
+        self.duration = song.duration
+        self.thumbnailURL = song.thumbnailURL
+        self.musicVideoType = song.musicVideoType
+    }
+
+    /// The counterpart as a playable `Song`.
+    var asSong: Song {
+        Song(
+            id: self.videoId,
+            title: self.title,
+            artists: self.artists,
+            duration: self.duration,
+            thumbnailURL: self.thumbnailURL,
+            videoId: self.videoId,
+            musicVideoType: self.musicVideoType
+        )
     }
 }
 

@@ -21,6 +21,35 @@ struct PlayerServiceQueueTests {
         self.playerService.setYTMusicClient(self.mockClient)
     }
 
+    // MARK: - Song/Video Variant Tests
+
+    @Test("Playing a queue with a music video queues its song variant")
+    func playQueuePrefersAudioVariants() async {
+        let audio = Song(
+            id: "audio-id",
+            title: "Song",
+            artists: [Artist(id: "UC1", name: "Artist")],
+            duration: 200,
+            videoId: "audio-id",
+            musicVideoType: .atv
+        )
+        let video = Song(
+            id: "video-id",
+            title: "Song",
+            artists: [Artist(id: "UC1", name: "Artist")],
+            duration: 200,
+            videoId: "video-id",
+            musicVideoType: .omv
+        ).paired(with: audio)
+
+        await self.playerService.playQueue([video, audio, TestFixtures.makeSong(id: "other-id")], startingAt: 0)
+
+        #expect(self.playerService.queue.map(\.videoId) == ["audio-id", "other-id"])
+        #expect(self.playerService.currentTrack?.videoId == "audio-id")
+        #expect(self.playerService.currentTrackVideoVariant?.videoId == "video-id")
+        #expect(self.playerService.currentTrackHasVideo == true)
+    }
+
     // MARK: - Queue Reordering Tests
 
     @Test("Reorder queue moves song from source to destination")

@@ -111,15 +111,25 @@ enum RadioQueueParser {
             let thumbnailURL = self.parseThumbnail(from: panelVideoRenderer)
             let duration = self.parseDuration(from: panelVideoRenderer)
 
-            let song = Song(
+            var song = Song(
                 id: videoId,
                 title: title,
                 artists: artists,
                 album: nil,
                 duration: duration,
                 thumbnailURL: thumbnailURL,
-                videoId: videoId
+                videoId: videoId,
+                musicVideoType: SongMetadataParser.parseMusicVideoType(from: panelVideoRenderer)
             )
+
+            // A wrapped entry carries the paired song/video variant (the UI switcher).
+            if let wrapper = item["playlistPanelVideoWrapperRenderer"] as? [String: Any],
+               let counterpartRenderer = PlaylistPanelItemParser.counterpartRenderer(in: wrapper),
+               let counterpart = PlaylistPanelItemParser.song(fromRenderer: counterpartRenderer)
+            {
+                song = song.paired(with: counterpart)
+            }
+
             songs.append(song)
         }
 

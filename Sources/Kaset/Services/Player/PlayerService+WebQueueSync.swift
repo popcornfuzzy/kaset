@@ -69,6 +69,33 @@ extension PlayerService {
         self.normalizedObservedVideoId(videoId) ?? self.currentTrack?.videoId ?? self.pendingPlayVideoId ?? "unknown"
     }
 
+    /// Folds a WebView observation of the paired *video* variant onto the song entry that is
+    /// playing.
+    ///
+    /// Kaset plays the song version; the PiP miniplayer can switch YouTube's page to the music
+    /// video, after which the observer reports the video id. Both ids are the same track, so the
+    /// observation is mapped back to the song id. Without this the queue-drift handlers would read
+    /// the switch as a wrong track and fight YouTube on every update, and the resolved artwork
+    /// would become the video still instead of the song's album art.
+    func canonicalPlaybackVideoId(for observedVideoId: String?) -> String? {
+        guard let observedVideoId, !observedVideoId.isEmpty else { return observedVideoId }
+        if observedVideoId == self.currentTrack?.videoId { return observedVideoId }
+
+        if let videoVariantVideoId = self.currentTrackVideoVariant?.videoId,
+           observedVideoId == videoVariantVideoId
+        {
+            return self.currentTrack?.videoId ?? observedVideoId
+        }
+
+        if let entry = self.queue[safe: self.currentIndex],
+           observedVideoId == entry.counterpart?.videoId
+        {
+            return entry.videoId
+        }
+
+        return observedVideoId
+    }
+
     // MARK: - Artist Identity Matching
 
     /// Canonicalizes an artist string for **identity comparisons** so that YouTube's
@@ -351,12 +378,15 @@ extension PlayerService {
                 syncedQueue.insert(autoplaySong, at: 0)
             }
 
-            let syncedIndex = syncedQueue.firstIndex(where: { $0.videoId == observedVideoId }) ?? 0
+            // Prefer the song version of the autoplay seed too, and keep the index on it.
+            let preferredVideoId = self.audioPreferredVariant(autoplaySong).videoId
+            let preparedQueue = self.normalizedVariants(syncedQueue)
+            let preparedIndex = preparedQueue.firstIndex(where: { $0.videoId == preferredVideoId }) ?? 0
 
             self.clearForwardSkipNavigationStack()
-            self.queue = syncedQueue
-            self.currentIndex = syncedIndex
-            self.currentTrack = self.queue[safe: syncedIndex] ?? autoplaySong
+            self.queue = preparedQueue
+            self.currentIndex = preparedIndex
+            self.currentTrack = preparedQueue[safe: preparedIndex] ?? autoplaySong
             self.pendingPlayVideoId = self.currentTrack?.videoId ?? observedVideoId
             self.mixContinuationToken = nil
             // YouTube's own autoplay replaced the queue, so any automix tuning row no longer applies.
@@ -719,6 +749,9 @@ extension PlayerService {
     /// Handles a natural track completion reported directly by the WebView.
     func handleTrackEnded(observedVideoId: String?) async {
         self.logger.debug("Track ended reported by WebView: \(observedVideoId ?? "unknown")")
+        // A video-variant page ends the same track; fold it onto the song id so the queue
+        // advances (or repeats) correctly rather than discarding the event as stale.
+        let observedVideoId = self.canonicalPlaybackVideoId(for: observedVideoId)
         self.songNearingEnd = false
         guard !self.queue.isEmpty else {
             if self.repeatMode == .one, self.currentTrack != nil || self.pendingPlayVideoId != nil {
@@ -780,6 +813,10 @@ extension PlayerService {
             self.logger.debug("Ignoring metadata reconciliation while ad is active")
             return
         }
+
+        // The PiP miniplayer can put the page on the video variant; fold that observation back
+        // onto the song entry so the queue stays authoritative and the album art is kept.
+        let observedVideoId = self.canonicalPlaybackVideoId(for: observedVideoId)
 
         let displayArtist = Self.commaSeparatedArtistDisplay(artist)
         let artistObj = Artist(id: "unknown", name: displayArtist)

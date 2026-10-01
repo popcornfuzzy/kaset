@@ -4,11 +4,6 @@ import Foundation
 
 @MainActor
 extension PlayerService {
-    private func deduplicatedSongsByVideoId(_ songs: [Song]) -> [Song] {
-        var seenVideoIds = Set<String>()
-        return songs.filter { seenVideoIds.insert($0.videoId).inserted }
-    }
-
     // MARK: - Automix Tuning
 
     /// Replaces the queue's tuning row with the chips the server sent for this queue.
@@ -68,7 +63,7 @@ extension PlayerService {
                 videoId: self.currentTrack?.videoId
             )
 
-            let tunedSongs = self.deduplicatedSongsByVideoId(result.songs)
+            let tunedSongs = self.normalizedVariants(result.songs)
             guard !tunedSongs.isEmpty else {
                 self.setQueueTunerChips(previousChips)
                 self.logger.warning("Tuning '\(chip.label)' returned no songs; keeping the current queue")
@@ -124,7 +119,7 @@ extension PlayerService {
 
         do {
             let result = try await client.getMixQueueContinuation(continuationToken: token)
-            let nextBatch = self.deduplicatedSongsByVideoId(result.songs)
+            let nextBatch = self.normalizedVariants(result.songs)
             self.mixContinuationToken = result.continuationToken
 
             guard let nextSong = nextBatch.first else {
@@ -155,8 +150,11 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let safeIndex = max(0, min(index, songs.count - 1))
-        self.queue = songs
-        self.currentIndex = safeIndex
+        let startingVideoId = songs[safe: safeIndex]?.videoId
+        // Play the song version of every video track, before any of them starts.
+        let preparedSongs = self.normalizedVariants(songs)
+        self.queue = preparedSongs
+        self.currentIndex = preparedSongs.firstIndex(where: { $0.videoId == startingVideoId }) ?? 0
         // Clear mix continuation since this is not a mix queue
         self.mixContinuationToken = nil
         self.setQueueTunerChips([])
@@ -178,8 +176,8 @@ extension PlayerService {
         self.mixContinuationToken = nil
         self.setQueueTunerChips([])
 
-        // Start with just this song in the queue
-        self.queue = [song]
+        // Start with just this song in the queue, already resolved to its audio variant.
+        self.queue = [self.audioPreferredVariant(song)]
         self.currentIndex = 0
         await self.play(song: song)
 
@@ -219,8 +217,9 @@ extension PlayerService {
 
             // Shuffle the queue to get a different order each time
             // YouTube's API returns a personalized but consistent order per session,
-            // so we shuffle to give the user variety on each Mix button click
-            let shuffledSongs = result.songs.shuffled()
+            // so we shuffle to give the user variety on each Mix button click.
+            // Normalize afterwards so video tracks become their song variants before playback.
+            let shuffledSongs = self.normalizedVariants(result.songs.shuffled())
 
             // Set up the queue and play the first song
             self.queue = shuffledSongs
@@ -265,7 +264,7 @@ extension PlayerService {
 
             // Filter out songs already in queue to avoid duplicates
             let existingIds = Set(queue.map(\.videoId))
-            let newSongs = result.songs.filter { !existingIds.contains($0.videoId) }
+            let newSongs = self.normalizedVariants(result.songs.filter { !existingIds.contains($0.videoId) })
 
             if !newSongs.isEmpty {
                 // Create a new array to ensure @Observable triggers UI update
@@ -332,7 +331,7 @@ extension PlayerService {
 
             self.clearForwardSkipNavigationStack()
             self.recordQueueStateForUndo()
-            self.queue = newQueue
+            self.queue = self.normalizedVariants(newQueue)
             self.currentIndex = 0
             self.setQueueTunerChips(radioResult.tunerChips)
             self.logger.info("Radio queue updated with \(newQueue.count) songs (current song at front)")
@@ -399,7 +398,7 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let insertIndex = min(self.currentIndex + 1, self.queue.count)
-        self.queue.insert(contentsOf: songs, at: insertIndex)
+        self.queue.insert(contentsOf: self.normalizedVariants(songs), at: insertIndex)
         self.logger.info("Inserted \(songs.count) songs at position \(insertIndex)")
         self.saveQueueForPersistence()
     }
@@ -516,7 +515,7 @@ extension PlayerService {
     func appendToQueue(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
         self.recordQueueStateForUndo()
-        self.queue.append(contentsOf: songs)
+        self.queue.append(contentsOf: self.normalizedVariants(songs))
         self.logger.info("Appended \(songs.count) songs to queue")
         self.saveQueueForPersistence()
     }

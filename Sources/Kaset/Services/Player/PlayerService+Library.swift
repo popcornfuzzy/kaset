@@ -242,6 +242,14 @@ extension PlayerService {
                 let title = self.currentTrack?.title == "Loading..." ? songData.title : (self.currentTrack?.title ?? songData.title)
                 let artists = self.currentTrack?.artists.isEmpty == true ? songData.artists : (self.currentTrack?.artists ?? songData.artists)
 
+                // The video variant of a matched song is the counterpart Kaset keeps for PiP.
+                if self.preferAudioVersions,
+                   self.currentTrackVideoVariant == nil,
+                   let counterpart = songData.counterpart, counterpart.isVideoVariant
+                {
+                    self.currentTrackVideoVariant = counterpart.asSong
+                }
+
                 self.currentTrack = Song(
                     id: videoId,
                     title: title,
@@ -255,6 +263,7 @@ extension PlayerService {
                     thumbnailURL: self.currentTrack?.thumbnailURL ?? songData.thumbnailURL,
                     videoId: videoId,
                     musicVideoType: songData.musicVideoType,
+                    counterpart: self.currentTrackVideoVariant.map { SongCounterpart(song: $0) } ?? self.currentTrack?.counterpart,
                     likeStatus: resolvedLikeStatus,
                     isInLibrary: songData.isInLibrary,
                     feedbackTokens: songData.feedbackTokens
@@ -273,10 +282,17 @@ extension PlayerService {
                 self.currentTrackFeedbackTokens = songData.feedbackTokens
 
                 // Update video availability based on API-detected musicVideoType
-                // This is more reliable than DOM inspection since it comes directly from the API
+                // This is more reliable than DOM inspection since it comes directly from the API.
+                // A known video counterpart also counts: the song plays, but the PiP miniplayer
+                // can switch to the music video.
+                let hasVideoVariant = self.currentTrackVideoVariant != nil
+                    || (songData.counterpart?.isVideoVariant ?? false)
                 if let videoType = songData.musicVideoType {
-                    self.updateVideoAvailability(hasVideo: videoType.hasVideoContent)
-                    self.logger.debug("Video availability from API: \(videoType.rawValue) -> hasVideo=\(videoType.hasVideoContent)")
+                    let hasVideo = videoType.hasVideoContent || hasVideoVariant
+                    self.updateVideoAvailability(hasVideo: hasVideo)
+                    self.logger.debug("Video availability from API: \(videoType.rawValue) -> hasVideo=\(hasVideo)")
+                } else if hasVideoVariant {
+                    self.updateVideoAvailability(hasVideo: true)
                 }
 
                 self.logger.info("Updated track metadata - inLibrary: \(self.currentTrackInLibrary), hasTokens: \(self.currentTrackFeedbackTokens != nil)")

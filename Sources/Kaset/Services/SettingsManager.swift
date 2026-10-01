@@ -26,6 +26,7 @@ final class SettingsManager {
         static let lyricsDisabledProviders = "settings.lyricsDisabledProviders"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
+        static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
     }
 
     // MARK: - Launch Page Options
@@ -339,6 +340,14 @@ final class SettingsManager {
         }
     }
 
+    /// Whether music videos are played as their song-only versions (album art) with the video
+    /// kept for the PiP miniplayer.
+    var preferAudioVersionsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.preferAudioVersionsEnabled, forKey: Keys.preferAudioVersionsEnabled)
+        }
+    }
+
     // MARK: - Initialization
 
     private init() {
@@ -379,6 +388,7 @@ final class SettingsManager {
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
+        self.preferAudioVersionsEnabled = UserDefaults.standard.object(forKey: Keys.preferAudioVersionsEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),
            let style = MediaControlStyle(rawValue: rawValue)

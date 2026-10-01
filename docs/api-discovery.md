@@ -1206,6 +1206,9 @@ chmod +x Tools/api-explorer.swift
 # Explore action endpoints
 ./Tools/api-explorer.swift action search '{"query":"never gonna give you up"}'
 ./Tools/api-explorer.swift action player '{"videoId":"dQw4w9WgXcQ"}'
+
+# Inspect the song/video counterpart pairing for a track
+./Tools/api-explorer.swift variants dQw4w9WgXcQ
 ```
 
 ### Authenticated Endpoints
@@ -1374,22 +1377,37 @@ The `player` endpoint returns video streaming data in `streamingData.adaptiveFor
 
 ---
 
-### Related Content / Video Alternatives (Future Enhancement)
+### Song/Video Variants
 
-The `next` endpoint returns a Related tab that can find song/video counterparts.
+A track can exist as both a song (`MUSIC_VIDEO_TYPE_ATV`) and a music video
+(`MUSIC_VIDEO_TYPE_OMV`). Kaset plays the song version everywhere and keeps the video for the
+PiP miniplayer; see [ADR-0028](adr/0028-song-video-variant-matching.md).
 
-> ⚠️ **Not Implemented**: Could be used to find video version of audio-only tracks or vice versa.
+#### Counterpart (song/video switcher)
 
-**Related Tab browseId Pattern**: `MPTRt_{trackId}`
+When a watch/queue response includes the switcher, the item is a
+`playlistPanelVideoWrapperRenderer`:
 
-**Example**: For song `DyDfgMOUjCI`, the Related tab browseId is `MPTRt_5OAD9vk2OaS`
+```
+playlistPanelVideoWrapperRenderer
+  primaryRenderer.playlistPanelVideoRenderer                         -> the entry that plays
+  counterpart[0].counterpartRenderer.playlistPanelVideoRenderer      -> the other variant
+```
 
-**Page Type**: `MUSIC_PAGE_TYPE_TRACK_RELATED`
+Parsed by `PlaylistPanelItemParser`; attached by `RadioQueueParser`, `PlaylistParser` and
+`SongMetadataParser` as `Song.counterpart`.
 
-**Use Cases**:
-- "Watch Video" button for ATV tracks that have an OMV version
-- "Listen to Audio" for users who prefer audio-only playback
-- Finding alternative versions (live, remix, etc.)
+> ⚠️ **Not always returned**: verified 2026-09-30 with `./api-explorer.swift variants <videoId>` —
+> an RDAMVM radio of music videos and the per-track `next` response carried no counterparts.
+
+#### Backfill by filtered search
+
+When a video entry has no counterpart, `SongVariantMatcher` resolves the song using the filtered
+songs search (`EgWKAQIIAWoMEA4QChADEAQQCRAF`) and scores candidates on normalized title, artist and
+length. This is the reliable path in practice.
+
+**Related Tab browseId Pattern** (not used): `MPTRt_{trackId}`, page type
+`MUSIC_PAGE_TYPE_TRACK_RELATED`.
 
 ---
 
