@@ -28,6 +28,9 @@ struct MainWindow: View {
         static let nowPlayingSidebarMaxWidth: CGFloat = 560
         /// Hit area of the draggable edge between the content and the Now Playing sidebar.
         static let nowPlayingSidebarHandleWidth: CGFloat = 8
+        /// Absolute floor for the column when the window is too narrow even for its minimum width.
+        /// Below this the content wins, so the window stays usable on a small display.
+        static let nowPlayingSidebarFloorWidth: CGFloat = 240
         /// Minimum content height of the window.
         static let minimumContentHeight: CGFloat = 600
         static let miniPlayerDefaultWidth: CGFloat = 320
@@ -67,6 +70,15 @@ struct MainWindow: View {
     @State private var settings = SettingsManager.shared
     @State private var whatsNewToPresent: PresentedWhatsNew?
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
+
+    /// Width the column is being dragged to *right now* (`nil` when no drag is in progress).
+    ///
+    /// Kept in view state rather than in `SettingsManager`: writing the setting persists to
+    /// `UserDefaults` and re-renders the whole window on every mouse-move event, which is what made
+    /// resizing feel like it was fighting the drag. The value is persisted once, on drag end.
+    @State private var liveColumnWidth: CGFloat?
+    /// Width the detail area is actually offered, measured so the column can be clamped to it.
+    @State private var contentAreaWidth: CGFloat = 0
 
     /// Video state the fullscreen podcast experience shares with the layer below.
     /// Owned here because this view owns the WebView layer.
@@ -540,9 +552,10 @@ struct MainWindow: View {
                     // the boundary and its hit area is inside the content rather than a gutter.
                     if self.playerService.isNowPlayingSidebarVisible {
                         NowPlayingSidebarResizeHandle(
-                            width: self.nowPlayingSidebarWidthBinding,
+                            width: self.columnWidthBinding,
                             minWidth: Layout.nowPlayingSidebarMinWidth,
-                            maxWidth: Layout.nowPlayingSidebarMaxWidth
+                            maxWidth: Layout.nowPlayingSidebarMaxWidth,
+                            onCommit: { self.commitColumnWidth() }
                         )
                         .frame(width: Layout.nowPlayingSidebarHandleWidth)
                         .accessibilityHidden(true)
@@ -556,9 +569,19 @@ struct MainWindow: View {
                 }
 
                 if self.playerService.isNowPlayingSidebarVisible {
-                    NowPlayingSidebarView()
-                        .frame(width: self.nowPlayingSidebarWidth)
+                    // The width is authoritative and passed in: the sidebar sizes its own content from
+                    // this, never from a second measurement of itself, so a resize cannot leave the
+                    // column and its contents one frame out of step with each other.
+                    NowPlayingSidebarView(columnWidth: self.effectiveColumnWidth)
+                        .frame(width: self.effectiveColumnWidth)
                 }
+            }
+            // The `HStack`'s own width is the space available to the detail area. Measuring it here —
+            // not the overflowed children — is what lets the column be clamped so the stack always
+            // fits. It is measured rather than assumed so a window resize (or a display change) keeps
+            // the clamp correct.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
+                self.contentAreaWidth = newWidth
             }
 
             // Classic lyrics/queue panels, floating over the content (mutually exclusive).
@@ -608,34 +631,71 @@ struct MainWindow: View {
         .toolbar(removing: .sidebarToggle)
     }
 
-    /// The column's current width, clamped to its limits.
+    /// The width the column *wants*: what the reader is dragging to right now, or the persisted width.
     ///
-    /// The stored value is unclamped so a bobbled write can never wedge the column off screen; the
-    /// layout clamps on every read instead.
-    private var nowPlayingSidebarWidth: CGFloat {
+    /// The stored value is clamped on read so a bobbled write can never wedge the column off screen.
+    private var desiredColumnWidth: CGFloat {
+        if let live = self.liveColumnWidth { return live }
         let stored = CGFloat(self.settings.nowPlayingSidebarWidth)
         guard stored.isFinite, stored > 0 else { return Layout.nowPlayingSidebarIdealWidth }
         return min(max(stored, Layout.nowPlayingSidebarMinWidth), Layout.nowPlayingSidebarMaxWidth)
     }
 
-    /// Reads and writes the column width through `SettingsManager`, so dragging the edge persists.
-    private var nowPlayingSidebarWidthBinding: Binding<CGFloat> {
+    /// The column's width arithmetic, as one value: the measured space plus the window's own limits.
+    private var columnGeometry: NowPlayingSidebarColumnGeometry {
+        NowPlayingSidebarColumnGeometry(
+            availableWidth: self.contentAreaWidth,
+            detailMinWidth: Layout.detailMinWidth,
+            handleWidth: Layout.nowPlayingSidebarHandleWidth,
+            minWidth: Layout.nowPlayingSidebarMinWidth,
+            maxWidth: Layout.nowPlayingSidebarMaxWidth,
+            floorWidth: Layout.nowPlayingSidebarFloorWidth
+        )
+    }
+
+    /// The width the column actually occupies. Never wider than the space admits (so the content keeps
+    /// its minimum), never narrower than the box the sidebar's own content is designed around.
+    private var effectiveColumnWidth: CGFloat {
+        self.columnGeometry.effective(desired: self.desiredColumnWidth)
+    }
+
+    /// Reads and writes the column width while the divider is being dragged.
+    ///
+    /// The drag deliberately never touches `SettingsManager`: a write there persists to `UserDefaults`
+    /// and re-renders the whole window on every mouse-move event, and it re-derives the window's
+    /// minimum size mid-gesture — the two together are what made resizing feel like it was fighting
+    /// back. Live width stays in view state; `commitColumnWidth()` persists it once, when the drag ends.
+    private var columnWidthBinding: Binding<CGFloat> {
         Binding(
-            get: { self.nowPlayingSidebarWidth },
+            get: { self.effectiveColumnWidth },
             set: { newValue in
-                self.settings.nowPlayingSidebarWidth = Double(
-                    min(max(newValue, Layout.nowPlayingSidebarMinWidth), Layout.nowPlayingSidebarMaxWidth)
-                )
+                self.liveColumnWidth = self.columnGeometry.effective(desired: newValue)
             }
         )
     }
 
-    /// The window's own minimum content width: the navigation content plus, while the column is open,
-    /// its handle and its width.
+    /// Persists the dragged width once the drag ends, and re-applies the window minimum afterwards.
+    ///
+    /// The window is never resized *during* the drag: a minimum that tracked the live width made the
+    /// window resize itself on every drag step, which is what cropped the content mid-gesture.
+    private func commitColumnWidth() {
+        defer { self.liveColumnWidth = nil }
+        guard let width = self.liveColumnWidth else { return }
+        self.settings.nowPlayingSidebarWidth = Double(width)
+        self.scheduleWindowMinimumUpdate()
+    }
+
+    /// The window's own minimum content width: enough for the detail area and the column's *minimum*
+    /// width.
+    ///
+    /// It deliberately does not track the column's current width. A minimum that grew with the column
+    /// made the window try to resize itself on every drag step; a wider column instead gets clamped
+    /// while the window is too narrow, and returns to its set width when the window is widened again —
+    /// the way every resizable inspector behaves.
     private var minimumContentWidth: CGFloat {
         Layout.detailMinWidth
             + (self.playerService.isNowPlayingSidebarVisible
-                ? Layout.nowPlayingSidebarHandleWidth + self.nowPlayingSidebarWidth
+                ? Layout.nowPlayingSidebarHandleWidth + Layout.nowPlayingSidebarMinWidth
                 : 0)
     }
 
@@ -665,9 +725,18 @@ struct MainWindow: View {
         )
         window.contentMinSize = minimum
 
+        // What the window should *aim* for: at least its minimum, and — while the column is open —
+        // wide enough for the column's current width too, so opening it or dropping the divider at its
+        // widest never leaves the column clamped. This only runs on discrete events (open, close,
+        // setting change, drag end), never between the steps of a drag.
+        let fittingWidth = Layout.detailMinWidth
+            + (self.playerService.isNowPlayingSidebarVisible
+                ? Layout.nowPlayingSidebarHandleWidth + self.desiredColumnWidth
+                : 0)
+
         let content = window.contentRect(forFrameRect: window.frame)
         let target = NSSize(
-            width: min(max(content.width, minimum.width), visible.width),
+            width: min(max(content.width, min(fittingWidth, visible.width)), visible.width),
             height: min(max(content.height, minimum.height), visible.height)
         )
         guard target.width != content.width || target.height != content.height else { return }
@@ -1025,6 +1094,8 @@ private struct NowPlayingSidebarResizeHandle: NSViewRepresentable {
     @Binding var width: CGFloat
     let minWidth: CGFloat
     let maxWidth: CGFloat
+    /// Called once, when the drag ends, so the width can be persisted without writing on every step.
+    let onCommit: () -> Void
 
     func makeNSView(context _: Context) -> NowPlayingSidebarResizeView {
         let view = NowPlayingSidebarResizeView()
@@ -1032,6 +1103,7 @@ private struct NowPlayingSidebarResizeHandle: NSViewRepresentable {
         view.minWidth = self.minWidth
         view.maxWidth = self.maxWidth
         view.onWidthChange = { self.width = $0 }
+        view.onCommit = self.onCommit
         return view
     }
 
@@ -1040,6 +1112,7 @@ private struct NowPlayingSidebarResizeHandle: NSViewRepresentable {
         nsView.minWidth = self.minWidth
         nsView.maxWidth = self.maxWidth
         nsView.onWidthChange = { self.width = $0 }
+        nsView.onCommit = self.onCommit
         nsView.window?.invalidateCursorRects(for: nsView)
     }
 }
@@ -1050,6 +1123,7 @@ private final class NowPlayingSidebarResizeView: NSView {
     var minWidth: CGFloat = 300
     var maxWidth: CGFloat = 560
     var onWidthChange: ((CGFloat) -> Void)?
+    var onCommit: (() -> Void)?
 
     private var dragStartX: CGFloat = 0
     private var dragStartWidth: CGFloat = 380
@@ -1079,6 +1153,11 @@ private final class NowPlayingSidebarResizeView: NSView {
         guard newWidth != self.currentWidth else { return }
         self.currentWidth = newWidth
         self.onWidthChange?(newWidth)
+    }
+
+    override func mouseUp(with _: NSEvent) {
+        // One persist per gesture, not one per mouse-move event.
+        self.onCommit?()
     }
 }
 

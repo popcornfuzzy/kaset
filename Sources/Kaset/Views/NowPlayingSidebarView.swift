@@ -22,6 +22,15 @@ struct NowPlayingSidebarView: View {
     @Environment(CanvasService.self) private var canvasService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Width of the column this view is drawn in, supplied by the window.
+    ///
+    /// The column's width is owned by `MainWindow` — the divider drags it and the window's minimum is
+    /// derived from it — so the sidebar takes it as input rather than measuring itself. A *measured*
+    /// width lags the frame it measures by one layout pass, which is what left the artwork and the
+    /// embedded queue a step behind the column while the divider was being dragged, so the contents
+    /// looked like they were tearing away from their own width.
+    var columnWidth: CGFloat = 380
+
     /// Lyrics lookup state, owned here rather than by the lyric surfaces.
     ///
     /// The three-line window, the expanded sheet and the empty states are views over one lookup, and
@@ -29,8 +38,10 @@ struct NowPlayingSidebarView: View {
     /// mounted for as long as the sidebar is up) means a page change never looks like a new track and
     /// never re-runs the search. Same pipeline as `LyricsView`, so the sidebar states lyrics exactly
     /// the way the classic panel does.
-    /// The column's measured size, so the artwork can size itself to it without a greedy reader.
-    @State private var containerSize: CGSize = .zero
+    /// The column's measured *height*, so the artwork can give up height on a short window. Only the
+    /// height is measured: the width is authoritative input (`columnWidth`), never a second measurement
+    /// that could disagree with the frame.
+    @State private var containerHeight: CGFloat = 0
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
@@ -65,10 +76,10 @@ struct NowPlayingSidebarView: View {
                     )
                     .ignoresSafeArea(edges: .top)
                 }
-                // Measured rather than wrapped in a greedy `GeometryReader`, so the page can size its
-                // artwork to the column without the reader ever affecting the layout.
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
-                    self.containerSize = newSize
+                // Measured rather than wrapped in a greedy `GeometryReader`, so the page can give the
+                // artwork height on a short window without the reader ever affecting the layout.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
+                    self.containerHeight = newHeight
                 }
                 // The column's own toggle, in its top-trailing corner. The toolbar version is only
                 // shown while the column is closed, so opening the sidebar looks like the toggle
@@ -140,7 +151,7 @@ struct NowPlayingSidebarView: View {
         case .lyrics:
             self.lyricsPage
         case .queue:
-            self.queuePage(width: self.containerSize.width)
+            self.queuePage(width: self.columnWidth)
         case .overview:
             self.overview
         }
@@ -191,11 +202,22 @@ struct NowPlayingSidebarView: View {
     }
 
     /// The artwork is a square until a short window makes it give up height to the rows below it.
+    ///
+    /// It follows the column's authoritative width, so it is always exactly as wide as the column -
+    /// no lag, no overshoot that would push it past the column's edge mid-resize.
     private var artworkHeight: CGFloat {
-        let width = self.containerSize.width > 0
-            ? self.containerSize.width
+        let width = self.columnWidth > 0
+            ? self.columnWidth
             : NowPlayingSidebarLayout.artworkMaxDimension
-        let leftover = self.containerSize.height - NowPlayingSidebarLayout.reservedHeight
+
+        // Before the first measurement the height is unknown, not zero: sizing from the width alone
+        // (a square) is stable and correct on a normal window, whereas treating the height as zero
+        // would open the column on a 150pt stub and pop it to full a frame later.
+        guard self.containerHeight > 0 else {
+            return min(width, NowPlayingSidebarLayout.artworkMaxHeight)
+        }
+
+        let leftover = self.containerHeight - NowPlayingSidebarLayout.reservedHeight
         return min(
             width,
             NowPlayingSidebarLayout.artworkMaxHeight,

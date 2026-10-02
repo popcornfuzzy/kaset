@@ -48,9 +48,12 @@ HStack(spacing: 0) {
         .frame(minWidth: Layout.detailMinWidth)
         .overlay(alignment: .trailing) { NowPlayingSidebarResizeHandle(…) }
     if self.playerService.isNowPlayingSidebarVisible {
-        NowPlayingSidebarView().frame(width: self.nowPlayingSidebarWidth)
+        NowPlayingSidebarView(columnWidth: self.effectiveColumnWidth)
+            .frame(width: self.effectiveColumnWidth)
     }
 }
+// The stack's own width is the space available to the detail area.
+.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { self.contentAreaWidth = $0 }
 ```
 
 The system's `.inspector` was tried first and **rejected**: SwiftUI's inspector nests a second
@@ -75,10 +78,30 @@ run, which is what turned the toggle and the playlist search field into a single
 the open column's toggle inside the column removes the overlapping run entirely, and leaves the
 content's own search/sort/refresh buttons where they belong: in the toolbar, at the trailing edge.
 
-Because the navigation content keeps `Layout.detailMinWidth` and the column adds its own width, the
-window's own minimum grows with the column; the detail content can never be squeezed or cut off
-while the sidebar is open. Opening the column also nudges the window wider if it is currently too
-narrow, deferred to the next runloop tick so it never mutates the window mid-update.
+**The column is always clamped to the space the window can give it.** A plain `HStack` resolves an
+over-tight fit by letting the *fixed* child win and the flexible one overflow underneath it — which is
+exactly the detail view being cropped behind the sidebar. So the column's drawn width is not the raw
+setting: `NowPlayingSidebarColumnGeometry` caps it at `availableWidth - detailMinWidth - handle`, so
+the stack always fits and nothing can be covered however far the divider is dragged. That arithmetic
+lives in one testable value type rather than inline in the view
+(`NowPlayingSidebarColumnGeometryTests`), because it is the invariant the whole layout rests on.
+
+**The drag never mutates the window.** The divider writes its width to view state, persists it once
+(on `mouseUp`), and only then re-derives the window minimum. An earlier version wrote
+`SettingsManager` and re-derived the window minimum on every mouse-move event, so the window tried to
+resize itself *between* the steps of a drag — together with the missing clamp, that is what made
+resizing feel like it was fighting back and cropped the content.
+
+**The sidebar takes its width as input.** `NowPlayingSidebarView(columnWidth:)` is told the width it
+is drawn in and never measures its own width; a measured width lags the frame it measures by one
+layout pass, which is what left the artwork and the embedded queue a step behind the column mid-drag.
+Only the *height* is still measured, so the artwork can give up height on a short window.
+
+The window's minimum stays at `detailMinWidth + handle + minWidth`; it deliberately does not grow with
+the column's current width. A column wider than the window admits is shown clamped and returns to its
+set width when the window is widened again, the way a resizable inspector behaves. Opening the column
+still nudges the window wider if it is too narrow for the column's set width, deferred to the next
+runloop tick so it never mutates the window mid-update.
 
 Presentation stays a three-value page state on `PlayerService`
 (`NowPlayingSidebarPage`: `overview` / `lyrics` / `queue`, `nil` = hidden), separate from the classic

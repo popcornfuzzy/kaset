@@ -37,6 +37,50 @@ enum NowPlayingSidebarLayout {
     )
 }
 
+// MARK: - NowPlayingSidebarColumnGeometry
+
+/// The width arithmetic of the resizable Now Playing column.
+///
+/// Pulled out of the view as a plain value so the invariants that stop the main content being cropped —
+/// the column is never wider than the window can give it, and never narrower than its floor — can be
+/// reasoned about and tested without a window on screen.
+struct NowPlayingSidebarColumnGeometry {
+    /// Width actually offered to the detail area. `MainWindow` measures it rather than guessing.
+    var availableWidth: CGFloat
+    /// Minimum width the detail area keeps; the column may not eat into it.
+    var detailMinWidth: CGFloat
+    /// Width reserved for the drag handle between the content and the column.
+    var handleWidth: CGFloat
+    var minWidth: CGFloat
+    var maxWidth: CGFloat
+    /// Absolute floor for when even `minWidth` cannot fit the window. Below this the content wins, so
+    /// the window stays usable on a small display.
+    var floorWidth: CGFloat
+
+    /// The widest the column may be without squeezing the detail area below `detailMinWidth`.
+    ///
+    /// A plain `HStack` resolves an over-tight fit by letting the *fixed* child win and the flexible one
+    /// overflow underneath it — which is exactly the detail view vanishing behind the column. Capping
+    /// the column at the space that actually exists means the stack always fits, so nothing is ever
+    /// covered, however far the divider is dragged.
+    var ceiling: CGFloat {
+        guard self.availableWidth > 0, self.availableWidth.isFinite else { return self.maxWidth }
+        return max(
+            self.floorWidth,
+            self.availableWidth - self.detailMinWidth - self.handleWidth
+        )
+    }
+
+    /// The width the column occupies for a desired width: clamped to its own bounds, then to the space.
+    func effective(desired: CGFloat) -> CGFloat {
+        // A `NaN` (a corrupt stored width, say) must not propagate through `min`/`max` and wedge the
+        // column; infinities clamp naturally to the column's own bounds.
+        let bounded = desired.isNaN ? self.minWidth : desired
+        let clamped = min(max(bounded, self.minWidth), self.maxWidth)
+        return min(clamped, self.ceiling)
+    }
+}
+
 // MARK: - NowPlayingSidebarBackground
 
 /// The sidebar's own background: the cover art itself, blurred into a wash of its colors, filling the
