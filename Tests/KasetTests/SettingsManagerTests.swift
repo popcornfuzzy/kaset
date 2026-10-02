@@ -78,6 +78,41 @@ struct SettingsManagerTests {
         #expect(manager.preferAudioVersionsEnabled == true)
     }
 
+    @Test("Default nowPlayingSidebarEnabled is false")
+    func defaultNowPlayingSidebarEnabled() {
+        // The classic lyrics/queue panels are the default experience, so the Now Playing sidebar is
+        // opt-in. Like the other default tests, this expects an unmodified UserDefaults.
+
+        let manager = SettingsManager.shared
+        #expect(manager.nowPlayingSidebarEnabled == false)
+    }
+
+    @Test("nowPlayingSidebarEnabled persists to UserDefaults")
+    func nowPlayingSidebarEnabledPersists() {
+        let manager = SettingsManager.shared
+        let original = manager.nowPlayingSidebarEnabled
+        defer { manager.nowPlayingSidebarEnabled = original }
+
+        manager.nowPlayingSidebarEnabled = true
+
+        #expect(UserDefaults.standard.bool(forKey: "settings.nowPlayingSidebarEnabled") == true)
+
+        manager.nowPlayingSidebarEnabled = original
+    }
+
+    @Test("nowPlayingSidebarWidth persists to UserDefaults")
+    func nowPlayingSidebarWidthPersists() {
+        let manager = SettingsManager.shared
+        let original = manager.nowPlayingSidebarWidth
+        defer { manager.nowPlayingSidebarWidth = original }
+
+        manager.nowPlayingSidebarWidth = 452
+
+        #expect(UserDefaults.standard.double(forKey: "settings.nowPlayingSidebarWidth") == 452)
+
+        manager.nowPlayingSidebarWidth = original
+    }
+
     @Test("Disabling rememberPlaybackSettings clears persisted values")
     func disablingRememberPlaybackSettingsClearsValues() {
         let manager = SettingsManager.shared

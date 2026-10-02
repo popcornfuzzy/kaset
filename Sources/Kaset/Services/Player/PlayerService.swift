@@ -208,6 +208,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showLyrics, self.showFullscreenNowPlaying {
                 self.showFullscreenNowPlaying = false
             }
+            // Mutual exclusivity: only one right sidebar design at a time
+            if self.showLyrics, self.nowPlayingSidebarPage != nil {
+                self.nowPlayingSidebarPage = nil
+            }
         }
     }
 
@@ -225,6 +229,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showQueue, self.showFullscreenNowPlaying {
                 self.showFullscreenNowPlaying = false
             }
+            // Mutual exclusivity: only one right sidebar design at a time
+            if self.showQueue, self.nowPlayingSidebarPage != nil {
+                self.nowPlayingSidebarPage = nil
+            }
         }
     }
 
@@ -234,7 +242,24 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showFullscreenNowPlaying {
                 self.showLyrics = false
                 self.showQueue = false
+                self.nowPlayingSidebarPage = nil
             }
+        }
+    }
+
+    /// Page the "Now Playing" right sidebar is showing; `nil` means it is hidden.
+    ///
+    /// Only consulted while `SettingsManager.nowPlayingSidebarEnabled` is on — the classic
+    /// `showLyrics`/`showQueue` panels keep their own state, so switching the setting never leaves a
+    /// stale panel behind. `overview` is the sidebar itself; `lyrics`/`queue` are the two cards
+    /// expanded to the full experience.
+    var nowPlayingSidebarPage: NowPlayingSidebarPage? {
+        didSet {
+            guard self.nowPlayingSidebarPage != nil else { return }
+            // One right sidebar at a time, and the sidebar is not shown over fullscreen.
+            if self.showLyrics { self.showLyrics = false }
+            if self.showQueue { self.showQueue = false }
+            if self.showFullscreenNowPlaying { self.showFullscreenNowPlaying = false }
         }
     }
 
@@ -542,6 +567,56 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     private func cancelMiniPlayerFallback() {
         self.miniPlayerFallbackTask?.cancel()
         self.miniPlayerFallbackTask = nil
+    }
+
+    // MARK: - Now Playing Sidebar
+
+    /// Whether the Setting that swaps the classic lyrics/queue panels for the Now Playing sidebar is on.
+    var isNowPlayingSidebarEnabled: Bool {
+        SettingsManager.shared.nowPlayingSidebarEnabled
+    }
+
+    /// Whether the Now Playing sidebar is on screen.
+    var isNowPlayingSidebarVisible: Bool {
+        self.nowPlayingSidebarPage != nil
+    }
+
+    /// Whether the transport's lyrics button reads as active.
+    var isLyricsPanelActive: Bool {
+        self.isNowPlayingSidebarEnabled ? self.nowPlayingSidebarPage == .lyrics : self.showLyrics
+    }
+
+    /// Whether the transport's queue button reads as active.
+    var isQueuePanelActive: Bool {
+        self.isNowPlayingSidebarEnabled ? self.nowPlayingSidebarPage == .queue : self.showQueue
+    }
+
+    /// Shows, switches, or collapses the Now Playing sidebar from a transport button.
+    ///
+    /// The first press opens the overview rather than a page, because the overview *is* the design:
+    /// artwork, lyric preview and up next. A second press on the same button expands its card, and
+    /// pressing the other button switches straight to that card. The sidebar's own close button is
+    /// what hides it.
+    func toggleNowPlayingSidebar(page: NowPlayingSidebarPage) {
+        switch self.nowPlayingSidebarPage {
+        case nil:
+            self.nowPlayingSidebarPage = .overview
+        case .overview:
+            self.nowPlayingSidebarPage = page
+        case let current:
+            self.nowPlayingSidebarPage = current == page ? .overview : page
+        }
+        self.logger.debug("Now Playing sidebar page: \(self.nowPlayingSidebarPage?.rawValue ?? "hidden")")
+    }
+
+    /// Shows the Now Playing sidebar on a specific page (used by the cards' expand actions).
+    func setNowPlayingSidebarPage(_ page: NowPlayingSidebarPage) {
+        self.nowPlayingSidebarPage = page
+    }
+
+    /// Hides the Now Playing sidebar.
+    func closeNowPlayingSidebar() {
+        self.nowPlayingSidebarPage = nil
     }
 
     /// Toggles between popup and side panel queue display modes.

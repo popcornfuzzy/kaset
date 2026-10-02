@@ -26,6 +26,8 @@ final class SettingsManager {
         static let lyricsDisabledProviders = "settings.lyricsDisabledProviders"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
+        static let nowPlayingSidebarEnabled = "settings.nowPlayingSidebarEnabled"
+        static let nowPlayingSidebarWidth = "settings.nowPlayingSidebarWidth"
         static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
     }
 
@@ -340,6 +342,23 @@ final class SettingsManager {
         }
     }
 
+    /// Whether the right sidebar uses the artwork-first "Now Playing" design (canvas artwork, a
+    /// three-line lyric preview and the next song, each expanding to the full experience) instead of
+    /// the classic Lyrics and Queue panels.
+    var nowPlayingSidebarEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.nowPlayingSidebarEnabled, forKey: Keys.nowPlayingSidebarEnabled)
+        }
+    }
+
+    /// Width of the Now Playing sidebar column, so a reader who widens or narrows it gets the same
+    /// width back next launch. Stored unclamped; the layout clamps it to its own limits on read.
+    var nowPlayingSidebarWidth: Double {
+        didSet {
+            UserDefaults.standard.set(self.nowPlayingSidebarWidth, forKey: Keys.nowPlayingSidebarWidth)
+        }
+    }
+
     /// Whether music videos are played as their song-only versions (album art) with the video
     /// kept for the PiP miniplayer.
     var preferAudioVersionsEnabled: Bool {
@@ -388,6 +407,9 @@ final class SettingsManager {
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
+        // Default off: the classic lyrics/queue panels stay the default experience.
+        self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? false
+        self.nowPlayingSidebarWidth = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarWidth) as? Double ?? 380
         self.preferAudioVersionsEnabled = UserDefaults.standard.object(forKey: Keys.preferAudioVersionsEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),

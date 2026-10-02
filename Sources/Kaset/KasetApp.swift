@@ -254,9 +254,13 @@ struct KasetApp: App {
                 Divider()
 
                 // Lyrics - ⌘L
-                Button(self.playerService.showLyrics ? "Hide Lyrics" : "Show Lyrics") {
+                Button(self.lyricsCommandTitle) {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        self.playerService.showLyrics.toggle()
+                        if self.playerService.isNowPlayingSidebarEnabled {
+                            self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+                        } else {
+                            self.playerService.showLyrics.toggle()
+                        }
                     }
                 }
                 .keyboardShortcut("l", modifiers: .command)
@@ -347,6 +351,13 @@ struct KasetApp: App {
         case .one:
             "Repeat Off"
         }
+    }
+
+    /// Title of the ⌘L command. The key opens the lyrics either way; with the Now Playing sidebar
+    /// enabled it drives that panel's lyric page instead of the classic lyrics panel.
+    private var lyricsCommandTitle: String {
+        let isShowing = self.playerService.isLyricsPanelActive
+        return isShowing ? String(localized: "Hide Lyrics") : String(localized: "Show Lyrics")
     }
 
     // MARK: - URL Handling

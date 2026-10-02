@@ -108,6 +108,19 @@ struct GeneralSettingsView: View {
                 Text("Animated Canvas")
             }
 
+            // MARK: - Now Playing Sidebar Section
+
+            Section {
+                Toggle("Use Now Playing Sidebar", isOn: self.$settings.nowPlayingSidebarEnabled)
+                    .help("Replace the Lyrics and Queue side panels with one artwork sidebar: animated canvas, a live three-line lyric preview and the next song, each expanding to the full experience")
+
+                Text("When off, the Lyrics and Queue buttons keep opening their own panels.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Now Playing Sidebar")
+            }
+
             // MARK: - Now Playing Section
 
             Section {

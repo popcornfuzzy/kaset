@@ -610,35 +610,43 @@ struct PlayerBar: View {
                 Button {
                     HapticService.toggle()
                     withAnimation(AppAnimation.standard) {
-                        player.showLyrics.toggle()
+                        if self.playerService.isNowPlayingSidebarEnabled {
+                            self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+                        } else {
+                            player.showLyrics.toggle()
+                        }
                     }
                 } label: {
                     Image(systemName: "quote.bubble")
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(self.playerService.showLyrics ? .red : .primary.opacity(0.85))
+                        .foregroundStyle(self.playerService.isLyricsPanelActive ? .red : .primary.opacity(0.85))
                 }
                 .buttonStyle(.pressable)
                 .glassEffectID("lyrics", in: self.playerNamespace)
                 .accessibilityIdentifier(AccessibilityID.PlayerBar.lyricsButton)
                 .accessibilityLabel(String(localized: "Lyrics"))
-                .accessibilityValue(self.playerService.showLyrics ? String(localized: "Showing") : String(localized: "Hidden"))
+                .accessibilityValue(self.playerService.isLyricsPanelActive ? String(localized: "Showing") : String(localized: "Hidden"))
 
                 // Queue button
                 Button {
                     HapticService.toggle()
                     withAnimation(AppAnimation.standard) {
-                        player.showQueue.toggle()
+                        if self.playerService.isNowPlayingSidebarEnabled {
+                            self.playerService.toggleNowPlayingSidebar(page: .queue)
+                        } else {
+                            player.showQueue.toggle()
+                        }
                     }
                 } label: {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(self.playerService.showQueue ? .red : .primary.opacity(0.85))
+                        .foregroundStyle(self.playerService.isQueuePanelActive ? .red : .primary.opacity(0.85))
                 }
                 .buttonStyle(.pressable)
                 .glassEffectID("queue", in: self.playerNamespace)
                 .accessibilityIdentifier(AccessibilityID.PlayerBar.queueButton)
                 .accessibilityLabel(String(localized: "Queue"))
-                .accessibilityValue(self.playerService.showQueue ? String(localized: "Showing") : String(localized: "Hidden"))
+                .accessibilityValue(self.playerService.isQueuePanelActive ? String(localized: "Showing") : String(localized: "Hidden"))
 
                 // Mini player toggle button
                 Button {

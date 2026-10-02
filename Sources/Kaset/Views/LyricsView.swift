@@ -184,10 +184,7 @@ struct LyricsView: View {
                 // with it.
                 Group {
                     if self.syncedLyricsService.searchingForBetterLyrics {
-                        ShimmerLine(text: String(localized: "Still searching for lyrics"))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .transition(.lyricsSearchingCaption)
+                        LyricsSearchingCaption()
                     }
                 }
                 .animation(.smooth(duration: 0.4), value: self.syncedLyricsService.searchingForBetterLyrics)
@@ -205,20 +202,12 @@ struct LyricsView: View {
     }
 
     private var loadingView: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .controlSize(.regular)
-                .frame(width: 20, height: 20)
-            Text("Loading lyrics...", comment: "Lyrics panel loading state")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            if let provider = self.syncedLyricsService.loadingProvider {
-                Text(String(localized: "Searching \(provider)"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        LyricsStateView(
+            icon: nil,
+            title: String(localized: "Loading lyrics...", comment: "Lyrics panel loading state"),
+            message: self.syncedLyricsService.loadingProvider.map { String(localized: "Searching \($0)") },
+            isLoading: true
+        )
     }
 
     private func syncedLyricsContentView(_ synced: SyncedLyrics) -> some View {
@@ -264,58 +253,11 @@ struct LyricsView: View {
         }
     }
 
-    /// Sticky footer under the panel: which provider supplied the lyrics, and a
-    /// picker when it offers more than one community version. The submitter's
-    /// credit is not pinned here — it lives at the end of the lyric sheet.
-    @ViewBuilder
+    /// Sticky footer under the panel: which provider supplied the lyrics, and a picker when it
+    /// offers more than one community version. Shared with the Now Playing sidebar's lyric page, so
+    /// both state the source the same way.
     private func sourceFooter(source: String?) -> some View {
-        VStack(spacing: 0) {
-            Divider().opacity(0.3)
-            HStack(spacing: 8) {
-                if let source {
-                    Text(source.hasPrefix("Source:") ? source : "Source: \(source)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 8)
-                self.variantPicker
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-    }
-
-    /// Menu for switching between the community versions the current provider
-    /// offers. Hidden unless there is more than one.
-    @ViewBuilder
-    private var variantPicker: some View {
-        let variants = self.syncedLyricsService.availableLyricsVariants
-        if variants.count > 1 {
-            Menu {
-                ForEach(variants) { variant in
-                    Button {
-                        self.syncedLyricsService.selectLyricsVariant(id: variant.id)
-                    } label: {
-                        if variant.id == self.syncedLyricsService.selectedLyricsVariantID {
-                            Label(variant.label, systemImage: "checkmark")
-                        } else {
-                            Text(variant.label)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "square.stack.3d.up")
-                    Text(String(localized: "\(variants.count) versions"))
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .help(String(localized: "Switch between community lyric versions"))
-            .accessibilityLabel(String(localized: "Lyric versions"))
-        }
+        LyricsSourceFooter(source: source)
     }
 
     private func plainLyricsContentView(_ lyrics: Lyrics) -> some View {
@@ -480,41 +422,20 @@ struct LyricsView: View {
     }
 
     private var noLyricsView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "music.note")
-                .font(.system(size: 40))
-                .foregroundStyle(.tertiary)
-
-            Text("No Lyrics Available")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-
-            Text(self.syncedLyricsService.errorMessage ?? String(localized: "There aren't any lyrics available for this song."))
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        LyricsStateView(
+            icon: "music.note",
+            title: String(localized: "No Lyrics Available"),
+            message: self.syncedLyricsService.errorMessage
+                ?? String(localized: "There aren't any lyrics available for this song.")
+        )
     }
 
     private var noTrackPlayingView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "play.circle")
-                .font(.system(size: 40))
-                .foregroundStyle(.tertiary)
-
-            Text("No Song Playing")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-
-            Text("Play a song to view its lyrics here.", comment: "No song playing lyrics message")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        LyricsStateView(
+            icon: "play.circle",
+            title: String(localized: "No Song Playing"),
+            message: String(localized: "Play a song to view its lyrics here.", comment: "No song playing lyrics message")
+        )
     }
 
     // MARK: - Data Loading

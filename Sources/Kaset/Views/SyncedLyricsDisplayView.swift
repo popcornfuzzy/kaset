@@ -13,6 +13,14 @@ struct SyncedLyricsDisplayView: View {
     /// Whether something is drawn over this panel — the fullscreen player covers it — so
     /// the highlight has to stay correct but does not have to be drawn for anybody.
     var isCovered: Bool = false
+    /// Whether the sheet may be scrolled by hand.
+    ///
+    /// The Now Playing sidebar shows this same sheet in a window three lines tall, where the
+    /// highlight is always the middle line: a stray two-finger scroll there would push the line being
+    /// sung out of the window and stop the sheet following playback for the next four seconds. The
+    /// sheet is still driven programmatically (it keeps centering the current line), it just cannot
+    /// be dragged by the reader.
+    var allowsScrolling: Bool = true
     let onSeek: (Int) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -80,6 +88,7 @@ struct SyncedLyricsDisplayView: View {
         isPlaying: Bool,
         emphasis: Double = 0.55,
         isCovered: Bool = false,
+        allowsScrolling: Bool = true,
         onSeek: @escaping (Int) -> Void
     ) {
         self.lyrics = lyrics
@@ -87,6 +96,7 @@ struct SyncedLyricsDisplayView: View {
         self.isPlaying = isPlaying
         self.emphasis = emphasis
         self.isCovered = isCovered
+        self.allowsScrolling = allowsScrolling
         self.onSeek = onSeek
 
         let scrollIndex = lyrics.currentLineIndex(at: currentTimeMs + Int(KaraokeTiming.standard.scrollLookaheadMs))
@@ -152,6 +162,7 @@ struct SyncedLyricsDisplayView: View {
                 .padding(.horizontal, 16)
             }
             .scrollIndicators(.hidden)
+            .scrollDisabled(!self.allowsScrolling)
             // Attach scrolling state to the actual ScrollView rather than relying
             // on a competing gesture recognizer over its content.
             .onScrollPhaseChange { _, phase in

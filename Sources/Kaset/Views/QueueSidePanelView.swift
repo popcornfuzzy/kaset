@@ -7,14 +7,29 @@ struct QueueSidePanelView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
 
+    /// Panel width. The classic overlay uses the default; the Now Playing sidebar embeds the same
+    /// queue experience at its own width, which the reader can resize.
+    var width: CGFloat = 400
+
+    /// Whether the panel draws its own "Up Next" header. The Now Playing sidebar turns it off
+    /// because that panel already has a header (with its own back button) above it.
+    var showsHeader: Bool = true
+
+    /// Whether the panel draws its own card: the material background and the rounded corners. The
+    /// Now Playing sidebar turns it off, because there the queue's rows sit directly on the sidebar
+    /// rather than on a panel floating over the window.
+    var usesMaterialBackground: Bool = true
+
     var body: some View {
         // Use regular material: GlassEffectContainer breaks NSTableView drag-and-drop
         // (drop target gap and acceptDrop never fire when the table is inside glass).
         VStack(spacing: 0) {
-            QueueSidePanelHeader()
+            if self.showsHeader {
+                QueueSidePanelHeader()
 
-            Divider()
-                .opacity(0.3)
+                Divider()
+                    .opacity(0.3)
+            }
 
             // Automix tuning row, when the server offers tunings for the playing queue
             if !self.playerService.queueTunerChips.isEmpty {
@@ -36,6 +51,7 @@ struct QueueSidePanelView: View {
                 self.emptyQueueView
             } else {
                 QueueListControllerRepresentable(
+                    panelWidth: self.width,
                     queue: self.playerService.queue,
                     currentIndex: self.playerService.queueHighlightIndex ?? -1,
                     isPlaying: self.playerService.isPlaying,
@@ -67,9 +83,8 @@ struct QueueSidePanelView: View {
 
             QueueFooterActions()
         }
-        .frame(width: 400)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .frame(width: self.width)
+        .modifier(QueuePanelChrome(usesMaterial: self.usesMaterialBackground))
         .accessibilityIdentifier(AccessibilityID.Queue.container)
     }
 
@@ -98,6 +113,10 @@ struct QueueSidePanelView: View {
 
 @available(macOS 26.0, *)
 struct QueueListControllerRepresentable: NSViewControllerRepresentable {
+    /// Width of the panel the table is inside, so the queue column can be sized to it. The classic
+    /// overlay and the resizable Now Playing sidebar are different widths, and a fixed column pushed
+    /// the rows' trailing controls out of view in the narrower one.
+    var panelWidth: CGFloat = 400
     let queue: [Song]
     let currentIndex: Int
     let isPlaying: Bool
@@ -115,6 +134,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
     }
 
     func updateNSViewController(_ viewController: QueueListViewController, context: Context) {
+        viewController.applyPanelWidth(self.panelWidth)
         context.coordinator.queue = self.queue
         context.coordinator.currentIndex = self.currentIndex
         context.coordinator.isPlaying = self.isPlaying
@@ -198,6 +218,34 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.view = scrollView
         }
 
+        /// Width of the panel this table is inside, remembered so it can be applied the moment the
+        /// table exists — `updateNSViewController` can run before the view is loaded.
+        var panelWidth: CGFloat = 400
+
+        /// Sizes the queue column to the panel it is inside. The rows keep a small gutter for the
+        /// scroll indicator, which is what the classic 400pt panel's 350pt column already did.
+        func applyPanelWidth(_ width: CGFloat) {
+            self.panelWidth = width
+            self.sizeColumnToPanel()
+        }
+
+        private func sizeColumnToPanel() {
+            guard let column = self.tableView?.tableColumns.first else { return }
+            let target = max(220, self.panelWidth - 50)
+            guard column.width != target else { return }
+            // Keep `minWidth <= maxWidth` at every step. Raising the minimum past the maximum is an
+            // invalid table-column configuration, and the embedded sidebar can be dragged wider than
+            // the classic panel's fixed 400pt maximum. No `reloadData` here: a column-width change
+            // relayouts the visible rows on its own, and reloading mid SwiftUI layout is what could
+            // re-enter the layout pass.
+            if column.maxWidth < target {
+                column.maxWidth = target
+            }
+            column.minWidth = target
+            column.width = target
+            column.maxWidth = target
+        }
+
         override func viewDidLoad() {
             super.viewDidLoad()
             if let tableView {
@@ -207,6 +255,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 tableView.onUserScroll = { [weak coordinator = self.coordinator] in
                     coordinator?.registerUserScrollInteraction()
                 }
+                self.sizeColumnToPanel()
             }
         }
     }
@@ -978,6 +1027,25 @@ class DraggableTableView: NSTableView {
         self.revealedDeleteDirection = 0
         self.revealedDeleteInitialOriginX = 0
         self.syncRevealedDeleteUI()
+    }
+}
+
+// MARK: - QueuePanelChrome
+
+/// The panel's chrome: the material card the classic overlay is, or nothing at all when the queue is
+/// embedded in the Now Playing sidebar.
+@available(macOS 26.0, *)
+private struct QueuePanelChrome: ViewModifier {
+    let usesMaterial: Bool
+
+    func body(content: Content) -> some View {
+        if self.usesMaterial {
+            content
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+        } else {
+            content
+        }
     }
 }
 

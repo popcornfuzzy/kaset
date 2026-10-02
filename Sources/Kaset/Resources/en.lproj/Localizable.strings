@@ -10,6 +10,9 @@
 
 "%lld of %lld songs" = "%lld of %lld songs";
 
+/* Now Playing sidebar: songs still to play */
+"%lld left" = "%lld left";
+
 "A native YouTube Music experience for macOS" = "A native YouTube Music experience for macOS";
 
 "AI responses follow your system language settings." = "AI responses follow your system language settings.";
@@ -28,7 +31,12 @@
 
 "Added to Library" = "Added to Library";
 
+/* Accessibility label on the Now Playing sidebar's cover art */
+"Artwork for %@" = "Artwork for %@";
+
 "Back 15 Seconds" = "Back 15 Seconds";
+
+"Back to Now Playing" = "Back to Now Playing";
 
 "Auto-generated" = "Auto-generated";
 
@@ -445,6 +453,8 @@
 
 "No Song Playing" = "No Song Playing";
 
+"No lyrics for this song." = "No lyrics for this song.";
+
 "No artists yet" = "No artists yet";
 
 "No changes suggested. The playlist looks good!" = "No changes suggested. The playlist looks good!";
@@ -474,6 +484,17 @@
 /* Login help text about passkey alternative */
 "Note: If passkeys don't work, use \"Try another way\" to sign in with password." = "Note: If passkeys don't work, use \"Try another way\" to sign in with password.";
 
+/* Now Playing sidebar */
+"Nothing playing" = "Nothing playing";
+
+"Nothing queued" = "Nothing queued";
+
+"Now Playing" = "Now Playing";
+
+"Now Playing Sidebar" = "Now Playing Sidebar";
+
+"Now Playing sidebar" = "Now Playing sidebar";
+
 "OK" = "OK";
 
 "Off" = "Off";
@@ -485,6 +506,11 @@
 "Open queue in side panel" = "Open queue in side panel";
 
 "Open the command bar to control music with natural language. Try saying \"play something chill\" or \"add jazz to queue\"." = "Open the command bar to control music with natural language. Try saying \"play something chill\" or \"add jazz to queue\".";
+
+/* Now Playing sidebar: what its two sections open into */
+"Open the full lyrics" = "Open the full lyrics";
+
+"Open the queue" = "Open the queue";
 
 "Pause" = "Pause";
 
@@ -589,6 +615,8 @@
 
 "Show Now Playing Notifications" = "Show Now Playing Notifications";
 
+"Show or hide the Now Playing sidebar" = "Show or hide the Now Playing sidebar";
+
 "Showing" = "Showing";
 
 "Shuffle" = "Shuffle";
@@ -643,6 +671,11 @@
 
 "There aren't any lyrics available for this song." = "There aren't any lyrics available for this song.";
 
+/* Now Playing sidebar: the three-line window has nothing to highlight without synced lyrics */
+"These lyrics aren't synced" = "These lyrics aren't synced";
+
+"Open them to read the whole song." = "Open them to read the whole song.";
+
 "This Mac doesn't support Apple Intelligence. An Apple Silicon Mac is required." = "This Mac doesn't support Apple Intelligence. An Apple Silicon Mac is required.";
 
 "Volume" = "Volume";
@@ -682,6 +715,8 @@
 
 "Updates" = "Updates";
 
+"Use Now Playing Sidebar" = "Use Now Playing Sidebar";
+
 "Version" = "Version";
 
 "Video" = "Video";
@@ -709,6 +744,8 @@
 "What would you like to do?" = "What would you like to do?";
 
 "What's New in Kaset" = "What's New in Kaset";
+
+"When off, the Lyrics and Queue buttons keep opening their own panels." = "When off, the Lyrics and Queue buttons keep opening their own panels.";
 
 "When enabled, you can use natural language commands, AI-powered playlist refinement, and lyrics explanations." = "When enabled, you can use natural language commands, AI-powered playlist refinement, and lyrics explanations.";
 

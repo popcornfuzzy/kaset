@@ -51,6 +51,22 @@ enum AccessibilityID {
         static let thumbnail = "playerBar.thumbnail"
     }
 
+    // MARK: - Now Playing Sidebar
+
+    /// The artwork-first right sidebar that can replace the classic lyrics/queue panels. It is a
+    /// window column (the system's inspector), so the collapse control lives in the toolbar.
+    enum NowPlayingSidebar {
+        static let container = "nowPlayingSidebar"
+        static let toggleButton = "nowPlayingSidebar.toggle"
+        static let backButton = "nowPlayingSidebar.back"
+        static let artwork = "nowPlayingSidebar.artwork"
+        static let trackTitle = "nowPlayingSidebar.trackTitle"
+        static let lyricsSection = "nowPlayingSidebar.lyricsSection"
+        static let upNextSection = "nowPlayingSidebar.upNextSection"
+        static let lyricsPage = "nowPlayingSidebar.lyricsPage"
+        static let queuePage = "nowPlayingSidebar.queuePage"
+    }
+
     // MARK: - Queue View
 
     enum Queue {

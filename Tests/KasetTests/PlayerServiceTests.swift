@@ -474,6 +474,114 @@ struct PlayerServiceTests {
         #expect(self.playerService.showLyrics == false)
     }
 
+    // MARK: - Now Playing Sidebar Tests
+
+    @Test("Now Playing sidebar starts hidden")
+    func nowPlayingSidebarInitiallyHidden() {
+        #expect(self.playerService.nowPlayingSidebarPage == nil)
+        #expect(self.playerService.isNowPlayingSidebarVisible == false)
+    }
+
+    @Test("First press opens the sidebar overview, the second expands the requested page")
+    func toggleNowPlayingSidebarExpandsFromOverview() {
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        #expect(self.playerService.nowPlayingSidebarPage == .overview)
+
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        #expect(self.playerService.nowPlayingSidebarPage == .lyrics)
+
+        // The same button collapses back to the overview rather than hiding the panel.
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        #expect(self.playerService.nowPlayingSidebarPage == .overview)
+    }
+
+    @Test("Each transport button switches to its own page while the sidebar is open")
+    func toggleNowPlayingSidebarSwitchesPages() {
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        #expect(self.playerService.nowPlayingSidebarPage == .lyrics)
+
+        self.playerService.toggleNowPlayingSidebar(page: .queue)
+        #expect(self.playerService.nowPlayingSidebarPage == .queue)
+
+        self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+        #expect(self.playerService.nowPlayingSidebarPage == .lyrics)
+    }
+
+    @Test("The sidebar closes explicitly")
+    func closeNowPlayingSidebar() {
+        self.playerService.setNowPlayingSidebarPage(.queue)
+        #expect(self.playerService.isNowPlayingSidebarVisible)
+
+        self.playerService.closeNowPlayingSidebar()
+        #expect(self.playerService.nowPlayingSidebarPage == nil)
+        #expect(self.playerService.isNowPlayingSidebarVisible == false)
+    }
+
+    @Test("Opening the Now Playing sidebar closes the classic panels")
+    func nowPlayingSidebarClosesClassicPanels() {
+        self.playerService.showLyrics = true
+
+        self.playerService.setNowPlayingSidebarPage(.overview)
+
+        #expect(self.playerService.showLyrics == false)
+        #expect(self.playerService.showQueue == false)
+        #expect(self.playerService.nowPlayingSidebarPage == .overview)
+    }
+
+    @Test("Opening a classic panel closes the Now Playing sidebar")
+    func classicPanelsCloseNowPlayingSidebar() {
+        self.playerService.setNowPlayingSidebarPage(.overview)
+
+        self.playerService.showQueue = true
+
+        #expect(self.playerService.showQueue == true)
+        #expect(self.playerService.nowPlayingSidebarPage == nil)
+    }
+
+    @Test("Fullscreen now playing closes the Now Playing sidebar")
+    func fullscreenClosesNowPlayingSidebar() {
+        self.playerService.setNowPlayingSidebarPage(.lyrics)
+
+        self.playerService.showFullscreenNowPlaying = true
+
+        #expect(self.playerService.nowPlayingSidebarPage == nil)
+    }
+
+    @Test("Opening the Now Playing sidebar exits fullscreen")
+    func nowPlayingSidebarExitsFullscreen() {
+        self.playerService.showFullscreenNowPlaying = true
+
+        self.playerService.setNowPlayingSidebarPage(.queue)
+
+        #expect(self.playerService.showFullscreenNowPlaying == false)
+        #expect(self.playerService.nowPlayingSidebarPage == .queue)
+    }
+
+    @Test("Transport button active state follows whichever sidebar design is enabled")
+    func panelActiveStateFollowsSidebarStyle() {
+        let previous = SettingsManager.shared.nowPlayingSidebarEnabled
+        defer { SettingsManager.shared.nowPlayingSidebarEnabled = previous }
+
+        // Classic design: the buttons follow the classic panels.
+        SettingsManager.shared.nowPlayingSidebarEnabled = false
+        self.playerService.showLyrics = true
+        #expect(self.playerService.isLyricsPanelActive)
+        #expect(self.playerService.isQueuePanelActive == false)
+
+        self.playerService.showLyrics = false
+
+        // Now Playing design: the overview lights neither button, each page lights its own.
+        SettingsManager.shared.nowPlayingSidebarEnabled = true
+        self.playerService.setNowPlayingSidebarPage(.overview)
+        #expect(self.playerService.isLyricsPanelActive == false)
+        #expect(self.playerService.isQueuePanelActive == false)
+
+        self.playerService.setNowPlayingSidebarPage(.queue)
+        #expect(self.playerService.isQueuePanelActive)
+        #expect(self.playerService.isLyricsPanelActive == false)
+    }
+
     // MARK: - Clear Queue Tests
 
     @Test("Clear queue with no current track")

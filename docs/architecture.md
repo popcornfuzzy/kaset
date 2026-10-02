@@ -160,6 +160,7 @@ Controls audio playback via singleton WebView:
 | `pendingPlayVideoId` | `String?` | Video ID to play |
 | `showMiniPlayer` | `Bool` | Mini player visibility |
 | `showLyrics` | `Bool` | Lyrics panel visibility |
+| `nowPlayingSidebarPage` | `NowPlayingSidebarPage?` | Now Playing sidebar page (`nil` = hidden) |
 
 **Key Methods**:
 - `play(videoId:)` — Loads and plays a video
@@ -1046,6 +1047,30 @@ Right sidebar panel displaying song lyrics:
 - Width: 280px, animated show/hide
 
 **Integration**: Toggled via `PlayerService.showLyrics`, persists across all navigation states, and consumes playback time from `PlayerService.currentTimeMs`.
+
+### NowPlayingSidebarView
+
+**File**: `Sources/Kaset/Views/NowPlayingSidebarView.swift`
+
+The artwork-first right sidebar, the alternative to the two panels above (see [ADR-0029](adr/0029-now-playing-sidebar.md)):
+
+- A real trailing column of `MainWindow`'s `HStack`, laid out beside the `NavigationSplitView` (resizable at its edge) rather than a card floating over the content; SwiftUI's `.inspector` is deliberately *not* used, because resizing its nested split controller aborts the app
+- The collapse toggle (`NowPlayingSidebarToggle`) is in the toolbar while the column is closed and in the column's own top-trailing corner while it is open — never both, and never in the toolbar while the column is open, because toolbar items are laid out across the whole window and two sharing a placement get merged into one stretched glass capsule
+- Chosen by `SettingsManager.nowPlayingSidebarEnabled` (off by default); the classic panels stay the default experience and keep their own presentation state. Width persists in `SettingsManager.nowPlayingSidebarWidth` (clamped 300–560pt), and the window's minimum grows with the column so the content cannot be cut off
+- The draggable edge is `NowPlayingSidebarResizeHandle` (a small `NSView` owning the `resizeLeftRight` cursor), applied as an overlay on the content's trailing edge
+- One column, three pages (`NowPlayingSidebarPage`): the `overview` *is* the column — cover art edge to edge at the top, title and artist under it, a three-line lyric window with the line being sung in the middle, and the next song — and the two sections open `lyrics` (the shared `SyncedLyricsDisplayView` sheet plus `LyricsSourceFooter`) and `queue` (the classic `QueueSidePanelView` with its header and card chrome suppressed)
+- The three-line window is that *same* sheet in a 116pt window (`allowsScrolling: false`, faded at the edges), so the karaoke wipe, the emphasis, the pause dots and the centering are the panel's; the empty and loading states are the shared `LyricsStateView`, so both surfaces say the same thing
+- The column's background is a blurred copy of the cover (`NowPlayingSidebarBackground`), washing down into the window background and bleeding up behind the toolbar (top edge only); the lyric window and up-next row sit in translucent `NowPlayingSidebarCard` glass so the colours show through
+- The artwork crossfades to the track's animated canvas with the fullscreen player's readiness rule (first *rendered* frame, never "item is ready"); `CanvasService` lookups are cache-backed, so the sidebar and the fullscreen player share one lookup per track
+- Owns one lyrics lookup on its root so the window and the sheet share it — a page change never looks like a new track and never re-searches
+
+**Integration**: Laid out by `MainWindow`'s `HStack` beside the `NavigationSplitView`; shown via `PlayerService.nowPlayingSidebarPage`, and the transport's lyrics/queue buttons and ⌘L follow whichever design is enabled (`isLyricsPanelActive` / `isQueuePanelActive`).
+
+### LyricsSurfaceViews
+
+**File**: `Sources/Kaset/Views/LyricsSurfaceViews.swift`
+
+What every lyric surface says when it has no sheet to draw, shared by `LyricsView` and the Now Playing sidebar so the two cannot drift apart: `LyricsStateView` (loading with the provider being searched, no track, no lyrics — `compact` changes only type size), `LyricsSourceFooter` (provider credit and the community-variant picker) and `LyricsSearchingCaption` (the "still searching" shimmer).
 
 ### CommandBarView
 
