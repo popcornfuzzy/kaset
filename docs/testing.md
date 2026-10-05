@@ -479,9 +479,12 @@ To test auth recovery:
 Use Xcode's Console to filter logs:
 
 ```
-subsystem:Kaset category:player
-subsystem:Kaset category:auth
+subsystem:com.sertacozercan.Kaset category:Player
+subsystem:com.sertacozercan.Kaset category:Auth
 ```
+
+For the live stream (`Scripts/stream-logs.sh`), `log show`, the redaction rules and the diagnostics
+left in the window and player code, see [debugging.md](debugging.md).
 
 ### WebView Debugging
 

@@ -18,6 +18,16 @@ struct PersistentPlayerView: NSViewRepresentable {
     let prefersVideo: Bool
     let viewportSize: CGSize
 
+    /// Whether this host is allowed to own the shared player surface.
+    ///
+    /// The app has one `WKWebView` and it can only be in one window, so ownership is a rule rather
+    /// than a consequence of which view happened to lay out last. A host that does not own the
+    /// surface must not attach the WebView *even for a moment*: re-parenting is what a losing host
+    /// would otherwise do during the handover, and the surface would blank — or, for a DRM stream,
+    /// break — in whichever window lost. The default keeps every existing host unchanged; the main
+    /// window is the one that stands down (see `MainWindow.hostsPlayerWebView`).
+    var claimsSurface: Bool = true
+
     private let logger = DiagnosticsLogger.player
 
     func makeNSView(context _: Context) -> NSView {
@@ -26,6 +36,8 @@ struct PersistentPlayerView: NSViewRepresentable {
         let container = NSView(frame: .zero)
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
+
+        guard self.claimsSurface else { return container }
 
         // Get or create the singleton WebView
         let webView = SingletonPlayerWebView.shared.getWebView(
@@ -78,6 +90,16 @@ struct PersistentPlayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ container: NSView, context _: Context) {
+        guard self.claimsSurface else {
+            // Stand down: if this container somehow holds the surface, give it up. Without this a
+            // pass that arrives after the handover could pull the WebView back into a host that no
+            // longer owns it, and the owning window would then have to steal it back.
+            if let webView = SingletonPlayerWebView.shared.webView, webView.superview === container {
+                webView.removeFromSuperview()
+            }
+            return
+        }
+
         // Ensure WebView is in this container
         let webView = SingletonPlayerWebView.shared.getWebView(
             webKitManager: self.webKitManager,

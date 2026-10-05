@@ -31,6 +31,13 @@ struct NowPlayingSidebarView: View {
     /// looked like they were tearing away from their own width.
     var columnWidth: CGFloat = 380
 
+    /// Height of the column this view is drawn in, supplied by the window's pane.
+    ///
+    /// Measured by `ShellPane` **in the same layout pass** it is drawn in — the artwork gives up height
+    /// on a short window, so it needs the column's height as well as its width, and a height remembered
+    /// from a previous pass would make the artwork step a frame behind during a drag.
+    var columnHeight: CGFloat = 0
+
     /// Lyrics lookup state, owned here rather than by the lyric surfaces.
     ///
     /// The three-line window, the expanded sheet and the empty states are views over one lookup, and
@@ -38,10 +45,13 @@ struct NowPlayingSidebarView: View {
     /// mounted for as long as the sidebar is up) means a page change never looks like a new track and
     /// never re-runs the search. Same pipeline as `LyricsView`, so the sidebar states lyrics exactly
     /// the way the classic panel does.
-    /// The column's measured *height*, so the artwork can give up height on a short window. Only the
-    /// height is measured: the width is authoritative input (`columnWidth`), never a second measurement
-    /// that could disagree with the frame.
-    @State private var containerHeight: CGFloat = 0
+    /// AppKit's inset for the window's toolbar, handed down with the column's size (see `ShellPane`).
+    ///
+    /// The column's pane reaches the window's top edge, but its *content* is inset by this much — the
+    /// toolbar band — which is why the cover art used to start below a blank strip. The artwork is pulled
+    /// up by exactly this amount so it is flush with the window's top edge (the documented design: the
+    /// artwork is genuinely *behind* the toolbar, not below it) while the pages' own headers stay below it.
+    var topInset: CGFloat = 0
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
@@ -76,24 +86,24 @@ struct NowPlayingSidebarView: View {
                     )
                     .ignoresSafeArea(edges: .top)
                 }
-                // Measured rather than wrapped in a greedy `GeometryReader`, so the page can give the
-                // artwork height on a short window without the reader ever affecting the layout.
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { newHeight in
-                    self.containerHeight = newHeight
-                }
-                // The column's own toggle, in its top-trailing corner. The toolbar version is only
-                // shown while the column is closed, so opening the sidebar looks like the toggle
-                // moving into it — and the toolbar never has a second control sitting over the
-                // column, which is what made macOS merge the two into one stretched glass capsule.
-                .overlay(alignment: .topTrailing) {
-                    NowPlayingSidebarToggle(style: .floating) {
-                        HapticService.toggle()
-                        withAnimation(AppAnimation.standard) {
-                            self.playerService.closeNowPlayingSidebar()
-                        }
-                    }
-                    .padding(.top, 8)
-                    .padding(.trailing, NowPlayingSidebarLayout.padding)
+                // The column's height arrives as `columnHeight`: `ShellPane` resolves it in the layout
+                // pass that draws this view, so the artwork follows a resize in the same frame. This
+                // used to measure its own height here, which handed the page the *previous* pass's
+                // number and made the cover step behind the divider during a drag.
+                //
+                // The *artwork* is pulled up over the toolbar band (see `overview`), so the cover reaches
+                // the window's top edge; nothing else in the column ignores the inset, so the pages'
+                // headers keep their normal place below the toolbar.
+                //
+                // The inset comes from the pane (`ShellPane`), not from a measurement here — it is a
+                // property of the pane's safe area, and measuring it in the column made the artwork's
+                // top edge a second, later-reading of it.
+                // The artwork's top edge is a function of this number, so it is the one value that says
+                // whether the cover reaches the window's top edge.
+                .onChange(of: self.topInset) { _, newInset in
+                    let message = "Now Playing column top inset: \(Int(newInset)) "
+                        + "columnWidth=\(Int(self.columnWidth)) columnHeight=\(Int(self.columnHeight))"
+                    DiagnosticsLogger.ui.info("\(message, privacy: .public)")
                 }
                 .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.container)
             .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
@@ -151,7 +161,7 @@ struct NowPlayingSidebarView: View {
         case .lyrics:
             self.lyricsPage
         case .queue:
-            self.queuePage(width: self.columnWidth)
+            self.queuePage
         case .overview:
             self.overview
         }
@@ -167,6 +177,11 @@ struct NowPlayingSidebarView: View {
                 height: self.artworkHeight,
                 reduceMotion: self.reduceMotion
             )
+            // Up by the toolbar band, so the cover is flush with the window's top edge and runs behind
+            // the toolbar instead of starting below a blank strip. The negative padding, not an offset:
+            // it moves the artwork's frame *and* takes the same amount off its layout height, so the rows
+            // under it still begin at the artwork's visible bottom edge.
+            .padding(.top, -self.topInset)
 
             self.trackTitles
                 .padding(.horizontal, NowPlayingSidebarLayout.padding)
@@ -210,14 +225,14 @@ struct NowPlayingSidebarView: View {
             ? self.columnWidth
             : NowPlayingSidebarLayout.artworkMaxDimension
 
-        // Before the first measurement the height is unknown, not zero: sizing from the width alone
+        // Before the first layout the height is unknown, not zero: sizing from the width alone
         // (a square) is stable and correct on a normal window, whereas treating the height as zero
         // would open the column on a 150pt stub and pop it to full a frame later.
-        guard self.containerHeight > 0 else {
+        guard self.columnHeight > 0 else {
             return min(width, NowPlayingSidebarLayout.artworkMaxHeight)
         }
 
-        let leftover = self.containerHeight - NowPlayingSidebarLayout.reservedHeight
+        let leftover = self.columnHeight - NowPlayingSidebarLayout.reservedHeight
         return min(
             width,
             NowPlayingSidebarLayout.artworkMaxHeight,
@@ -405,7 +420,7 @@ struct NowPlayingSidebarView: View {
     }
 
     @ViewBuilder
-    private func queuePage(width: CGFloat) -> some View {
+    private var queuePage: some View {
         VStack(spacing: 0) {
             self.pageHeader(title: String(localized: "Up Next"))
                 .padding(.horizontal, NowPlayingSidebarLayout.padding)
@@ -413,8 +428,13 @@ struct NowPlayingSidebarView: View {
             // The queue's own header would be a second title under this page's header, and its card
             // chrome belongs to the floating panel — everything else (automix chips, reordering,
             // undo/redo, clear) is the same queue the classic panel shows.
+            //
+            // No width is handed to it: a scalar width here was this page's own copy of the column's
+            // width, one layout pass behind the divider, so the queue's rows and their trailing controls
+            // moved a frame after the column edge did. The panel fills the width it is inside instead,
+            // and its table sizes its column to that width in its own layout pass.
             QueueSidePanelView(
-                width: max(240, width - (2 * NowPlayingSidebarLayout.padding)),
+                width: nil,
                 showsHeader: false,
                 usesMaterialBackground: false
             )

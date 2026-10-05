@@ -9,8 +9,8 @@ The codebase follows a clean architecture pattern:
 ```
 Sources/
   └── Kaset/            → Main app target
-      ├── KasetApp.swift    → App entry point
-      ├── AppDelegate.swift → Window lifecycle
+      ├── KasetApp.swift    → App entry point (scenes, commands, root view)
+      ├── AppDelegate.swift → Window lifecycle (creates the app's main window)
       ├── Models/       → Data types (Song, Playlist, Album, Artist, etc.)
       ├── Services/     → Business logic
       │   ├── API/      → YTMusicClient, Parsers/
@@ -177,6 +177,7 @@ Manages the singleton WebView for playback:
 - Handles video loading with pause-before-load
 - JavaScript bridge for playback state updates
 - Survives window close for background audio
+- Is **re-parented** into whichever window shows it, so exactly one window may host it at a time — see `PlayerSurfaceHost` and [ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)
 
 ```swift
 @MainActor
@@ -391,7 +392,7 @@ Parses YouTube Music and custom `kaset://` URLs:
 | `kaset://album?id=xxx` | `.album(id:)` |
 | `kaset://artist?id=xxx` | `.artist(id:)` |
 
-**Usage**: Called from `KasetApp.onOpenURL` to handle deep links.
+**Usage**: Called from `AppDelegate.application(_:open:)` to handle deep links (it was the `Window` scene's `.onOpenURL`; see [ADR-0030](adr/0030-appkit-window-shell.md) for why the main window is AppKit's now).
 
 ### ScriptCommands (AppleScript)
 
@@ -457,6 +458,10 @@ See [ADR-0007: Sparkle Auto-Updates](adr/0007-sparkle-auto-updates.md) for desig
 
 Application lifecycle management:
 
+- **Creates and owns the app's main window** (`installMainWindow()`): an `NSWindow` with `MainWindow` as its `NSHostingController`'s root view, the app's chrome, a `KasetMainWindow` autosave name, and no SwiftUI window controller behind it — which is what leaves the window's toolbar to the app ([ADR-0030](adr/0030-appkit-window-shell.md)). The view comes from `KasetApp.makeRootView()`, handed over in `KasetApp.init`
+- Because that handover happens in `init`, `KasetApp` holds its services as **plain stored properties** and the window's UI state in an `@Observable` `AppWindowState`: a `@State` read outside a view/scene body is not a read (SwiftUI returns a constant binding and a fresh instance per read), which broke the navigation sidebar's selection and left `MainWindow` on its initializing branch — and therefore without a toolbar — until it was removed
+- Is the app's URL entry point (`application(_:open:)`), since there is no `Window` scene carrying `.onOpenURL`
+- **Owns every window the app makes** ([ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)): the main window, and the detached mini player panel (`showMiniPlayerPanel()` / `closeMiniPlayerPanel()`), which moves the shared player surface between the two. Windows are AppKit's when they have to outlive a scene, be found by the app, or carry an app-owned toolbar; `Settings` stays a SwiftUI scene because nothing else needs to know about it
 - Implements `NSWindowDelegate` to hide window instead of close
 - Keeps app running when window is closed (`applicationShouldTerminateAfterLastWindowClosed` returns `false`)
 - Handles dock icon click to reopen window
@@ -897,7 +902,7 @@ The app uses Apple's **Liquid Glass** design language introduced in macOS 26.
 | Component | Glass Pattern |
 |-----------|---------------|
 | `PlayerBar` | `.glassEffect(.regular.interactive(), in: .capsule)` |
-| `Sidebar` | Wrapped in `GlassEffectContainer` |
+| `Sidebar` | AppKit's `sidebarWithViewController:` material (no hand-rolled effect view) |
 | `FullscreenPodcastView` top bar | `GlassEffectContainer` + `.glassEffect(.regular.interactive(), in: .circle)` (close, transcript toggle) and `.capsule` (volume) |
 | `QueueView` / `LyricsView` | `.glassEffectTransition(.materialize)` |
 | Search field | `.glassEffect(.regular, in: .capsule)` |
@@ -1048,23 +1053,57 @@ Right sidebar panel displaying song lyrics:
 
 **Integration**: Toggled via `PlayerService.showLyrics`, persists across all navigation states, and consumes playback time from `PlayerService.currentTimeMs`.
 
+### WindowShell / WindowShellController
+
+**File**: `Sources/Kaset/Views/WindowShell.swift`
+
+The window's own layout, and the reason the toolbar's items land where a macOS app puts them:
+
+- The window is the app's `NSWindow`, created by `AppDelegate.installMainWindow()` with `MainWindow` as its hosting controller's root view — no SwiftUI `Window` scene, so no SwiftUI window controller is behind the window and nothing but the app touches its toolbar (see [ADR-0030](adr/0030-appkit-window-shell.md))
+- One `NSSplitViewController` with three panes — `NSSplitViewItem(sidebarWithViewController:)` for the navigation sidebar, a plain item for the page, `NSSplitViewItem(inspectorWithViewController:)` for the Now Playing column — each hosting SwiftUI; older designs nested a `NavigationSplitView` inside SwiftUI and laid the column beside it in an `HStack`
+- Those two *named* items are what AppKit's standard `sidebarTrackingSeparator` / `inspectorTrackingSeparator` items discover and align to, which is what bounds the page's toolbar items by the column's divider (see [ADR-0030](adr/0030-appkit-window-shell.md)); SwiftUI exposes neither the items nor a placement for them
+- The panes' backdrops run to the window's top edge (`fullSizeContentView` + a transparent titlebar, set when the app creates the window and re-asserted from `viewDidLayout` when a value differs) while each pane's content still lays out 52pt down, via the pane's own safe area
+- That window is a **clear sheet**: `isOpaque = false` and `backgroundColor = .clear`, re-asserted from `viewDidLayout` alongside the rest of the chrome. The navigation sidebar's material is `.behindWindow`, so it needs the desktop behind the window to blur — with the window drawing its own opaque background, the same effect view has only that background to composite against and the column reads as a flat grey sheet. Every *other* pane therefore paints an opaque surface of its own: the page (`MainWindow.contentPane`, a `windowBackgroundColor` background that bleeds up under the toolbar) and the Now Playing column (`NowPlayingSidebarBackground`)
+- AppKit owns the divider, its cursor, its clamping, the collapse animation and the width (`autosaveName`); the app states only whether the column is open and the width it opens at the first time, and reads a reader's collapse back off the item
+- The **window's minimum width is the panes' own minimums plus the dividers**, never below the 900pt floor the app has always stated (`WindowShellLayout.minimumWindowWidth(tracksColumn:)`, written to the window by `WindowShellController` and stated again on `MainWindow`'s content so the two agree): 967 with the column closed, 1267 with it open. The page is *not* the pane that gives way — a page squeezed below its own minimum is a page whose controls are cut off, and a split view cannot satisfy a requirement larger than its own width, so what AppKit did with the difference was break a constraint and draw the page past the window's edge (`Shell overflow: …` reports it if it ever happens). What gives way instead is how wide a **side pane** may be: each is capped at what is left once the page and the other pane have theirs (`WindowShellLayout.sidebarMaximum` / `inspectorMaximum`). And a window narrower than its minimum is **grown** to it rather than left to crop (once, never shrinking, and never on a reader's divider drag)
+- `MainWindow.Layout.pageMinWidth` is the page's own minimum, **765**, measured rather than guessed: with the column open the split view sized itself to 200 + 765 + 300 — each pane at its own floor — and stayed there in a narrower window. The player bar is what needs it (`PlayerBar` lays out its controls in both hover states for exactly this reason)
+- The navigation sidebar's surface is AppKit's again: `SidebarMaterialPane` hosts the sidebar's SwiftUI **inside** an `NSVisualEffectView` with the `.sidebar` material at `blendingMode = .behindWindow`, and `Sidebar`'s list hides its own background (`.scrollContentBackground(.hidden)`) — a standalone sidebar list otherwise paints an opaque background over whatever is behind it, so the column read as a flat grey sheet. `.behindWindow` (rather than `.withinWindow`) is what makes it a real macOS sidebar: the material blurs the desktop, the way Finder's and Mail's sidebars do
+- The sidebar's rows are **tagged rows, not `NavigationLink`s**: the split view this shell replaced was the navigation container those links belonged to, and a link with no container left to navigate renders its label in the inactive style — the rendered ink measures 0.498 grey against 0.000 for a tagged row, whatever `foregroundStyle` the label is given. The page has always been driven by the list's own `selection` binding, so nothing was lost (`Sidebar.navigationRow(_:)`), and `WindowShell`'s `Sidebar ink:` line measures the rendered result
+- The sidebar's content also draws in a **vibrant** appearance, so its labels state literal colours: `.primary` *is* `labelColor`, which `VibrantLight`/`VibrantDark` resolve to a lower-alpha colour (black @ 0.70 against `Aqua`'s 0.85). The appearance cannot be overridden from inside the pane, so `Sidebar.rowForeground(for:)` names the colour — and the icons carry `PackageResourceLookup.brandAccent` while the labels stay neutral, the way Apple Music tints its sidebar glyphs. `SidebarBackingStyleConfigurator` keeps each source-list row's emphasis in step with the window's key state, which is what the row's selection highlight draws with; `Sidebar surface rows:` publishes the appearance and the resolved label colour. The row's **emphasis is also re-stated after every first-responder change** (`Coordinator.repairEmphasis`), because AppKit's own rule is not the app's: the list un-emphasises the selected row the moment it stops being the window's first responder — which a page can cause on a key window by focusing a control of its own — and the highlight then draws in the dimmed, unemphasised style. Measured in the running app with `SearchView`'s focus-on-appear: `rowEmph=true effEmph=true` with a red pill (21609 red pixels) before the page appeared, `rowEmph=false effEmph=false` with a grey one (0 red) after. Both the emphasis rule and the window's key state are facts about a **window**, so the coordinator installs its observations from `BackingView.viewDidMoveToWindow` — `makeNSView`/`updateNSView` run with the view not yet in one, and installing from there left the sidebar observing nothing at all
+- `WindowToolbarController` installs the app's own `NSToolbar` (deferred one main-actor turn; a recreated shell controller takes over the toolbar this app already installed, since `NSToolbar.delegate` is weak). Its item list is stated **before** the toolbar goes into the window, so the window is never left with a toolbar that has no items in it. The item list has to be the app's *and* the object has to be the app's, which is why the window is AppKit's: on a SwiftUI-owned window, SwiftUI's window controller rewrote the toolbar's items from its own content every constraint pass, and replacing that toolbar made its `updateToolbarIfNeeded` throw out of `removeObserver:forKeyPath:` inside a constraint pass (`+[NSApplication _crashOnException:]`, `SIGTRAP`)
+- The page's **back control is the app's** (`WindowToolbarItem.back`). Taking SwiftUI's toolbar back takes SwiftUI's back button with it — that item (`com.apple.SwiftUI.navigationStack.back`) is the *only* thing SwiftUI's toolbar carried, so a pushed page was left with the page's other controls and no way back: "the other buttons are there but the back button disappears". So a page's stack publishes whether it can be popped, and how (`PageNavigationModel`), through `PageNavigationStack` — a `NavigationStack` that takes the page's own path binding and adds nothing else, so everything that pushes into it is unchanged. The control is drawn only while `canGoBack`, and `goBack()` refuses to run an action that outlived its page
+- That control leads the page's region — and to do so, the **window title gives the slot up** (`WindowShellController.applyTitleVisibility`). AppKit draws the title as a flexible view at the *leading* edge of the region right of the sidebar's tracking separator, and lays the region's items out after it, so an item's place in `WindowToolbarItems.identifiers` cannot put it at that edge. Measured in a reproduction of this window (1240pt, the app's item order): with the title visible the first page item sat at x=740, immediately left of the Ask AI button and the page's own controls; with the title hidden it moved to x=224 — the region's leading edge. So the title is hidden while the page has a back control (verified in the running app: the back item renders at x=244, right of the sidebar's divider at ~204–244) and restored when the page is a root. A hidden toolbar is not something the rule un-hides: the fullscreen Now Playing state hides both, and it is `MainWindow.updateWindowTitleVisibility`'s state, not the shell's
+- The toolbar is **re-taken** whenever anything else puts its own in the window (`WindowShellController.observeToolbarTakeover`). SwiftUI's window controller does exactly that while pages navigate — it installs its own one-item toolbar as the reader opens an album or a playlist (a page states a `navigationTitle`), and on the way back it takes the toolbar away entirely. The window is then left with a titlebar holding no sidebar toggle, no page controls and no Now Playing toggle — the "the bar on top disappears and the sort/search icons are gone" report — until something re-states the app's, which used to be the next layout or appearance pass. KVO on `NSWindow.toolbar` (there is no notification for it) plus a restored install on the next main-actor turn; each restore is logged (`Toolbar replaced, restoring the app's: …`)
+
+### WindowPageToolbar / PlaylistToolbarControls
+
+**File**: `Sources/Kaset/Views/WindowPageToolbar.swift`
+
+How a page's own controls (search, sort, refresh) get into the window's titlebar, bounded by the Now Playing column's divider:
+
+- The page *publishes* them (`PageToolbarModel.contribute`, retracted by id on disappearance), keyed by page id so the incoming page's publication is not cleared by the outgoing page's retraction
+- The window renders the contribution as **one hosted `NSToolbarItem`** (`NSHostingView`, `sizingOptions: [.intrinsicContentSize]`) placed before the inspector tracking separator, and updates it in place as the page changes; the order that puts it there is `WindowToolbarItems.identifiers`, covered by `WindowToolbarTests`
+- The hosted controls read the page's model **during a render of the toolbar's tree**, which is what keeps the titlebar field and the page's list in step — so the state they share lives on the model (`PlaylistDetailViewModel.searchText`, `isRefreshing`; `LibraryViewModel`/`HistoryViewModel.isRefreshing`) rather than in the page's `@State`. A manual refresh is a *background* refresh, so `loadingState` cannot say whether one is running: `isRefreshing` is why the flag exists
+- Nested pages publish too (`LibraryView` → `PlaylistDetailView`), so the titlebar follows the page on screen rather than the sidebar selection
+
 ### NowPlayingSidebarView
 
 **File**: `Sources/Kaset/Views/NowPlayingSidebarView.swift`
 
 The artwork-first right sidebar, the alternative to the two panels above (see [ADR-0029](adr/0029-now-playing-sidebar.md)):
 
-- A real trailing column of `MainWindow`'s `HStack`, laid out beside the `NavigationSplitView` (resizable at its edge) rather than a card floating over the content; SwiftUI's `.inspector` is deliberately *not* used, because resizing its nested split controller aborts the app
-- The collapse toggle (`NowPlayingSidebarToggle`) is in the toolbar while the column is closed and in the column's own top-trailing corner while it is open — never both, and never in the toolbar while the column is open, because toolbar items are laid out across the whole window and two sharing a placement get merged into one stretched glass capsule
-- Chosen by `SettingsManager.nowPlayingSidebarEnabled` (off by default); the classic panels stay the default experience and keep their own presentation state. Width persists in `SettingsManager.nowPlayingSidebarWidth` (clamped 300–560pt), and the window's minimum grows with the column so the content cannot be cut off
-- The draggable edge is `NowPlayingSidebarResizeHandle` (a small `NSView` owning the `resizeLeftRight` cursor), applied as an overlay on the content's trailing edge
+- The window's third pane, laid out by `WindowShell`'s `NSSplitViewController` as an **inspector** item (300–560pt, draggable divider, remembered width) rather than a card floating over the content; see [ADR-0030](adr/0030-appkit-window-shell.md) and `WindowShell.swift`
+- The collapse toggle is the window toolbar's last item in **both** states: while the column is closed it is the right-aligned run's trailing control, and while the column is open it is the trailing control of the toolbar's *inspector* region, pushed there by a flexible space (`WindowToolbarItems`) — so it is never drawn on the column. It used to move into the column's top-trailing corner when opened; that put a small glyph in the band the cover art owns, and the column has no interactive view over its backdrop any more. The toolbar item carries an explicit target (the shell's own `toggleInspector(_:)`) rather than `target = nil`
+- The navigation sidebar sits on `SidebarMaterialPane` (see `WindowShell`), which hosts it inside AppKit's sidebar material; `Sidebar` no longer wraps its `List` in a `GlassEffectContainer` either, since nothing in it uses a glass effect, and its rows name their own colours because that material puts the content in a vibrant appearance where `labelColor` is dimmed
+- The column's contents are sized from the *current* layout, never from a remembered one: `ShellPane` hands the pane's size down from a `GeometryReader` (same layout pass as the frame the divider is moving), and the embedded `QueueSidePanelView` fills its width with its AppKit table sizing its column from the scroll view's own width in `viewDidLayout` — a width passed down from SwiftUI state is one pass behind the divider, which is what made a drag look like the contents were tearing away
+- Chosen by `SettingsManager.nowPlayingSidebarEnabled` (off by default); the classic panels stay the default experience and keep their own presentation state. `SettingsManager.nowPlayingSidebarWidth` is only the width the column opens at the first time — `NSSplitView.autosaveName` owns it after that, and the app never writes a width. With the setting on, the column is **open when the app launches** (`PlayerService.init` sets `nowPlayingSidebarPage = .overview`, before the window reads it), so the choice of design is the choice of what the window opens with; the column has a "Nothing playing" state, so it is safe on the transport's first, empty frame
 - One column, three pages (`NowPlayingSidebarPage`): the `overview` *is* the column — cover art edge to edge at the top, title and artist under it, a three-line lyric window with the line being sung in the middle, and the next song — and the two sections open `lyrics` (the shared `SyncedLyricsDisplayView` sheet plus `LyricsSourceFooter`) and `queue` (the classic `QueueSidePanelView` with its header and card chrome suppressed)
 - The three-line window is that *same* sheet in a 116pt window (`allowsScrolling: false`, faded at the edges), so the karaoke wipe, the emphasis, the pause dots and the centering are the panel's; the empty and loading states are the shared `LyricsStateView`, so both surfaces say the same thing
-- The column's background is a blurred copy of the cover (`NowPlayingSidebarBackground`), washing down into the window background and bleeding up behind the toolbar (top edge only); the lyric window and up-next row sit in translucent `NowPlayingSidebarCard` glass so the colours show through
+- The column's background is a blurred copy of the cover (`NowPlayingSidebarBackground`), washing down into the window background and running to the window's top edge: the pane reaches behind the toolbar, so the artwork and its wash are genuinely *behind* the titlebar rather than below it, and both are `.allowsHitTesting(false)` (a `Color` in a background is hit-testable, and an invisible layer over the toolbar band swallowed clicks aimed at what was beneath it); the lyric window and up-next row sit in translucent `NowPlayingSidebarCard` glass so the colours show through
 - The artwork crossfades to the track's animated canvas with the fullscreen player's readiness rule (first *rendered* frame, never "item is ready"); `CanvasService` lookups are cache-backed, so the sidebar and the fullscreen player share one lookup per track
 - Owns one lyrics lookup on its root so the window and the sheet share it — a page change never looks like a new track and never re-searches
 
-**Integration**: Laid out by `MainWindow`'s `HStack` beside the `NavigationSplitView`; shown via `PlayerService.nowPlayingSidebarPage`, and the transport's lyrics/queue buttons and ⌘L follow whichever design is enabled (`isLyricsPanelActive` / `isQueuePanelActive`).
+**Integration**: Hosted as the inspector pane of `WindowShell` (see [ADR-0030](adr/0030-appkit-window-shell.md)); shown via `PlayerService.nowPlayingSidebarPage`, and the transport's lyrics/queue buttons and ⌘L follow whichever design is enabled (`isLyricsPanelActive` / `isQueuePanelActive`).
 
 ### LyricsSurfaceViews
 
@@ -1158,19 +1197,36 @@ GlassEffectContainer(spacing: 0) {
 
 ### PlayerBar Integration
 
-The `PlayerBar` must be added to **every navigable view** via `safeAreaInset`:
+The `PlayerBar` is added to **every navigable view** via `safeAreaInset`, and the inset belongs *inside*
+the page's `NavigationStack` — on the page the stack shows, not on the stack itself:
 
 ```swift
 // In HomeView, LibraryView, SearchView, PlaylistDetailView
-.safeAreaInset(edge: .bottom, spacing: 0) {
-    PlayerBar()
+NavigationStack(path: $path) {
+    content
+        .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
 }
 ```
 
 **Why not in MainWindow?**
-- `NavigationSplitView` detail views have their own navigation stacks
-- Views pushed onto a `NavigationStack` don't inherit parent's `safeAreaInset`
+- The shell's content pane shows whichever page the sidebar selects; the pages are what own a stack each
+- Views pushed onto a `NavigationStack` don't inherit the parent's `safeAreaInset`
 - Each view must explicitly include the `PlayerBar`
+
+**Why inside the stack, and not on it.** An inset applied to the stack belongs to the stack's
+*container*, so it outlives a push — and every destination page (`PlaylistDetailView`,
+`ArtistDetailView`, `TopSongsView`, …) brings a bar of its own, which then draws a **second** bar
+directly above it. That is the "the player bar duplicated, two on top of each other" report, and it
+appeared on any push from any page that hosted a stack: Home→album, History→artist, Library→playlist,
+Podcasts→show. Inside the stack the bar goes away with the page that owns it.
+
+Measured, both ways, in a reproduction of exactly this arrangement (root bar red, destination bar green,
+layer tree drawn to a bitmap and the bar bands counted):
+
+| Inset | After a push |
+|-------|--------------|
+| on the `NavigationStack` | `green@568 … red@620` — **two bars**, stacked |
+| on the stack's root page | `green@568` — one bar |
 
 ### Sidebar
 

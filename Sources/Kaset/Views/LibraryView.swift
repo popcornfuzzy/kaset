@@ -45,14 +45,13 @@ struct LibraryView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @State private var networkMonitor = NetworkMonitor.shared
-    @State private var isRefreshing = false
 
     @State private var navigationPath = NavigationPath()
     @State private var selectedFilter: LibraryFilter = .all
     @State private var showCreatePlaylistPopover = false
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "library", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -76,22 +75,6 @@ struct LibraryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Library")
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        Task { await self.performRefresh() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .rotationEffect(.degrees(self.isRefreshing ? 360 : 0))
-                            .animation(
-                                self.isRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
-                                value: self.isRefreshing
-                            )
-                    }
-                    .help(String(localized: "Refresh Library"))
-                    .disabled(self.isRefreshing || self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
-                }
-            }
             .navigationDestination(for: Playlist.self) { playlist in
                 PlaylistDetailView(
                     playlist: playlist,
@@ -115,11 +98,13 @@ struct LibraryView: View {
             .navigationDestination(for: PodcastShow.self) { show in
                 PodcastShowView(show: show, client: self.viewModel.client)
             }
+            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
+            // a second bar under the destination's own. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .environment(self.viewModel)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
-        }
         .task {
             if self.viewModel.loadingState == .idle {
                 await self.viewModel.load()
@@ -133,11 +118,24 @@ struct LibraryView: View {
         .refreshable {
             await self.performRefresh()
         }
+        // The page's refresh lives in the window's toolbar, bounded by the Now Playing column's divider
+        // (see `PageToolbarContribution`), so it can never be drawn over the column.
+        .pageToolbar(id: "library") {
+            PageRefreshButton(
+                help: "Refresh Library",
+                isRefreshing: { self.viewModel.isRefreshing },
+                action: { Task { await self.viewModel.performRefresh() } }
+            )
+        }
     }
 
     // MARK: - Views
 
     private var contentView: some View {
+        self.scrollingContent
+    }
+
+    private var scrollingContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 // Filter chips
@@ -147,7 +145,8 @@ struct LibraryView: View {
                 self.libraryGrid
             }
             .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 20)
         }
     }
 
@@ -161,9 +160,7 @@ struct LibraryView: View {
     }
 
     private func performRefresh() async {
-        self.isRefreshing = true
-        await self.viewModel.refreshFromNetwork()
-        self.isRefreshing = false
+        await self.viewModel.performRefresh()
     }
 
     private func filterChip(_ filter: LibraryFilter) -> some View {

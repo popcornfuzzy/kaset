@@ -53,6 +53,17 @@ final class PlaylistDetailViewModel {
     /// Error from the last sort-order change, surfaced next to the controls.
     private(set) var sortOrderError: String?
 
+    /// Search query for filtering the playlist's tracks. Typing it triggers a full scan so the search
+    /// covers every song in the playlist, not only the rows already loaded.
+    ///
+    /// Owned by the model rather than the page because the field itself lives in the window's toolbar
+    /// while the list it filters is the page's — two view trees, one piece of state.
+    var searchText: String = ""
+
+    /// Whether a manual refresh is in flight. The page's refresh control is a toolbar item and the page
+    /// is what draws the list, so this too is read from two view trees (see `PageRefreshButton`).
+    private(set) var isRefreshing = false
+
     init(playlist: Playlist, client: any YTMusicClientProtocol) {
         self.playlist = playlist
         self.client = client
@@ -372,6 +383,19 @@ final class PlaylistDetailViewModel {
     }
 
     /// Refreshes the playlist.
+    /// Runs the page's manual refresh: fresh playlist detail, and the library snapshot that decides
+    /// whether this playlist is still in it.
+    ///
+    /// The refresh is a *background* refresh — the current list stays on screen and is swapped when the
+    /// new one arrives, so `loadingState` stays `.loaded` throughout — which is why the flag the toolbar's
+    /// refresh control reads has to exist at all.
+    func performRefresh(library: LibraryViewModel?) async {
+        self.isRefreshing = true
+        defer { self.isRefreshing = false }
+        await self.refresh()
+        await library?.refreshFromNetwork()
+    }
+
     func refresh() async {
         // A refresh replaces the track list, so any in-flight prefill, full scan, or page fetch is stale.
         self.prefillGeneration += 1

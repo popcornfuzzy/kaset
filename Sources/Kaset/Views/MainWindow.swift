@@ -17,20 +17,27 @@ struct MainWindow: View {
 
     private enum Layout {
         static let commandBarTopPadding: CGFloat = 72
-        /// Minimum width the navigation sidebar plus its detail content need. The Now Playing sidebar
-        /// is laid out *beside* this, so the window's own minimum grows by the column's width and the
-        /// content can never be squeezed or cut off while the column is open.
+        /// The floor the window's own minimum has always been stated at, independent of which panes are
+        /// open. See `WindowShellLayout.minWindowWidth` and `shellLayout`.
         static let detailMinWidth: CGFloat = 900
+
+        /// The page's own minimum width: what the page's content needs before it crops.
+        ///
+        /// Measured in the running app, not guessed. With the Now Playing column open the split view sized
+        /// itself to 200 + 765 + 300 — each of its three panes at its own floor — and **stayed** there while
+        /// the window was narrower, which is the page drawn past the window's edge and cut off. So 765 is
+        /// the page's real floor. The app states it rather than a smaller number it cannot enforce: a page
+        /// minimum below what the content requires is a page that crops, and AppKit's answer to a split view
+        /// requirement larger than its width is to break a constraint.
+        static let pageMinWidth: CGFloat = 765
+        static let navigationSidebarMinWidth: CGFloat = 200
+        static let navigationSidebarIdealWidth: CGFloat = 220
+        static let navigationSidebarMaxWidth: CGFloat = 300
         /// Widths of the Now Playing sidebar column. The reader can drag it between these, the way
         /// every other sidebar in the app behaves.
         static let nowPlayingSidebarMinWidth: CGFloat = 300
         static let nowPlayingSidebarIdealWidth: CGFloat = 380
         static let nowPlayingSidebarMaxWidth: CGFloat = 560
-        /// Hit area of the draggable edge between the content and the Now Playing sidebar.
-        static let nowPlayingSidebarHandleWidth: CGFloat = 8
-        /// Absolute floor for the column when the window is too narrow even for its minimum width.
-        /// Below this the content wins, so the window stays usable on a small display.
-        static let nowPlayingSidebarFloorWidth: CGFloat = 240
         /// Minimum content height of the window.
         static let minimumContentHeight: CGFloat = 600
         static let miniPlayerDefaultWidth: CGFloat = 320
@@ -69,16 +76,15 @@ struct MainWindow: View {
     /// leaving the overlay empty.
     @State private var settings = SettingsManager.shared
     @State private var whatsNewToPresent: PresentedWhatsNew?
+    /// What the page on screen wants in the window's toolbar. Owned by the window because the toolbar is
+    /// the window's; the pages publish into it (`PageToolbarModel`), and the window hands whatever is
+    /// current to the toolbar.
+    @State private var pageToolbar = PageToolbarModel()
+    /// Whether the page on screen has somewhere to go back to. Owned by the window for the same reason the
+    /// page's toolbar controls are: the back control is a toolbar item of the window's own toolbar, and the
+    /// pages publish into this (`PageNavigationModel`).
+    @State private var pageNavigation = PageNavigationModel()
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
-
-    /// Width the column is being dragged to *right now* (`nil` when no drag is in progress).
-    ///
-    /// Kept in view state rather than in `SettingsManager`: writing the setting persists to
-    /// `UserDefaults` and re-renders the whole window on every mouse-move event, which is what made
-    /// resizing feel like it was fighting the drag. The value is persisted once, on drag end.
-    @State private var liveColumnWidth: CGFloat?
-    /// Width the detail area is actually offered, measured so the column can be clamped to it.
-    @State private var contentAreaWidth: CGFloat = 0
 
     /// Video state the fullscreen podcast experience shares with the layer below.
     /// Owned here because this view owns the WebView layer.
@@ -96,8 +102,6 @@ struct MainWindow: View {
     @State private var libraryViewModel: LibraryViewModel?
     @State private var historyViewModel: HistoryViewModel?
 
-    /// Column visibility state for NavigationSplitView - persisted to fix restoration from dock.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(navigationSelection: Binding<SidebarSelection?>, client: any YTMusicClientProtocol) {
         self._navigationSelection = navigationSelection
@@ -244,17 +248,8 @@ struct MainWindow: View {
                     .zIndex(10)
             }
         }
-        .toolbarVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
-        )
-        .toolbarBackgroundVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .windowToolbar
-        )
         .onAppear {
             self.updateWindowTitleVisibility(for: self.playerService.showFullscreenNowPlaying)
-            self.scheduleWindowMinimumUpdate()
         }
         .onChange(of: self.playerService.showFullscreenNowPlaying) { _, isShown in
             self.updateWindowTitleVisibility(for: isShown)
@@ -290,6 +285,25 @@ struct MainWindow: View {
                 self.playerService.handlePlaybackStartedForMiniPlayer()
             }
         }
+        // Diagnostic, and deliberately here rather than inside `hostsPlayerWebView`: that is read from
+        // the view body, so it cannot log without logging a body evaluation. The gate is the thing a
+        // "the mini player does nothing" report turns on, so its transitions are the evidence.
+        .onChange(of: self.hostsPlayerWebView(showsPodcastFullscreen: showsPodcastFullscreen)) { _, hosts in
+            let message = "Main window player layer hosted=\(hosts) "
+                + "detached=\(self.playerService.isPlayerSurfaceDetachedToPanel) "
+                + "pending=\(self.playerService.pendingPlayVideoId ?? "nil") "
+                + "signedIn=\(self.authService.state.isLoggedIn)"
+            DiagnosticsLogger.player.info("\(message, privacy: .public)")
+        }
+        // `pendingPlayVideoId` is what enables the player bar's mini player button, so its transitions
+        // are the other half of "the button does nothing": an enabled control whose action never runs
+        // and a control that is simply disabled look identical from outside, and only one of them is
+        // about the click at all.
+        .onChange(of: self.playerService.pendingPlayVideoId) { _, pending in
+            let message = "Pending play video changed: \(pending ?? "nil") "
+                + "miniPlayerButtonEnabled=\(pending != nil)"
+            DiagnosticsLogger.player.info("\(message, privacy: .public)")
+        }
         .onChange(of: self.accountService.currentAccount?.id) { _, newAccountId in
             self.playerService.resetTrackStatus()
 
@@ -321,17 +335,6 @@ struct MainWindow: View {
         }
         .onChange(of: self.settings.nowPlayingSidebarEnabled) { _, isEnabled in
             self.handleSidebarStyleChange(isNowPlayingSidebarEnabled: isEnabled)
-            self.scheduleWindowMinimumUpdate()
-        }
-        .onChange(of: self.playerService.isNowPlayingSidebarVisible) { _, _ in
-            self.scheduleWindowMinimumUpdate()
-        }
-        .onChange(of: self.settings.nowPlayingSidebarWidth) { _, _ in
-            self.scheduleWindowMinimumUpdate()
-        }
-        .onChange(of: self.navigationSelection) { _, _ in
-            // The navigation sidebar can be collapsed, which changes how much width the content needs.
-            self.scheduleWindowMinimumUpdate()
         }
         .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
             guard let event else { return }
@@ -351,14 +354,6 @@ struct MainWindow: View {
         }
         .task {
             PerfHUD.shared.start()
-        }
-    }
-
-    /// Defers the window minimum update to the next runloop tick so it never mutates the window mid
-    /// SwiftUI update (which is exactly the kind of re-entrant layout that aborts the app).
-    private func scheduleWindowMinimumUpdate() {
-        Task { @MainActor in
-            self.applyWindowMinimumSize()
         }
     }
 
@@ -384,8 +379,15 @@ struct MainWindow: View {
     ///
     /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
     /// a pending video (a queue song, or a restored session waiting to resume) needs it regardless.
+    ///
+    /// It stands down while the surface is detached into the mini player panel
+    /// (`PlayerService.isPlayerSurfaceDetachedToPanel`). There is one WebView and it can be in one
+    /// window: the panel is the sole host while it is open, so hosting it here as well would have the
+    /// two containers pull the same view back and forth — the surface would blank in whichever window
+    /// lost, and a DRM stream does not survive being re-parented mid-song.
     private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
         guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
+        guard !self.playerService.isPlayerSurfaceDetachedToPanel else { return false }
         return PlayerWebViewPreload.shouldHostPlayerWebView(
             isSignedIn: self.authService.state.isLoggedIn,
             hasPendingVideo: self.playerService.pendingPlayVideoId != nil
@@ -405,7 +407,10 @@ struct MainWindow: View {
             videoId: videoId,
             isExpanded: isMiniPlayerVisible,
             prefersVideo: self.playerService.hasVideoSurface,
-            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
+            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight),
+            // The main window is the fallback host: it stands down the moment the surface is detached
+            // into the mini player panel, so the two never both try to own the WebView.
+            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
         )
         .frame(
             width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
@@ -480,7 +485,8 @@ struct MainWindow: View {
             videoId: videoId,
             isExpanded: true,
             prefersVideo: hasVideo,
-            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1)
+            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1),
+            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
         )
         .frame(width: placesVideo ? slot.width : 1, height: placesVideo ? slot.height : 1)
         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -514,233 +520,185 @@ struct MainWindow: View {
     }
 
     private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {
-        guard let window = NSApplication.shared.keyWindow
+        // Deliberately not `keyWindow`: with the detached mini player open the key window can be the
+        // panel, and this would then hide the *panel's* title while leaving the main window's alone.
+        // The main window is identified by its own autosave name, which is what the rest of the app
+        // does (`AppDelegate.showMainWindowIfNeeded`).
+        guard let window = NSApplication.shared.windows
+            .first(where: { $0.frameAutosaveName == AppDelegate.mainWindowAutosaveName })
             ?? NSApplication.shared.windows.first(where: { $0.isMainWindow })
-            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain })
+            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain && !($0 is NSPanel) })
         else {
             return
         }
 
         window.titleVisibility = isFullscreenNowPlaying ? .hidden : .visible
+        // The fullscreen Now Playing experience takes over the window, so the toolbar goes with it —
+        // the same hidden state SwiftUI's `.toolbarVisibility(.hidden)` used to ask for.
+        window.toolbar?.isVisible = !isFullscreenNowPlaying
     }
 
     // MARK: - Main Content
 
+    /// The window's three panes, laid out by AppKit's split view.
+    ///
+    /// The shell is AppKit's — one `NSSplitViewController` with a real sidebar item and a real inspector
+    /// item — because those are what the window's toolbar derives its regions, and therefore its item
+    /// positions, from. See `WindowShell`.
     private var mainContent: some View {
-        ZStack(alignment: .trailing) {
-            // Main navigation content, with the Now Playing sidebar as a real trailing column beside
-            // it — the same structure as the navigation sidebar, not a panel floating over the
-            // content.
-            //
-            // It is deliberately *not* the system inspector: SwiftUI's `.inspector` nests an
-            // NSSplitViewController inside the NavigationSplitView, and resizing that nested
-            // controller invalidates constraints re-entrantly mid display cycle, which aborts the
-            // app. This column is a plain HStack child, so it cannot perturb the split view's layout.
-            HStack(spacing: 0) {
-                NavigationSplitView(columnVisibility: self.$columnVisibility) {
-                    Sidebar(selection: self.$navigationSelection)
-                        .environment(self.libraryViewModel)
-                } detail: {
-                    self.detailView(for: self.navigationSelection, client: self.client)
-                }
-                // The navigation sidebar plus its content keep their own minimum; the HStack then
-                // carries the window's minimum past this by the column's width, so the column can
-                // never push the content off screen.
-                .frame(minWidth: Layout.detailMinWidth, maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .trailing) {
-                    // The draggable edge lives on the content's trailing edge so it sits exactly on
-                    // the boundary and its hit area is inside the content rather than a gutter.
-                    if self.playerService.isNowPlayingSidebarVisible {
-                        NowPlayingSidebarResizeHandle(
-                            width: self.columnWidthBinding,
-                            minWidth: Layout.nowPlayingSidebarMinWidth,
-                            maxWidth: Layout.nowPlayingSidebarMaxWidth,
-                            onCommit: { self.commitColumnWidth() }
-                        )
-                        .frame(width: Layout.nowPlayingSidebarHandleWidth)
-                        .accessibilityHidden(true)
+        WindowShell(
+            sidebar: AnyView(self.sidebarPane),
+            content: AnyView(self.contentPane),
+            inspector: AnyView(self.inspectorPane),
+            layout: self.shellLayout,
+            showsInspector: self.playerService.isNowPlayingSidebarVisible,
+            seedInspectorWidth: self.seedInspectorWidth,
+            onInspectorCollapsedChange: { collapsed in
+                // The reader moved the pane themselves — the toolbar's toggle, a drag, or a double click
+                // on the divider — so the app's page state follows the pane rather than the other way
+                // round. (`isApplyingState` in the shell keeps the app's own writes out of this.)
+                withAnimation(AppAnimation.standard) {
+                    if collapsed {
+                        self.playerService.closeNowPlayingSidebar()
+                    } else {
+                        self.playerService.setNowPlayingSidebarPage(.overview)
                     }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-                    // Ensure sidebar is visible when window becomes key (e.g., restored from dock)
-                    if self.columnVisibility != .all {
-                        self.columnVisibility = .all
-                    }
-                }
+            },
+            toolbar: WindowToolbarItems(
+                tracksColumn: self.playerService.isNowPlayingSidebarVisible,
+                showsAI: FoundationModelsService.shared.isAvailable,
+                // Shown whenever the column design is on, open or closed: the toggle is the toolbar's
+                // own item in both states (see `WindowToolbarItems`), so it never has to move into the
+                // column — and the column's top band stays the artwork's.
+                showsNowPlayingToggle: self.playerService.isNowPlayingSidebarEnabled,
+                canGoBack: self.pageNavigation.canGoBack,
+                pageControls: self.pageToolbar.contribution,
+                onBack: { self.pageNavigation.goBack() },
+                onAI: { self.isCommandBarPresented = true }
+            )
+        )
+        // The window's minimum, stated once and in the same terms the shell enforces it in: the panes' own
+        // minimums plus the dividers, never below the app's long-standing floor. `WindowShellController`
+        // writes the same number to the window, so the two agree rather than fighting — and a window
+        // narrower than this is one at which a pane would have to give up its minimum and crop.
+        .frame(
+            minWidth: self.shellLayout.minimumWindowWidth(
+                tracksColumn: self.playerService.isNowPlayingSidebarVisible
+            ),
+            minHeight: Layout.minimumContentHeight
+        )
+        // The shell is the window: its panes are what the window draws, so they own the space under the
+        // titlebar. Each pane then re-insets its own content by AppKit's window safe area (`ShellPane`'s
+        // children lay out below the toolbar) while the panes that *are* a backdrop — the navigation
+        // sidebar's material and the Now Playing column's artwork — run to the window's top edge, which is
+        // what makes the titlebar read as part of the sidebar rather than as a band above it.
+        .ignoresSafeArea(.container, edges: .top)
+    }
 
-                if self.playerService.isNowPlayingSidebarVisible {
-                    // The width is authoritative and passed in: the sidebar sizes its own content from
-                    // this, never from a second measurement of itself, so a resize cannot leave the
-                    // column and its contents one frame out of step with each other.
-                    NowPlayingSidebarView(columnWidth: self.effectiveColumnWidth)
-                        .frame(width: self.effectiveColumnWidth)
-                }
-            }
-            // The `HStack`'s own width is the space available to the detail area. Measuring it here —
-            // not the overflowed children — is what lets the column be clamped so the stack always
-            // fits. It is measured rather than assumed so a window resize (or a display change) keeps
-            // the clamp correct.
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-                self.contentAreaWidth = newWidth
-            }
+    /// The navigation sidebar, on AppKit's own sidebar surface.
+    ///
+    /// `NavigationSplitView` used to supply this surface. The window shell replaced that split view, so
+    /// the pane supplies it again (`SidebarMaterialPane`: the `.sidebar` material at `.behindWindow`, with
+    /// the sidebar's SwiftUI inside it).
+    ///
+    /// Hosting it there costs one thing, and it is paid in `Sidebar`: the sidebar's content resolves its
+    /// colours in a **vibrant** appearance, where `labelColor` is a lower-alpha colour than the plain one
+    /// (black @ 0.70 against 0.85) — so the nav rows state a literal colour rather than `.primary`.
+    /// Measured, and written up on `EmphasizedMaterialView`.
+    private var sidebarPane: some View {
+        SidebarMaterialPane {
+            Sidebar(selection: self.$navigationSelection)
+                .environment(self.libraryViewModel)
+        }
+        // The material is the pane's surface, so it reaches the window's top edge; the sidebar's own
+        // content inside it still starts below the toolbar.
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+
+    /// The page, plus the classic lyrics/queue panels.
+    ///
+    /// The panels are overlays of the *content pane*, not of the window: they belong to the page, and
+    /// over the window they would sit on top of the Now Playing column.
+    private var contentPane: some View {
+        ZStack(alignment: .trailing) {
+            self.detailView(for: self.navigationSelection, client: self.client)
 
             // Classic lyrics/queue panels, floating over the content (mutually exclusive).
             self.classicSidebarOverlay(client: self.client)
         }
-        .frame(minWidth: Layout.detailMinWidth, minHeight: 600)
-        .toolbarVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
-        )
-        .toolbarBackgroundVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
-        )
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    self.isCommandBarPresented = true
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.primary)
-                }
-                .keyboardShortcut("k", modifiers: .command)
-                .help(String(localized: "Ask AI (⌘K)"))
-                .accessibilityIdentifier(AccessibilityID.MainWindow.aiButton)
-                .requiresIntelligence()
-            }
-
-            // The Now Playing sidebar's toggle, styled like the content's own toolbar buttons.
-            //
-            // It lives in the toolbar only while the column is *closed* — its resting place, at the
-            // window's trailing edge, where the column's top-right corner will be. Once the column is
-            // open the toggle moves into the column itself (see `NowPlayingSidebarView`), so the toolbar
-            // keeps exactly one set of controls, at the trailing edge, and the column contains the only
-            // button that belongs to it.
-            if self.playerService.isNowPlayingSidebarEnabled, !self.playerService.isNowPlayingSidebarVisible {
-                ToolbarItem(placement: .primaryAction) {
-                    NowPlayingSidebarToggle {
-                        withAnimation(AppAnimation.standard) {
-                            self.playerService.setNowPlayingSidebarPage(.overview)
-                        }
-                    }
-                }
-            }
+        // The page is a surface of its own. The window is a clear sheet so the navigation sidebar's
+        // material can blur the desktop (`SidebarMaterialPane`), which means *every* other pane has to
+        // paint its own opaque background or the desktop shows through it. The background bleeds up under
+        // the toolbar for the same reason the sidebar's material does: without that the titlebar band over
+        // the page would be the one strip of the window with nothing behind it.
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea(edges: .top)
         }
-        .toolbar(removing: .sidebarToggle)
+        // The pages publish their toolbar controls to the window through this (see `PageToolbarModel`),
+        // and their navigation stacks state whether they can be popped (`PageNavigationModel`).
+        .environment(self.pageToolbar)
+        .environment(self.pageNavigation)
     }
 
-    /// The width the column *wants*: what the reader is dragging to right now, or the persisted width.
+    /// The Now Playing sidebar.
     ///
-    /// The stored value is clamped on read so a bobbled write can never wedge the column off screen.
-    private var desiredColumnWidth: CGFloat {
-        if let live = self.liveColumnWidth { return live }
+    /// Unmounted rather than merely collapsed while the column is closed: appearing and disappearing is
+    /// what starts and stops its lyrics polling and canvas loading, and a collapsed pane still holds its
+    /// view.
+    @ViewBuilder
+    private var inspectorPane: some View {
+        if self.playerService.isNowPlayingSidebarVisible {
+            ShellPane { size, topInset in
+                NowPlayingSidebarView(
+                    columnWidth: size.width,
+                    columnHeight: size.height,
+                    topInset: topInset
+                )
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    /// The column bounds AppKit's split view items enforce.
+    ///
+    /// The page's own minimum is stated as what its content actually needs (`pageMinWidth`), and the
+    /// window's is the panes' sum — so opening the Now Playing column asks for a window wide enough to hold
+    /// it instead of squeezing the page below its floor. See `WindowShellLayout`.
+    private var shellLayout: WindowShellLayout {
+        WindowShellLayout(
+            minSidebarWidth: Layout.navigationSidebarMinWidth,
+            maxSidebarWidth: Layout.navigationSidebarMaxWidth,
+            minContentWidth: Layout.pageMinWidth,
+            minWindowWidth: Layout.detailMinWidth,
+            minInspectorWidth: Layout.nowPlayingSidebarMinWidth,
+            maxInspectorWidth: Layout.nowPlayingSidebarMaxWidth
+        )
+    }
+
+    /// The width the Now Playing sidebar opens at the first time this build runs.
+    ///
+    /// AppKit's autosave owns the divider from then on, and the app never writes a width on a drag —
+    /// which is what removes the whole class of "the stored width fights the divider" bugs the column
+    /// used to have. The stored setting is read here once, as the value to start from.
+    private var seedInspectorWidth: CGFloat {
         let stored = CGFloat(self.settings.nowPlayingSidebarWidth)
         guard stored.isFinite, stored > 0 else { return Layout.nowPlayingSidebarIdealWidth }
-        return min(max(stored, Layout.nowPlayingSidebarMinWidth), Layout.nowPlayingSidebarMaxWidth)
-    }
-
-    /// The column's width arithmetic, as one value: the measured space plus the window's own limits.
-    private var columnGeometry: NowPlayingSidebarColumnGeometry {
-        NowPlayingSidebarColumnGeometry(
-            availableWidth: self.contentAreaWidth,
-            detailMinWidth: Layout.detailMinWidth,
-            handleWidth: Layout.nowPlayingSidebarHandleWidth,
+        // A stored width is a user-editable default, so it is put through the column's own bounds before it
+        // reaches the split view. `availableWidth: 0` states that the app has no window knowledge here —
+        // the divider's own limits are the split items' (see `WindowShellLayout`), which is what makes this
+        // clamp the column's bounds and nothing else.
+        return NowPlayingSidebarColumnGeometry(
+            availableWidth: 0,
+            detailMinWidth: 0,
+            handleWidth: 0,
             minWidth: Layout.nowPlayingSidebarMinWidth,
             maxWidth: Layout.nowPlayingSidebarMaxWidth,
-            floorWidth: Layout.nowPlayingSidebarFloorWidth
-        )
-    }
-
-    /// The width the column actually occupies. Never wider than the space admits (so the content keeps
-    /// its minimum), never narrower than the box the sidebar's own content is designed around.
-    private var effectiveColumnWidth: CGFloat {
-        self.columnGeometry.effective(desired: self.desiredColumnWidth)
-    }
-
-    /// Reads and writes the column width while the divider is being dragged.
-    ///
-    /// The drag deliberately never touches `SettingsManager`: a write there persists to `UserDefaults`
-    /// and re-renders the whole window on every mouse-move event, and it re-derives the window's
-    /// minimum size mid-gesture — the two together are what made resizing feel like it was fighting
-    /// back. Live width stays in view state; `commitColumnWidth()` persists it once, when the drag ends.
-    private var columnWidthBinding: Binding<CGFloat> {
-        Binding(
-            get: { self.effectiveColumnWidth },
-            set: { newValue in
-                self.liveColumnWidth = self.columnGeometry.effective(desired: newValue)
-            }
-        )
-    }
-
-    /// Persists the dragged width once the drag ends, and re-applies the window minimum afterwards.
-    ///
-    /// The window is never resized *during* the drag: a minimum that tracked the live width made the
-    /// window resize itself on every drag step, which is what cropped the content mid-gesture.
-    private func commitColumnWidth() {
-        defer { self.liveColumnWidth = nil }
-        guard let width = self.liveColumnWidth else { return }
-        self.settings.nowPlayingSidebarWidth = Double(width)
-        self.scheduleWindowMinimumUpdate()
-    }
-
-    /// The window's own minimum content width: enough for the detail area and the column's *minimum*
-    /// width.
-    ///
-    /// It deliberately does not track the column's current width. A minimum that grew with the column
-    /// made the window try to resize itself on every drag step; a wider column instead gets clamped
-    /// while the window is too narrow, and returns to its set width when the window is widened again —
-    /// the way every resizable inspector behaves.
-    private var minimumContentWidth: CGFloat {
-        Layout.detailMinWidth
-            + (self.playerService.isNowPlayingSidebarVisible
-                ? Layout.nowPlayingSidebarHandleWidth + Layout.nowPlayingSidebarMinWidth
-                : 0)
-    }
-
-    private var mainWindow: NSWindow? {
-        NSApplication.shared.windows.first(where: { $0.frameAutosaveName == "KasetMainWindow" })
-            ?? NSApplication.shared.keyWindow
-            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain })
-    }
-
-    /// Applies the window's minimum size explicitly.
-    ///
-    /// SwiftUI's `.frame(minWidth:)` on the content does not reliably reach the window's own
-    /// `contentMinSize` in this shell, which let the window shrink until the column's cards were cut
-    /// off at the right edge. Setting it on the window is unambiguous, and growing an already-open
-    /// window that is now too small keeps the content whole the moment the column opens.
-    private func applyWindowMinimumSize() {
-        guard let window = self.mainWindow else { return }
-
-        // Never demand more width than the display has: a window wider than its screen puts the
-        // trailing column — and every toolbar button — off the edge where nothing can be reached.
-        let screen = window.screen ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-
-        let minimum = NSSize(
-            width: min(self.minimumContentWidth, visible.width),
-            height: min(Layout.minimumContentHeight, visible.height)
-        )
-        window.contentMinSize = minimum
-
-        // What the window should *aim* for: at least its minimum, and — while the column is open —
-        // wide enough for the column's current width too, so opening it or dropping the divider at its
-        // widest never leaves the column clamped. This only runs on discrete events (open, close,
-        // setting change, drag end), never between the steps of a drag.
-        let fittingWidth = Layout.detailMinWidth
-            + (self.playerService.isNowPlayingSidebarVisible
-                ? Layout.nowPlayingSidebarHandleWidth + self.desiredColumnWidth
-                : 0)
-
-        let content = window.contentRect(forFrameRect: window.frame)
-        let target = NSSize(
-            width: min(max(content.width, min(fittingWidth, visible.width)), visible.width),
-            height: min(max(content.height, minimum.height), visible.height)
-        )
-        guard target.width != content.width || target.height != content.height else { return }
-        window.setContentSize(target)
+            floorWidth: Layout.nowPlayingSidebarMinWidth
+        ).effective(desired: stored)
     }
 
     /// The classic lyrics/queue panels as glass overlays (mutually exclusive).
@@ -816,7 +774,7 @@ struct MainWindow: View {
                 let playlist = self.sidebarPlaylist(for: playlistId)
                 // A stack is what makes the playlist's own links (artist, album) work when the
                 // playlist is opened straight from the sidebar instead of a navigated list.
-                DetailNavigationStack { path in
+                DetailNavigationStack(id: "playlist-\(playlist.id)") { path in
                     PlaylistDetailView(
                         playlist: playlist,
                         viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client),
@@ -882,7 +840,7 @@ struct MainWindow: View {
             case .podcasts:
                 if let vm = podcastsViewModel { PodcastsView(viewModel: vm) }
             case .likedMusic:
-                DetailNavigationStack { path in
+                DetailNavigationStack(id: "likedMusic") { path in
                     PlaylistDetailView(
                         playlist: self.likedMusicPlaylist,
                         viewModel: PlaylistDetailViewModel(playlist: self.likedMusicPlaylist, client: self.client),
@@ -1079,86 +1037,6 @@ enum SidebarSelection: Hashable {
         .environment(PlayerService())
         .environment(WebKitManager.shared)
         .environment(accountService)
-}
-
-// MARK: - NowPlayingSidebarResizeHandle
-
-/// The draggable edge between the content and the Now Playing sidebar.
-///
-/// A plain `NSView` rather than a SwiftUI drag gesture: it gives the resize cursor and a hit area
-/// that does not need the column to reserve layout space, and dragging it only writes the column's
-/// width — it never touches the split view, so it cannot re-enter the layout pass the way the
-/// system inspector's resize does.
-@available(macOS 26.0, *)
-private struct NowPlayingSidebarResizeHandle: NSViewRepresentable {
-    @Binding var width: CGFloat
-    let minWidth: CGFloat
-    let maxWidth: CGFloat
-    /// Called once, when the drag ends, so the width can be persisted without writing on every step.
-    let onCommit: () -> Void
-
-    func makeNSView(context _: Context) -> NowPlayingSidebarResizeView {
-        let view = NowPlayingSidebarResizeView()
-        view.currentWidth = self.width
-        view.minWidth = self.minWidth
-        view.maxWidth = self.maxWidth
-        view.onWidthChange = { self.width = $0 }
-        view.onCommit = self.onCommit
-        return view
-    }
-
-    func updateNSView(_ nsView: NowPlayingSidebarResizeView, context _: Context) {
-        nsView.currentWidth = self.width
-        nsView.minWidth = self.minWidth
-        nsView.maxWidth = self.maxWidth
-        nsView.onWidthChange = { self.width = $0 }
-        nsView.onCommit = self.onCommit
-        nsView.window?.invalidateCursorRects(for: nsView)
-    }
-}
-
-@available(macOS 26.0, *)
-private final class NowPlayingSidebarResizeView: NSView {
-    var currentWidth: CGFloat = 380
-    var minWidth: CGFloat = 300
-    var maxWidth: CGFloat = 560
-    var onWidthChange: ((CGFloat) -> Void)?
-    var onCommit: (() -> Void)?
-
-    private var dragStartX: CGFloat = 0
-    private var dragStartWidth: CGFloat = 380
-
-    override func resetCursorRects() {
-        self.addCursorRect(self.bounds, cursor: .resizeLeftRight)
-    }
-
-    override func draw(_: NSRect) {
-        // A hairline on the trailing edge, where the column begins. The view itself is transparent, so
-        // the strip over the content is only ever a hit target, never a visual gutter.
-        let scale = self.window?.backingScaleFactor ?? 2
-        let thickness = 1 / scale
-        NSColor.separatorColor.setFill()
-        NSRect(x: self.bounds.maxX - thickness, y: 0, width: thickness, height: self.bounds.height).fill()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        self.dragStartX = event.locationInWindow.x
-        self.dragStartWidth = self.currentWidth
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        // Dragging left widens the column, so the delta runs from the pointer backwards.
-        let delta = self.dragStartX - event.locationInWindow.x
-        let newWidth = min(max(self.dragStartWidth + delta, self.minWidth), self.maxWidth)
-        guard newWidth != self.currentWidth else { return }
-        self.currentWidth = newWidth
-        self.onWidthChange?(newWidth)
-    }
-
-    override func mouseUp(with _: NSEvent) {
-        // One persist per gesture, not one per mouse-move event.
-        self.onCommit?()
-    }
 }
 
 // MARK: - MiniPlayerResizeOverlayView

@@ -1,8 +1,15 @@
+import AppKit
 import SwiftUI
 
 // MARK: - PlayerBar
 
 /// Player bar shown at the bottom of the content area, styled like Apple Music with Liquid Glass.
+///
+/// Every page attaches its own, with `safeAreaInset(edge: .bottom)`, and that inset belongs **inside** the
+/// page's `NavigationStack` — applied to the stack itself it belongs to the stack's container instead, so
+/// it outlives a push while the destination page brings a bar of its own, and the reader sees two bars
+/// stacked one above the other. Measured in a reproduction of the two arrangements: with the inset inside
+/// the stack a push renders one bar, with it outside, two.
 @available(macOS 26.0, *)
 struct PlayerBar: View {
     private static let brandAccent = PackageResourceLookup.brandAccent
@@ -79,6 +86,7 @@ struct PlayerBar: View {
                 self.isHovering = hovering
             }
         }
+
         .background {
             // Keyboard shortcuts for media controls.
             //
@@ -178,6 +186,15 @@ struct PlayerBar: View {
 
     // MARK: - Center Section (track info blurs, seek bar appears on hover)
 
+    /// The track info, and — laid out in **both** states and only faded in on hover — the seek bar (or the
+    /// LIVE badge) that takes its place.
+    ///
+    /// It used to be an `if` on hover, and that made the bar's *minimum* width a function of the pointer:
+    /// the seek bar's minimum is wider than the track info's, and a view's minimum is what its pane, the
+    /// split view and eventually the window are held to. Measured in the running app, the split view's own
+    /// width grew from 900 to 965 while the bar was hovered — past the 900pt window it lives in, so the page
+    /// was laid out 65pt wider than the window and cropped, and dropped back on un-hover. Laid out in both
+    /// states, the bar's footprint is a constant and hovering changes nothing but opacity.
     private var centerSection: some View {
         ZStack {
             // Error state display with retry option
@@ -186,22 +203,31 @@ struct PlayerBar: View {
             } else {
                 // Track info (blurred when hovering and track is playing)
                 self.trackInfoView
-                    .blur(radius: self.isHovering && self.playerService.currentTrack != nil ? 8 : 0)
-                    .opacity(self.isHovering && self.playerService.currentTrack != nil ? 0 : 1)
+                    .blur(radius: self.hoverRevealsSeekBar ? 8 : 0)
+                    .opacity(self.hoverRevealsSeekBar ? 0 : 1)
 
-                // On hover: seek bar for normal tracks, LIVE indicator for live streams.
-                if self.isHovering, self.playerService.currentTrack != nil {
+                // The seek bar for normal tracks, the LIVE badge for live streams. Present either way, so
+                // neither the bar's height nor its width can depend on the pointer.
+                Group {
                     if self.playerService.isCurrentItemLive {
                         self.liveIndicatorView
-                            .transition(.opacity)
                     } else {
                         self.seekBarView
-                            .transition(.opacity)
                     }
                 }
+                .opacity(self.hoverRevealsSeekBar ? 1 : 0)
+                // Invisible is not inert: the hidden slider must not be draggable, nor reachable by
+                // VoiceOver or the keyboard, while the track info is what the reader is looking at.
+                .allowsHitTesting(self.hoverRevealsSeekBar)
+                .accessibilityHidden(!self.hoverRevealsSeekBar)
             }
         }
         .frame(maxWidth: 400)
+    }
+
+    /// Whether the hover state swaps the track info for the seek bar (or the LIVE badge).
+    private var hoverRevealsSeekBar: Bool {
+        self.isHovering && self.playerService.currentTrack != nil
     }
 
     // MARK: - Live Indicator View (replaces seek bar for live streams)
@@ -648,22 +674,34 @@ struct PlayerBar: View {
                 .accessibilityLabel(String(localized: "Queue"))
                 .accessibilityValue(self.playerService.isQueuePanelActive ? String(localized: "Showing") : String(localized: "Hidden"))
 
-                // Mini player toggle button
+                // Mini player toggle button.
+                //
+                // Two behaviours behind one control, because they are the same idea at two sizes:
+                // with the mini player *window* setting on it detaches the player into its own panel
+                // (see `MiniPlayerPanel`), and otherwise it floats the in-window layer as it always
+                // has. The reader's setting decides which, and the button's lit state follows
+                // whichever is actually showing, so the two can never disagree.
                 Button {
                     HapticService.toggle()
-                    self.playerService.toggleMiniPlayerVisibilityByUser()
+                    self.logMiniPlayerButtonPress()
+                    if self.playerService.isMiniPlayerWindowModeEnabled {
+                        self.toggleMiniPlayerPanel()
+                    } else {
+                        self.playerService.toggleMiniPlayerVisibilityByUser()
+                    }
                 } label: {
-                    Image(systemName: self.playerService.showMiniPlayer ? "pip.fill" : "pip")
+                    Image(systemName: self.isMiniPlayerActive ? "pip.fill" : "pip")
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(self.playerService.showMiniPlayer ? .red : .primary.opacity(0.85))
+                        .foregroundStyle(self.isMiniPlayerActive ? .red : .primary.opacity(0.85))
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.pressable)
                 .glassEffectID("miniPlayer", in: self.playerNamespace)
-                .symbolEffect(.bounce, value: self.playerService.showMiniPlayer)
+                .symbolEffect(.bounce, value: self.isMiniPlayerActive)
                 .accessibilityIdentifier(AccessibilityID.PlayerBar.miniPlayerButton)
                 .accessibilityLabel(String(localized: "Mini Player"))
-                .accessibilityValue(self.playerService.showMiniPlayer ? String(localized: "Showing") : String(localized: "Hidden"))
+                .accessibilityValue(self.isMiniPlayerActive ? String(localized: "Showing") : String(localized: "Hidden"))
+                .help(self.miniPlayerButtonHelp)
                 .disabled(self.playerService.pendingPlayVideoId == nil)
             }
 
@@ -696,6 +734,56 @@ struct PlayerBar: View {
             )
             .accessibilityValue(self.playerService.showFullscreenNowPlaying ? String(localized: "On") : String(localized: "Off"))
         }
+    }
+
+    // MARK: - Mini Player
+
+    /// Whether either mini player is showing: the detached panel, or the in-window layer.
+    private var isMiniPlayerActive: Bool {
+        self.playerService.isPlayerSurfaceDetachedToPanel || self.playerService.showMiniPlayer
+    }
+
+    private var miniPlayerButtonHelp: String {
+        if self.playerService.isMiniPlayerWindowModeEnabled {
+            return self.playerService.isPlayerSurfaceDetachedToPanel
+                ? String(localized: "Close the Mini Player window")
+                : String(localized: "Open the Mini Player in its own window")
+        }
+        return self.playerService.showMiniPlayer
+            ? String(localized: "Hide the Mini Player")
+            : String(localized: "Show the Mini Player")
+    }
+
+    /// Opens or closes the detached mini player window.
+    ///
+    /// The window belongs to the app delegate (it owns every window the app makes, see
+    /// `AppDelegate.showMiniPlayerPanel`); the button is only one of the ways to ask for it. The View
+    /// menu's command goes through the same call, so the two cannot diverge.
+    private func toggleMiniPlayerPanel() {
+        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
+            DiagnosticsLogger.player.error("Mini player panel: NSApplication delegate is not AppDelegate")
+            return
+        }
+        if self.playerService.isPlayerSurfaceDetachedToPanel {
+            appDelegate.closeMiniPlayerPanel()
+        } else {
+            appDelegate.showMiniPlayerPanel()
+        }
+    }
+
+    /// Reports what the mini player button was asked to do, and the state it decided from.
+    ///
+    /// The button is the app's only entry point into both mini players, so when it "does nothing" this
+    /// is what separates the three possibilities: the press never arrived (an overlay above it, a
+    /// disabled button), the button took the other branch (the mini player window Setting), or the
+    /// branch ran and the surface it asked for did not appear.
+    private func logMiniPlayerButtonPress() {
+        let mode = self.playerService.isMiniPlayerWindowModeEnabled ? "window" : "floating"
+        let message = "Mini player button pressed: mode=\(mode) "
+            + "pending=\(self.playerService.pendingPlayVideoId ?? "nil") "
+            + "detached=\(self.playerService.isPlayerSurfaceDetachedToPanel) "
+            + "showing=\(self.playerService.showMiniPlayer)"
+        DiagnosticsLogger.player.info("\(message, privacy: .public)")
     }
 
     private var volumeIcon: String {

@@ -19,14 +19,21 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct DetailNavigationStack<Content: View>: View {
     @State private var path = NavigationPath()
+    /// Names this page for the window's back control (see `PageNavigationStack`), and must differ from
+    /// every other page's. It is passed in because the *caller* knows which page this is — a playlist's
+    /// stack and Liked Music's are the same view showing different pages.
+    private let id: String
     private let content: (Binding<NavigationPath>) -> Content
 
-    init(@ViewBuilder content: @escaping (Binding<NavigationPath>) -> Content) {
+    init(id: String, @ViewBuilder content: @escaping (Binding<NavigationPath>) -> Content) {
+        self.id = id
         self.content = content
     }
 
     var body: some View {
-        NavigationStack(path: self.$path) {
+        // A `PageNavigationStack`, so a page opened straight from the sidebar states its own back control
+        // to the window's toolbar exactly as a page with a stack of its own does.
+        PageNavigationStack(id: self.id, path: self.$path) {
             self.content(self.$path)
         }
     }

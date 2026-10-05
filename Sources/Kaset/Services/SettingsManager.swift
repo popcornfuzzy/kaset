@@ -28,6 +28,8 @@ final class SettingsManager {
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
         static let nowPlayingSidebarEnabled = "settings.nowPlayingSidebarEnabled"
         static let nowPlayingSidebarWidth = "settings.nowPlayingSidebarWidth"
+        static let miniPlayerWindowMode = "settings.miniPlayerWindowMode"
+        static let miniPlayerPanelWidth = "settings.miniPlayerPanelWidth"
         static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
     }
 
@@ -359,6 +361,25 @@ final class SettingsManager {
         }
     }
 
+    /// Whether the player bar's mini player button detaches the player into its own window.
+    ///
+    /// Off by default: the floating in-window mini player stays what the button has always done.
+    /// Turning it on is what makes the button open a real companion window that keeps the player
+    /// surface (and therefore playback) alive when the main window is closed.
+    var miniPlayerWindowModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.miniPlayerWindowModeEnabled, forKey: Keys.miniPlayerWindowMode)
+        }
+    }
+
+    /// Width of the detached mini player panel, so a reader who resizes it gets the same size back
+    /// next launch. Stored unclamped; `MiniPlayerPanelLayout` clamps it on read.
+    var miniPlayerPanelWidth: Double {
+        didSet {
+            UserDefaults.standard.set(self.miniPlayerPanelWidth, forKey: Keys.miniPlayerPanelWidth)
+        }
+    }
+
     /// Whether music videos are played as their song-only versions (album art) with the video
     /// kept for the PiP miniplayer.
     var preferAudioVersionsEnabled: Bool {
@@ -409,7 +430,12 @@ final class SettingsManager {
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
         // Default off: the classic lyrics/queue panels stay the default experience.
         self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? false
+
         self.nowPlayingSidebarWidth = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarWidth) as? Double ?? 380
+        // Default off: the floating in-window mini player remains what the PiP button does.
+        self.miniPlayerWindowModeEnabled = UserDefaults.standard.object(forKey: Keys.miniPlayerWindowMode) as? Bool ?? false
+        self.miniPlayerPanelWidth = UserDefaults.standard.object(forKey: Keys.miniPlayerPanelWidth) as? Double
+            ?? Double(MiniPlayerPanelLayout.defaultWidth)
         self.preferAudioVersionsEnabled = UserDefaults.standard.object(forKey: Keys.preferAudioVersionsEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),

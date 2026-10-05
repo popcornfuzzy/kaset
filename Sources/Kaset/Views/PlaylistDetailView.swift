@@ -52,22 +52,12 @@ struct PlaylistDetailView: View {
     /// Whether a delete request is currently in progress.
     @State private var isDeletingPlaylist: Bool = false
 
-    /// Whether a refresh request is currently in progress.
-    @State private var isRefreshing: Bool = false
-
     /// Error message for playlist management actions.
     @State private var playlistActionError: String?
 
     /// Whether the track list is scrolling. Used to suspend row hover highlighting so rows
     /// passing under a stationary pointer don't animate their background mid-flick.
     @State private var isScrolling: Bool = false
-
-    /// Search query for filtering the playlist's tracks. Typing it triggers a full scan so the
-    /// search covers every song in the playlist, not only the rows already loaded.
-    @State private var searchText: String = ""
-
-    /// Focus for the compact search field in the toolbar.
-    @FocusState private var isSearchFieldFocused: Bool
 
     /// Scroll distance from the bottom, in points, at which the next page is requested.
     /// Requesting a page this early keeps the fetch and its spinner below the visible
@@ -123,48 +113,15 @@ struct PlaylistDetailView: View {
         }
         .accentBackground(from: self.viewModel.playlistDetail?.thumbnailURL?.highQualityThumbnailURL)
         .navigationTitle(self.viewModel.playlistDetail?.title ?? self.playlist.title)
-        .onChange(of: self.searchText) { _, newValue in
-            // Search covers the whole playlist, so pull the remaining pages the first time a query
-            // is typed instead of only filtering what has scrolled into view.
-            guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            Task { await self.viewModel.loadAllTracksForSearch() }
+        // The controls are real toolbar items now: the window shell's inspector tracking separator bounds
+        // the page's region by the column's divider, so they stop where the column begins instead of
+        // landing on top of it. This page publishes them; see `PageToolbarContribution`.
+        .pageToolbar(id: "playlist-\(self.playlist.id)") {
+            PlaylistToolbarControls(
+                viewModel: self.viewModel,
+                library: self.libraryViewModel
+            )
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                self.searchField
-            }
-
-            // Included only when the playlist can be sorted. An always-present item with a
-            // conditional body collapses to an empty toolbar item.
-            if let detail = self.viewModel.playlistDetail, detail.isSortable {
-                ToolbarItem(placement: .automatic) {
-                    self.sortMenu(detail)
-                }
-            }
-
-            // `ToolbarSpacer` ends the group the items above belong to. Without it, a toolbar that
-            // is down to just the search field and the refresh button draws them inside one shared
-            // glass capsule, and the refresh glyph lands on the right edge of the search pill (the
-            // sort menu happened to keep them apart while it was there). This is macOS 26's way of
-            // giving the refresh button its own background.
-            ToolbarSpacer(.fixed)
-
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    Task { await self.performRefresh() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .rotationEffect(.degrees(self.isRefreshing ? 360 : 0))
-                        .animation(
-                            self.isRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
-                            value: self.isRefreshing
-                        )
-                }
-                .help(String(localized: "Refresh"))
-                .disabled(self.isRefreshing || self.viewModel.loadingState == .loading || self.viewModel.loadingState == .loadingMore)
-            }
-        }
-        .toolbarBackgroundVisibility(.hidden, for: .automatic)
         .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
@@ -177,7 +134,7 @@ struct PlaylistDetailView: View {
             }
         }
         .refreshable {
-            await self.performRefresh()
+            await self.viewModel.performRefresh(library: self.libraryViewModel)
         }
         .sheet(isPresented: self.$showRefineSheet) {
             if let detail = viewModel.playlistDetail {
@@ -224,37 +181,39 @@ struct PlaylistDetailView: View {
     private func contentView(_ detail: PlaylistDetail) -> some View {
         let tracks = self.visibleTracks(detail)
 
-        return self.withScrollObservers(
-            List {
-                // The header is a row, so the table lays it out and the page never has to guess how
-                // tall it is; being a row is also what lets it scroll away with the tracks.
-                self.headerView(detail)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 24, trailing: 24))
-                    .listRowBackground(Color.clear)
+        return VStack(spacing: 0) {
+            self.withScrollObservers(
+                List {
+                    // The header is a row, so the table lays it out and the page never has to guess
+                    // how tall it is; being a row is also what lets it scroll away with the tracks.
+                    self.headerView(detail)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 24, trailing: 24))
+                        .listRowBackground(Color.clear)
 
-                Divider()
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
-                    .listRowBackground(Color.clear)
+                    Divider()
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                        .listRowBackground(Color.clear)
 
-                if !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.searchStatusRow(detail, matchCount: tracks.count)
+                    if !self.viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.searchStatusRow(detail, matchCount: tracks.count)
+                    }
+
+                    self.trackRows(detail, tracks: tracks)
                 }
-
-                self.trackRows(detail, tracks: tracks)
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .task(id: detail.tracks.count) {
-                await self.prefetchUpcomingThumbnails(for: detail.tracks)
-            }
-        )
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .task(id: detail.tracks.count) {
+                    await self.prefetchUpcomingThumbnails(for: detail.tracks)
+                }
+            )
+        }
     }
 
     /// The tracks that match the current query, or every loaded track when there is no query.
     private func visibleTracks(_ detail: PlaylistDetail) -> [Song] {
-        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = self.viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return detail.tracks }
 
         return detail.tracks.filter { song in
@@ -277,7 +236,7 @@ struct PlaylistDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             } else if matchCount == 0 {
-                Text("No songs match \u{201C}\(self.searchText)\u{201D}")
+                Text("No songs match \u{201C}\(self.viewModel.searchText)\u{201D}")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
@@ -307,7 +266,7 @@ struct PlaylistDetailView: View {
                 // Bucket the remaining scroll distance so the value keeps changing as the user
                 // scrolls near the bottom instead of latching true. Paging stays off while a
                 // search owns the list, since the search already pulls every page.
-                guard self.viewModel.hasMore, self.searchText.isEmpty else { return .max }
+                guard self.viewModel.hasMore, self.viewModel.searchText.isEmpty else { return .max }
                 let remaining = geometry.contentSize.height
                     - (geometry.contentOffset.y + geometry.containerSize.height)
                 guard remaining < Self.paginationThreshold else { return .max }
@@ -585,70 +544,12 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// Compact toolbar search field. Fixed width keeps it from stretching across the toolbar; the
-    /// toolbar supplies the container background, so no extra glass is layered on top.
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            TextField(String(localized: "Search in playlist"), text: self.$searchText)
-                .textFieldStyle(.plain)
-                .focused(self.$isSearchFieldFocused)
-                .frame(width: 140)
-
-            if !self.searchText.isEmpty {
-                Button {
-                    self.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(String(localized: "Clear search"))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-    }
-
-    /// Toolbar menu that mirrors YouTube Music's playlist sort options. The active order is shown by
-    /// the check mark in the dropdown; choosing one writes the order to the account and reloads the
-    /// tracks in the new order.
-    private func sortMenu(_ detail: PlaylistDetail) -> some View {
-        Menu {
-            // Toggles render as menu items with a check mark, which is what actually shows the
-            // active order in a macOS menu (a `Label` image does not).
-            ForEach(detail.sortOptions, id: \.self) { order in
-                Toggle(order.displayName, isOn: Binding(
-                    get: { detail.effectiveSortOrder == order },
-                    set: { isSelected in
-                        guard isSelected else { return }
-                        Task { await self.viewModel.changeSortOrder(to: order) }
-                    }
-                ))
-            }
-        } label: {
-            Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
-        }
-        .help(Text("Sort by \(detail.effectiveSortOrder.displayName). This order is saved to your YouTube Music account."))
-        .disabled(self.viewModel.isChangingSortOrder)
-    }
-
     private func metadataText(for detail: PlaylistDetail) -> String {
         if let duration = detail.duration {
             return "\(detail.trackCountDisplay) • \(duration)"
         }
 
         return detail.trackCountDisplay
-    }
-
-    private func performRefresh() async {
-        self.isRefreshing = true
-        await self.viewModel.refresh()
-        await self.libraryViewModel?.refreshFromNetwork()
-        self.isRefreshing = false
     }
 
     private var renamePlaylistPopover: some View {
@@ -735,7 +636,7 @@ struct PlaylistDetailView: View {
         // Loading indicator for pagination. Paging itself is driven by scroll proximity,
         // so the fetch and this spinner sit below the visible window. Hidden while searching,
         // where the status row reports progress instead.
-        if self.viewModel.loadingState == .loadingMore, self.searchText.isEmpty {
+        if self.viewModel.loadingState == .loadingMore, self.viewModel.searchText.isEmpty {
             HStack {
                 Spacer()
                 ProgressView()
@@ -1309,6 +1210,103 @@ private struct RefinePlaylistSheet: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - PlaylistToolbarControls
+
+/// The playlist's own controls — search, sort, refresh — as the window toolbar's page item.
+///
+/// A view type rather than the page's own computed properties, because the toolbar hosts it in a
+/// **different view tree**: the only thing that makes it update there is reading the page's model during
+/// a render of *that* tree, so the field, the menu and the spinner all read `viewModel` here, in `body`.
+/// (A value read when the page published its controls would be a snapshot: the spinner would never
+/// start, and a changed sort order would not show up in the menu.) The same model is what the list below
+/// the toolbar renders, which is what keeps the two in step — a query typed in the titlebar filters the
+/// rows under it in the same pass.
+@available(macOS 26.0, *)
+private struct PlaylistToolbarControls: View {
+    let viewModel: PlaylistDetailViewModel
+    /// The library snapshot a manual refresh also renews, so the page's "in library" state stays
+    /// current. Passed as a value because the toolbar's tree has none of the page's environment.
+    let library: LibraryViewModel?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            self.searchField
+
+            // Included only when the playlist can be sorted; read here, so a playlist that gains or loses
+            // sort options swaps the menu in place.
+            if let detail = self.viewModel.playlistDetail, detail.isSortable {
+                self.sortMenu(detail)
+            }
+
+            PageRefreshButton(
+                help: "Refresh",
+                isRefreshing: { self.viewModel.isRefreshing },
+                action: {
+                    Task { await self.viewModel.performRefresh(library: self.library) }
+                }
+            )
+        }
+        // Search covers the whole playlist, so pull the remaining pages the first time a query is typed
+        // instead of only filtering what has already scrolled into view.
+        .onChange(of: self.viewModel.searchText) { _, newValue in
+            guard !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            Task { await self.viewModel.loadAllTracksForSearch() }
+        }
+    }
+
+    /// Compact toolbar search field. Fixed width keeps it from stretching across the toolbar; the
+    /// toolbar supplies the container background, so no extra glass is layered on top.
+    private var searchField: some View {
+        @Bindable var viewModel = self.viewModel
+
+        return HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            TextField(String(localized: "Search in playlist"), text: $viewModel.searchText)
+                .textFieldStyle(.plain)
+                .frame(width: 140)
+
+            if !self.viewModel.searchText.isEmpty {
+                Button {
+                    self.viewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Clear search"))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// Toolbar menu that mirrors YouTube Music's playlist sort options. The active order is shown by the
+    /// check mark in the dropdown; choosing one writes the order to the account and reloads the tracks
+    /// in the new order.
+    private func sortMenu(_ detail: PlaylistDetail) -> some View {
+        Menu {
+            // Toggles render as menu items with a check mark, which is what actually shows the active
+            // order in a macOS menu (a `Label` image does not).
+            ForEach(detail.sortOptions, id: \.self) { order in
+                Toggle(order.displayName, isOn: Binding(
+                    get: { detail.effectiveSortOrder == order },
+                    set: { isSelected in
+                        guard isSelected else { return }
+                        Task { await self.viewModel.changeSortOrder(to: order) }
+                    }
+                ))
+            }
+        } label: {
+            Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
+        }
+        .help(Text("Sort by \(detail.effectiveSortOrder.displayName). This order is saved to your YouTube Music account."))
+        .disabled(self.viewModel.isChangingSortOrder)
     }
 }
 

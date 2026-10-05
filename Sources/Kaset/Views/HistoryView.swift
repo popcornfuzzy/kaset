@@ -9,10 +9,9 @@ struct HistoryView: View {
     @Environment(FavoritesManager.self) private var favoritesManager
     @State private var navigationPath = NavigationPath()
     @State private var networkMonitor = NetworkMonitor.shared
-    @State private var isRefreshing = false
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "history", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -36,26 +35,12 @@ struct HistoryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle(String(localized: "Listening History"))
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Button {
-                        Task { await self.performRefresh() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .rotationEffect(.degrees(self.isRefreshing ? 360 : 0))
-                            .animation(
-                                self.isRefreshing ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
-                                value: self.isRefreshing
-                            )
-                    }
-                    .help(String(localized: "Refresh"))
-                    .disabled(self.isRefreshing)
-                }
-            }
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it: an inset on the stack itself outlives a push, and the
+            // destination page brings its own bar — the reader saw two stacked. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .task {
             if self.viewModel.loadingState == .idle {
@@ -72,15 +57,21 @@ struct HistoryView: View {
         .refreshable {
             await self.performRefresh()
         }
+        // The page's refresh lives in the window's toolbar, bounded by the Now Playing column's divider
+        // (see `PageToolbarContribution`), so it can never be drawn over the column.
+        .pageToolbar(id: "history") {
+            PageRefreshButton(
+                help: "Refresh",
+                isRefreshing: { self.viewModel.isRefreshing },
+                action: { Task { await self.performRefresh() } }
+            )
+        }
     }
 
     /// Refreshes with visual feedback: spinning icon → data swap.
     @discardableResult
     private func performRefresh() async -> Bool {
-        self.isRefreshing = true
-        let changed = await self.viewModel.refresh()
-        self.isRefreshing = false
-        return changed
+        await self.viewModel.performRefresh()
     }
 
     // MARK: - Content
@@ -119,10 +110,15 @@ struct HistoryView: View {
     }
 
     private var contentView: some View {
+        self.scrollingContent
+    }
+
+    private var scrollingContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 self.headerView
                     .padding(.horizontal, 24)
+                    .padding(.top, 8)
                     .padding(.bottom, 16)
 
                 ForEach(self.viewModel.sections) { section in

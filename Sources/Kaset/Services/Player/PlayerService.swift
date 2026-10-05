@@ -147,6 +147,23 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether the mini player should be shown.
     var showMiniPlayer: Bool = false
 
+    /// Which window currently hosts the shared player surface (the singleton WebView's layer).
+    ///
+    /// ## Why this has to be stated
+    ///
+    /// The app has exactly one `WKWebView` for playback, and `PersistentPlayerView` *re-parents* it
+    /// into whichever container is on screen. A view can have only one superview, so two windows
+    /// cannot both show it: whichever `PersistentPlayerView` laid out last wins, and the other
+    /// window's layer goes blank. Left implicit, that is a race — a second window appearing would
+    /// silently steal the video mid-song, and a DRM-protected stream does not survive being yanked
+    /// out of its view hierarchy.
+    ///
+    /// So the surface has exactly one owner, named here, and every host asks before it claims it
+    /// (`PlayerSurfaceHost.claimsSurface`). The mini player panel is the only thing that can move the
+    /// surface off the main window, and moving it back is explicit (see `PlayerService
+    /// .setPlayerSurfaceHost(_:)`).
+    private(set) var playerSurfaceHost: PlayerSurfaceHost = .mainWindow
+
     /// True when the user explicitly enabled the mini player with the player bar toggle.
     private(set) var miniPlayerEnabledByUser: Bool = false
 
@@ -380,6 +397,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             }
         }
 
+        // The Now Playing sidebar is the app's right sidebar, and the Setting that switches to it is the
+        // reader's choice of design — so the window opens with the column already open rather than making
+        // them open it on every launch. It is stated here, in the service's own construction, because the
+        // window is created from `isNowPlayingSidebarVisible` and has to see it before its first layout.
+        // The column has a "Nothing playing" state, so this is safe with nothing on the transport.
+        if SettingsManager.shared.nowPlayingSidebarEnabled {
+            self.nowPlayingSidebarPage = .overview
+            self.logger.info("Now Playing sidebar opened at launch (the sidebar design is enabled)")
+        }
+
         // Restore volumeBeforeMute for proper unmute behavior
         if UserDefaults.standard.object(forKey: Self.volumeBeforeMuteKey) != nil {
             let savedVolumeBeforeMute = UserDefaults.standard.double(
@@ -458,6 +485,32 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         UserDefaults.standard.set(clampedRate, forKey: Self.playbackRateKey)
         SingletonPlayerWebView.shared.setPlaybackRate(clampedRate)
         self.logger.info("Playback rate set to \(clampedRate)x")
+    }
+
+    /// Whether the shared player surface has been detached into the mini player panel.
+    ///
+    /// The one thing both windows ask before hosting the surface: the main window stands down while
+    /// this is true, and the panel is the only host. Stating it as a property — rather than each host
+    /// testing `playerSurfaceHost` itself — is what keeps the two answers from drifting apart.
+    var isPlayerSurfaceDetachedToPanel: Bool {
+        self.playerSurfaceHost == .miniPlayerPanel
+    }
+
+    /// Whether the player bar's mini player button should detach the player into its own window
+    /// (General settings) rather than float the in-window layer.
+    var isMiniPlayerWindowModeEnabled: Bool {
+        SettingsManager.shared.miniPlayerWindowModeEnabled
+    }
+
+    /// Moves the shared player surface to a window, or back to the main window.
+    ///
+    /// The surface host is what the panel is *for*: detaching the mini player hands the WebView to
+    /// the panel, and closing the panel hands it back. A no-op when the host is already the requested
+    /// one, so a panel that is merely being re-laid-out cannot re-trigger a move.
+    func setPlayerSurfaceHost(_ host: PlayerSurfaceHost) {
+        guard self.playerSurfaceHost != host else { return }
+        self.playerSurfaceHost = host
+        self.logger.info("Player surface host: \(host.rawValue)")
     }
 
     /// Toggles user-controlled mini player visibility from the player bar.

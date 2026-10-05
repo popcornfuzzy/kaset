@@ -45,6 +45,11 @@ final class LibraryViewModel {
     /// Bumps whenever a library mutation requests a refresh on next Library activation.
     private(set) var activationReloadGeneration: UInt64 = 0
 
+    /// Whether the reader's own refresh is in flight. Read by the page's refresh control, which is a
+    /// toolbar item rather than part of the page (see `PageRefreshButton`), so it cannot be the page's
+    /// own `@State`.
+    private(set) var isRefreshing = false
+
     /// Artist additions that should stay visible until the server starts returning them.
     private var pendingAddedArtists: [String: Artist] = [:]
 
@@ -464,5 +469,13 @@ final class LibraryViewModel {
         APICache.shared.invalidate(matching: "browse:")
         URLCache.shared.removeAllCachedResponses()
         await self.refresh()
+    }
+
+    /// Runs the reader's refresh with the feedback its control needs: the spinning icon is this flag,
+    /// not `loadingState`, which the view already tracks for its own loading and pagination states.
+    func performRefresh() async {
+        self.isRefreshing = true
+        defer { self.isRefreshing = false }
+        await self.refreshFromNetwork()
     }
 }

@@ -12,7 +12,7 @@ struct HomeView: View {
     @State private var networkMonitor = NetworkMonitor.shared
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "home", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -37,9 +37,15 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Home")
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // The bar is attached *inside* the stack, to the page the stack shows.
+            //
+            // Applied outside it, the bar belongs to the stack's container instead: it survives a push,
+            // and the pushed page — every destination has a bar of its own — then draws a second one
+            // directly above it. Measured in a reproduction: with the inset inside the stack a push
+            // renders one bar, with it outside, two. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {

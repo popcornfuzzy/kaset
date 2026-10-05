@@ -7,9 +7,13 @@ struct QueueSidePanelView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
 
-    /// Panel width. The classic overlay uses the default; the Now Playing sidebar embeds the same
-    /// queue experience at its own width, which the reader can resize.
-    var width: CGFloat = 400
+    /// Fixed panel width, or `nil` for a panel that fills whatever width it is given.
+    ///
+    /// The classic overlay uses the default. The embedded Now Playing sidebar passes `nil`: its column
+    /// is resized by dragging a divider, and a width the app *states* here can only ever be the width of
+    /// a previous layout pass — which is what left the queue's rows and their trailing controls a frame
+    /// behind the column edge during a drag. Filling the width it is inside has no such copy to be stale.
+    var width: CGFloat? = 400
 
     /// Whether the panel draws its own "Up Next" header. The Now Playing sidebar turns it off
     /// because that panel already has a header (with its own back button) above it.
@@ -83,6 +87,7 @@ struct QueueSidePanelView: View {
 
             QueueFooterActions()
         }
+        // `nil` here is a real value: the modifier leaves the panel free to fill its container.
         .frame(width: self.width)
         .modifier(QueuePanelChrome(usesMaterial: self.usesMaterialBackground))
         .accessibilityIdentifier(AccessibilityID.Queue.container)
@@ -113,10 +118,12 @@ struct QueueSidePanelView: View {
 
 @available(macOS 26.0, *)
 struct QueueListControllerRepresentable: NSViewControllerRepresentable {
-    /// Width of the panel the table is inside, so the queue column can be sized to it. The classic
-    /// overlay and the resizable Now Playing sidebar are different widths, and a fixed column pushed
-    /// the rows' trailing controls out of view in the narrower one.
-    var panelWidth: CGFloat = 400
+    /// Fixed width of the panel the table is inside, or `nil` when the panel fills its container.
+    ///
+    /// The classic overlay states its width; the embedded Now Playing sidebar passes `nil` and the column
+    /// follows the scroll view's *actual* width in `viewDidLayout`, so a divider drag needs no round trip
+    /// through SwiftUI state to be reflected in the rows.
+    var panelWidth: CGFloat?
     let queue: [Song]
     let currentIndex: Int
     let isPlaying: Bool
@@ -218,20 +225,28 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.view = scrollView
         }
 
-        /// Width of the panel this table is inside, remembered so it can be applied the moment the
+        /// Fixed width of the panel this table is inside, remembered so it can be applied the moment the
         /// table exists — `updateNSViewController` can run before the view is loaded.
-        var panelWidth: CGFloat = 400
+        var panelWidth: CGFloat?
 
-        /// Sizes the queue column to the panel it is inside. The rows keep a small gutter for the
-        /// scroll indicator, which is what the classic 400pt panel's 350pt column already did.
-        func applyPanelWidth(_ width: CGFloat) {
+        /// States the panel's width. `nil` means "follow the panel you are inside".
+        func applyPanelWidth(_ width: CGFloat?) {
             self.panelWidth = width
             self.sizeColumnToPanel()
         }
 
+        /// Sizes the queue column to the panel it is inside. The rows keep a small gutter for the
+        /// scroll indicator, which is what the classic 400pt panel's 350pt column already did.
+        ///
+        /// The panel's *own* width is read from the view rather than only from the stated number: a
+        /// divider drag changes the view's width immediately, while the stated number arrives with the
+        /// next SwiftUI update, and reading the view is what makes the rows track the column edge.
         private func sizeColumnToPanel() {
             guard let column = self.tableView?.tableColumns.first else { return }
-            let target = max(220, self.panelWidth - 50)
+            let availableWidth = self.view.bounds.width > 0 ? self.view.bounds.width : nil
+            let panelWidth = availableWidth ?? self.panelWidth
+            guard let panelWidth, panelWidth > 0 else { return }
+            let target = max(220, panelWidth - 50)
             guard column.width != target else { return }
             // Keep `minWidth <= maxWidth` at every step. Raising the minimum past the maximum is an
             // invalid table-column configuration, and the embedded sidebar can be dragged wider than
@@ -257,6 +272,14 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 }
                 self.sizeColumnToPanel()
             }
+        }
+
+        /// The column follows the view's width on every layout pass. This is what makes the queue keep
+        /// up with a divider drag: AppKit lays the scroll view out at its new width and this reads that
+        /// width in the same pass, where a width handed down from SwiftUI state would be one pass old.
+        override func viewDidLayout() {
+            super.viewDidLayout()
+            self.sizeColumnToPanel()
         }
     }
 

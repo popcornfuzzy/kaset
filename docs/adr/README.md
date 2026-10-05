@@ -65,3 +65,5 @@ What becomes easier or more difficult because of this change?
 | [0027](0027-stable-code-signing-identity.md) | Stable Code Signing Identity for Distributed Builds | Accepted |
 | [0028](0028-song-video-variant-matching.md) | Song/Video Variant Matching | Accepted |
 | [0029](0029-now-playing-sidebar.md) | Now Playing Sidebar (Artwork-First Right Sidebar) | Accepted |
+| [0030](0030-appkit-window-shell.md) | AppKit Window Shell (Split View + App-Owned Toolbar) | Accepted |
+| [0031](0031-window-model-and-player-surface-ownership.md) | Window Model and Single-Owner Player Surface | Accepted |

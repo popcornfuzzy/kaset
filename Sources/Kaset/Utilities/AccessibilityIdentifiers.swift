@@ -57,7 +57,6 @@ enum AccessibilityID {
     /// window column (the system's inspector), so the collapse control lives in the toolbar.
     enum NowPlayingSidebar {
         static let container = "nowPlayingSidebar"
-        static let toggleButton = "nowPlayingSidebar.toggle"
         static let backButton = "nowPlayingSidebar.back"
         static let artwork = "nowPlayingSidebar.artwork"
         static let trackTitle = "nowPlayingSidebar.trackTitle"
@@ -225,5 +224,17 @@ enum AccessibilityID {
     enum VideoWindow {
         static let container = "videoWindow"
         static let videoContent = "videoWindow.content"
+    }
+
+    // MARK: - Mini Player Panel
+
+    /// The detached mini player window (`MiniPlayerPanel`). It owns the shared player surface while
+    /// it is open, so it is the only place playback video appears once detached.
+    enum MiniPlayerPanel {
+        static let container = "miniPlayerPanel"
+        static let playPauseButton = "miniPlayerPanel.playPause"
+        static let previousButton = "miniPlayerPanel.previous"
+        static let nextButton = "miniPlayerPanel.next"
+        static let dockButton = "miniPlayerPanel.dock"
     }
 }

@@ -28,7 +28,7 @@ struct SearchView: View {
     }
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "search", path: self.$navigationPath) {
             VStack(spacing: 0) {
                 // Search bar
                 self.searchBar
@@ -40,9 +40,11 @@ struct SearchView: View {
             }
             .navigationTitle("Search")
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it, so the bar goes away with the page that owns it instead
+            // of stacking onto the pushed page's own. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             self.isSearchFieldFocused = true

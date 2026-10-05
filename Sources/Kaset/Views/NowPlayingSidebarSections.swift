@@ -201,52 +201,6 @@ struct NowPlayingSidebarCard<Content: View>: View {
     }
 }
 
-// MARK: - NowPlayingSidebarToggle
-
-/// The Now Playing sidebar's toggle.
-///
-/// Styled as the window's own sidebar toggle — the mirrored `sidebar.trailing` glyph, the same weight
-/// — so the two read as a pair rather than as two different controls. It appears in exactly one place
-/// at a time: in the toolbar while the column is closed, and in the column's own top-trailing corner
-/// while it is open, so the control looks like it slides into the sidebar rather than being duplicated.
-@available(macOS 26.0, *)
-struct NowPlayingSidebarToggle: View {
-    /// Where the toggle is being shown, which decides whether it needs chrome of its own.
-    enum Style {
-        /// Inside a `ToolbarItem`. macOS supplies the chrome; adding our own would double it up.
-        case toolbar
-        /// Floating over the column's artwork, which can be any colour at all, so it gets a glass
-        /// disc to stay legible — the same treatment the app's other controls-over-artwork use.
-        case floating
-    }
-
-    var style: Style = .toolbar
-    let action: () -> Void
-
-    var body: some View {
-        switch self.style {
-        case .toolbar:
-            self.button
-        case .floating:
-            self.button
-                .frame(width: 30, height: 28)
-                .contentShape(Rectangle())
-                .glassEffect(.regular.interactive(), in: .circle)
-        }
-    }
-
-    private var button: some View {
-        // No explicit button style: in a `ToolbarItem` macOS gives it the same chrome as the content's
-        // own toolbar buttons, which is exactly the styling this should share.
-        Button(action: self.action) {
-            Image(systemName: "sidebar.right")
-        }
-        .help(String(localized: "Show or hide the Now Playing sidebar"))
-        .accessibilityLabel(String(localized: "Now Playing sidebar"))
-        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.toggleButton)
-    }
-}
-
 // MARK: - NowPlayingSidebarArtwork
 
 /// The cover art at the top of the sidebar: edge to edge across the whole column, with the track's

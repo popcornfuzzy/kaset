@@ -17,6 +17,34 @@ extension EnvironmentValues {
     @Entry var showWhatsNew: Binding<Bool> = .constant(false)
 }
 
+// MARK: - AppWindowState
+
+/// The window's own UI state: the navigation selection, and the one-shot triggers the menus set.
+///
+/// An `@Observable` object rather than `@State`, because the app's main window is AppKit's
+/// (`AppDelegate.installMainWindow`) and its root view is therefore built in `KasetApp.init` — the one
+/// place SwiftUI cannot hand out state. There a `@State` read produces a **constant** binding (the
+/// navigation sidebar's selection stopped responding) and a **new instance on every read** for a value.
+/// The menu commands write these properties directly; the window's views read them through bindings built
+/// from this object (`KasetApp.binding(_:)`), which observe it the same way any other observed property is
+/// observed.
+@available(macOS 26.0, *)
+@MainActor
+@Observable
+final class AppWindowState {
+    /// Current navigation selection for keyboard navigation.
+    var navigationSelection: SidebarSelection? = .navigation(SettingsManager.shared.launchNavigationItem)
+
+    /// Triggers search field focus when set to true.
+    var searchFocusTrigger = false
+
+    /// Whether the command bar is visible.
+    var showCommandBar = false
+
+    /// Whether the "What's New" sheet should be shown.
+    var showWhatsNew = false
+}
+
 // MARK: - KasetApp
 
 /// Main entry point for the Kaset macOS application.
@@ -26,32 +54,36 @@ struct KasetApp: App {
     /// App delegate for lifecycle management (background playback).
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
-    @State private var authService = AuthService()
-    @State private var webKitManager = WebKitManager.shared
-    @State private var playerService = PlayerService()
-    @State private var sharedClient: any YTMusicClientProtocol
-    @State private var notificationService: NotificationService?
-    @State private var updaterService = UpdaterService()
-    @State private var favoritesManager = FavoritesManager.shared
-    @State private var likeStatusManager = SongLikeStatusManager.shared
-    @State private var accountService: AccountService?
-    @State private var scrobblingCoordinator: ScrobblingCoordinator
-    @State private var syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
-    @State private var podcastTranscriptService: PodcastTranscriptService
-    @State private var canvasService = CanvasService()
-    @State private var castService = CastService()
+    /// The app's services.
+    ///
+    /// Plain stored properties rather than `@State`, because the app's main window is AppKit's
+    /// (`AppDelegate.installMainWindow`): its root view is built in `init`, and a `@State` read there is
+    /// not a read. SwiftUI reports
+    /// *"Accessing State's value outside of being installed on a View"*, hands back a **constant binding**
+    /// from the projection — which is why the navigation sidebar's selection stopped responding — and
+    /// creates a **new instance each time** for a value, which is why the window was driven by services
+    /// that were not the app's. None of these are ever replaced after `init`, which is what makes `let`
+    /// the honest declaration for them as well.
+    let authService: AuthService
+    let webKitManager: WebKitManager
+    let playerService: PlayerService
+    let sharedClient: any YTMusicClientProtocol
+    let notificationService: NotificationService
+    let updaterService = UpdaterService()
+    let favoritesManager = FavoritesManager.shared
+    let likeStatusManager = SongLikeStatusManager.shared
+    let accountService: AccountService
+    let scrobblingCoordinator: ScrobblingCoordinator
+    let syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
+    let podcastTranscriptService: PodcastTranscriptService
+    let canvasService = CanvasService()
+    let castService = CastService()
 
-    /// Triggers search field focus when set to true.
-    @State private var searchFocusTrigger = false
-
-    /// Current navigation selection for keyboard navigation.
-    @State private var navigationSelection: SidebarSelection? = .navigation(SettingsManager.shared.launchNavigationItem)
-
-    /// Whether the command bar is visible.
-    @State private var showCommandBar = false
-
-    /// Whether the "What's New" sheet should be shown.
-    @State private var showWhatsNew = false
+    /// The window's own UI state — the navigation selection and the one-shot triggers the menus set —
+    /// as an `@Observable` object, for the same reason the services above are not `@State`: the root view
+    /// is built in `init`, so its bindings have to be real bindings built from something that exists
+    /// before SwiftUI installs a view.
+    let ui = AppWindowState()
 
     init() {
         let auth = AuthService()
@@ -81,14 +113,6 @@ struct KasetApp: App {
             account?.currentBrandId
         }
 
-        _authService = State(initialValue: auth)
-        _webKitManager = State(initialValue: webkit)
-        _podcastTranscriptService = State(initialValue: PodcastTranscriptService(client: client))
-        _playerService = State(initialValue: player)
-        _sharedClient = State(initialValue: client)
-        _notificationService = State(initialValue: NotificationService(playerService: player))
-        _accountService = State(initialValue: account)
-
         // Create scrobbling coordinator
         let lastFMService = LastFMService(credentialStore: KeychainCredentialStore())
         let scrobblingCoordinator = ScrobblingCoordinator(
@@ -97,11 +121,40 @@ struct KasetApp: App {
         )
         scrobblingCoordinator.restoreAuthState()
         scrobblingCoordinator.startMonitoring()
-        _scrobblingCoordinator = State(initialValue: scrobblingCoordinator)
+
+        self.authService = auth
+        self.webKitManager = webkit
+        self.playerService = player
+        self.sharedClient = client
+        self.notificationService = NotificationService(playerService: player)
+        self.accountService = account
+        self.scrobblingCoordinator = scrobblingCoordinator
+        self.podcastTranscriptService = PodcastTranscriptService(client: client)
 
         // Wire up PlayerService to AppDelegate immediately (not in onAppear)
         // This ensures playerService is available for lifecycle events like queue restoration
         self.appDelegate.playerService = player
+        self.appDelegate.authService = auth
+        // The main window is AppKit's (`AppDelegate.installMainWindow`), so what the `Window` scene used
+        // to host is built here and handed over. Everything it needs is a plain stored property by now,
+        // so nothing here is a `@State` read.
+        self.appDelegate.rootView = AnyView(self.makeRootView())
+        // The detached mini player panel is a window the app owns too, so its content is built here
+        // for the same reason the main window's is: the services exist by now, and its SwiftUI needs
+        // them. Built lazily — the panel is only created the first time it is opened.
+        // The provider captures the two services the panel needs rather than `self`: `KasetApp` is a
+        // value type, so there is no instance to hold weakly, and these are the only things the
+        // panel's view reads.
+        let panelPlayerService = player
+        let panelWebKitManager = webkit
+        self.appDelegate.miniPlayerPanelContentProvider = {
+            NSHostingController(
+                rootView: MiniPlayerPanel()
+                    .environment(panelPlayerService)
+                    .environment(panelWebKitManager)
+                    .frame(minWidth: MiniPlayerPanelLayout.minimumWidth)
+            )
+        }
 
         if UITestConfig.isUITestMode {
             // Leaves a trace the UI test script checks, since the log's info-level entries are not
@@ -111,58 +164,72 @@ struct KasetApp: App {
         }
     }
 
-    var body: some Scene {
-        Window("Kaset", id: "main") {
-            // Skip UI during unit tests to prevent window spam
-            if UITestConfig.isRunningUnitTests, !UITestConfig.isUITestMode {
-                Color.clear
-                    .frame(width: 1, height: 1)
-            } else {
-                MainWindow(navigationSelection: self.$navigationSelection, client: self.sharedClient)
-                    .environment(self.authService)
-                    .environment(self.webKitManager)
-                    .environment(self.playerService)
-                    .environment(self.favoritesManager)
-                    .environment(self.likeStatusManager)
-                    .environment(self.accountService)
-                    .environment(self.scrobblingCoordinator)
-                    .environment(self.syncedLyricsService)
-                    .environment(self.podcastTranscriptService)
-                    .environment(self.canvasService)
-                    .environment(self.castService)
-                    .environment(\.searchFocusTrigger, self.$searchFocusTrigger)
-                    .environment(\.navigationSelection, self.$navigationSelection)
-                    .environment(\.showCommandBar, self.$showCommandBar)
-                    .environment(\.showWhatsNew, self.$showWhatsNew)
-                    .onAppear {
-                        // Wire up PlayerService to AppDelegate for dock menu and AppleScript actions
-                        // This runs synchronously so AppleScript commands can access playerService immediately
-                        self.appDelegate.playerService = self.playerService
-                        // Reference notificationService to keep SwiftUI from deallocating it
-                        _ = self.notificationService
-                    }
-                    .task {
-                        // Split any legacy single-file lyrics cache into per-song files.
-                        // Kicked off without awaiting so it never delays first paint or auth.
-                        Task {
-                            await self.syncedLyricsService.migrateLegacyCacheIfNeeded()
-                        }
+    /// A real binding to one of the window's UI-state properties.
+    ///
+    /// `AppWindowState` is an `@Observable` class, so a binding built here observes it like any other: the
+    /// views that read through it re-render when the property changes, and writes reach the menus.
+    private func binding<T>(_ keyPath: ReferenceWritableKeyPath<AppWindowState, T>) -> Binding<T> {
+        Binding(
+            get: { self.ui[keyPath: keyPath] },
+            set: { self.ui[keyPath: keyPath] = $0 }
+        )
+    }
 
-                        // Check if user is already logged in from previous session
-                        await self.authService.checkLoginStatus()
-
-                        // Fetch accounts after login check (for account switcher)
-                        await self.accountService?.fetchAccounts()
-
-                        // Warm up Foundation Models in background
-                        await FoundationModelsService.shared.warmup()
-                    }
-                    .onOpenURL { url in
-                        self.handleIncomingURL(url)
-                    }
+    /// The view the app's main window hosts.
+    ///
+    /// This is what the `Window` scene used to declare. The window is AppKit's now
+    /// (`AppDelegate.installMainWindow`), because a SwiftUI-owned window cannot give its toolbar to the
+    /// app, so the view is built here and handed to the delegate in `init`.
+    @MainActor
+    private func makeRootView() -> some View {
+        MainWindow(navigationSelection: self.binding(\.navigationSelection), client: self.sharedClient)
+            .environment(self.authService)
+            .environment(self.webKitManager)
+            .environment(self.playerService)
+            .environment(self.favoritesManager)
+            .environment(self.likeStatusManager)
+            .environment(self.accountService)
+            .environment(self.scrobblingCoordinator)
+            .environment(self.syncedLyricsService)
+            .environment(self.podcastTranscriptService)
+            .environment(self.canvasService)
+            .environment(self.castService)
+            .environment(\.searchFocusTrigger, self.binding(\.searchFocusTrigger))
+            .environment(\.navigationSelection, self.binding(\.navigationSelection))
+            .environment(\.showCommandBar, self.binding(\.showCommandBar))
+            .environment(\.showWhatsNew, self.binding(\.showWhatsNew))
+            .onAppear {
+                // Wire up PlayerService to AppDelegate for dock menu and AppleScript actions
+                // This runs synchronously so AppleScript commands can access playerService immediately
+                self.appDelegate.playerService = self.playerService
+                // Reference notificationService to keep SwiftUI from deallocating it
+                _ = self.notificationService
             }
-        }
+            .task {
+                // Split any legacy single-file lyrics cache into per-song files.
+                // Kicked off without awaiting so it never delays first paint or auth.
+                Task {
+                    await self.syncedLyricsService.migrateLegacyCacheIfNeeded()
+                }
 
+                // Check if user is already logged in from previous session
+                await self.authService.checkLoginStatus()
+
+                // Fetch accounts after login check (for account switcher)
+                await self.accountService.fetchAccounts()
+
+                // Warm up Foundation Models in background
+                await FoundationModelsService.shared.warmup()
+            }
+    }
+
+    var body: some Scene {
+        // The app's main window is deliberately **not** a scene: it is an `NSWindow` the delegate creates
+        // (`AppDelegate.installMainWindow`), because a SwiftUI-owned window cannot hand its toolbar to the
+        // app — SwiftUI's window controller owns that toolbar, rewrites its items from its own content, and
+        // keeps key-value observations on it. With no `Window` scene there is no such controller, so the
+        // window's toolbar belongs to the app outright and the tracking separators that bound the page's
+        // controls to the Now Playing column can be the app's own.
         Settings {
             SettingsView()
                 .environment(self.authService)
@@ -270,19 +337,19 @@ struct KasetApp: App {
             CommandGroup(replacing: .sidebar) {
                 // Home - ⌘1
                 Button("Home") {
-                    self.navigationSelection = .navigation(.home)
+                    self.ui.navigationSelection = .navigation(.home)
                 }
                 .keyboardShortcut("1", modifiers: .command)
 
                 // Explore - ⌘2
                 Button("Explore") {
-                    self.navigationSelection = .navigation(.explore)
+                    self.ui.navigationSelection = .navigation(.explore)
                 }
                 .keyboardShortcut("2", modifiers: .command)
 
                 // Library - ⌘3
                 Button("Library") {
-                    self.navigationSelection = .navigation(.library)
+                    self.ui.navigationSelection = .navigation(.library)
                 }
                 .keyboardShortcut("3", modifiers: .command)
 
@@ -290,18 +357,18 @@ struct KasetApp: App {
 
                 // Search - ⌘F
                 Button("Search") {
-                    self.navigationSelection = .navigation(.search)
+                    self.ui.navigationSelection = .navigation(.search)
                     // Trigger focus after a brief delay to allow view to appear
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(100))
-                        self.searchFocusTrigger = true
+                        self.ui.searchFocusTrigger = true
                     }
                 }
                 .keyboardShortcut("f", modifiers: .command)
 
                 // Command Bar - ⌘K
                 Button("Command Bar") {
-                    self.showCommandBar = true
+                    self.ui.showCommandBar = true
                 }
                 .keyboardShortcut("k", modifiers: .command)
             }
@@ -314,20 +381,51 @@ struct KasetApp: App {
                 .keyboardShortcut("0", modifiers: .command)
             }
 
+            // Window menu - the detached mini player.
+            //
+            // It belongs in the Window menu because it *is* a window, and because that is where a
+            // reader looks for one they have lost. It is listed unconditionally, not only while the
+            // mini player window setting is on: a reader who turns the setting off while the panel is
+            // open still needs a way to close it.
+            CommandGroup(after: .windowList) {
+                Button(self.isMiniPlayerPanelVisible ? "Close Mini Player" : "Mini Player") {
+                    self.toggleMiniPlayerPanel()
+                }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+            }
+
             // Help menu - What's New
             CommandGroup(after: .appInfo) {
                 Divider()
                 Button("What's New in Kaset") {
-                    self.showWhatsNew = true
+                    self.ui.showWhatsNew = true
                 }
             }
+        }
+    }
+
+    /// Whether the detached mini player panel is on screen.
+    private var isMiniPlayerPanelVisible: Bool {
+        (NSApplication.shared.delegate as? AppDelegate)?.isMiniPlayerPanelVisible ?? false
+    }
+
+    /// Opens or closes the detached mini player panel.
+    ///
+    /// The one place the menu and the player bar's button agree: both ask the delegate, which owns
+    /// the window and moves the player surface with it.
+    private func toggleMiniPlayerPanel() {
+        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else { return }
+        if self.isMiniPlayerPanelVisible {
+            appDelegate.closeMiniPlayerPanel()
+        } else {
+            appDelegate.showMiniPlayerPanel()
         }
     }
 
     /// Shows the main window.
     private func showMainWindow() {
         // Find and show the main window
-        for window in NSApplication.shared.windows where window.frameAutosaveName == "KasetMainWindow" {
+        for window in NSApplication.shared.windows where window.frameAutosaveName == AppDelegate.mainWindowAutosaveName {
             window.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
@@ -360,46 +458,6 @@ struct KasetApp: App {
         return isShowing ? String(localized: "Hide Lyrics") : String(localized: "Show Lyrics")
     }
 
-    // MARK: - URL Handling
-
-    /// Handles an incoming URL (from custom scheme).
-    private func handleIncomingURL(_ url: URL) {
-        DiagnosticsLogger.app.info("Received URL: \(url.absoluteString)")
-
-        guard let content = URLHandler.parse(url) else {
-            DiagnosticsLogger.app.warning("Unrecognized URL format: \(url.absoluteString)")
-            return
-        }
-
-        // If not logged in, ignore for now
-        guard self.authService.state.isLoggedIn else {
-            DiagnosticsLogger.app.info("Not logged in, ignoring URL")
-            return
-        }
-
-        self.handleParsedContent(content)
-    }
-
-    /// Handles parsed URL content.
-    private func handleParsedContent(_ content: URLHandler.ParsedContent) {
-        switch content {
-        case let .song(videoId):
-            DiagnosticsLogger.app.info("Playing song from URL: \(videoId)")
-            let song = Song(
-                id: videoId,
-                title: "Loading...",
-                artists: [],
-                videoId: videoId
-            )
-            Task {
-                await self.playerService.play(song: song)
-            }
-
-        case .playlist, .album, .artist:
-            // Only song playback is supported via URL scheme
-            DiagnosticsLogger.app.info("URL scheme only supports song playback")
-        }
-    }
 }
 
 // MARK: - SettingsView

@@ -39,69 +39,112 @@ changes for anyone who does not opt in.
 
 ### A column, not a panel
 
-The sidebar is a real trailing column of `MainWindow`'s `HStack`, laid out *beside* the
-`NavigationSplitView`, exactly like the navigation sidebar rather than as a floating card:
+The sidebar is the window's third pane: `MainWindow` hands it to `WindowShell`, an
+`NSSplitViewController` whose items are the navigation sidebar, the page and this column. AppKit owns
+its divider, its collapse, its width bounds and its persistence, so the app owns only what is its
+decision — whether the column is open, and the width it opens at the first time. The whole mechanism,
+and why the window had to become AppKit's for it, is [ADR-0030](0030-appkit-window-shell.md).
 
-```swift
-HStack(spacing: 0) {
-    NavigationSplitView { Sidebar(…) } detail: { self.detailView(…) }
-        .frame(minWidth: Layout.detailMinWidth)
-        .overlay(alignment: .trailing) { NowPlayingSidebarResizeHandle(…) }
-    if self.playerService.isNowPlayingSidebarVisible {
-        NowPlayingSidebarView(columnWidth: self.effectiveColumnWidth)
-            .frame(width: self.effectiveColumnWidth)
-    }
-}
-// The stack's own width is the space available to the detail area.
-.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { self.contentAreaWidth = $0 }
-```
+It is the platform's *inspector* item (`NSSplitViewItem(inspectorWithViewController:)`), which is what
+makes the window toolbar's standard inspector tracking separator line up with its divider — the
+mechanism that keeps the page's own toolbar controls clear of the column.
 
-The system's `.inspector` was tried first and **rejected**: SwiftUI's inspector nests a second
-`NSSplitViewController` inside the `NavigationSplitView`, and resizing that nested controller
-invalidates constraints re-entrantly during the display cycle, which aborts the app
-(`_postWindowNeedsUpdateConstraints`). A plain `HStack` child cannot perturb the split view's layout,
-so this column is stable under every resize.
+The column is resizable by dragging its divider (AppKit's, with AppKit's cursor and clamping) between
+300 and 560pt. Its collapse control is the window toolbar's **last item, open or closed**: while the
+column is closed it is the trailing control of the right-aligned run, and while the column is open it
+is the trailing control of the toolbar's *inspector* region — the region above the column — pushed
+there by a flexible space. It is the mirrored `sidebar.right` glyph with AppKit's own toolbar chrome,
+aligned with every other control in the titlebar.
 
-The column is resizable by dragging the edge next to it (`NowPlayingSidebarResizeHandle`, a small
-`NSView` that owns the `resizeLeftRight` cursor) between 300 and 560pt; the width is persisted in
-`SettingsManager.nowPlayingSidebarWidth` and clamped on read. Its collapse control
-(`NowPlayingSidebarToggle`, the mirrored `sidebar.trailing` glyph) appears in exactly one place at a
-time: in the window toolbar while the column is closed, and in the column's own top-trailing corner
-while it is open — so it reads as sliding into the sidebar rather than being duplicated. The
-transport's lyrics/queue buttons and ⌘L drive the same state, so the column, the toggle and the
-shortcuts can never disagree.
+This is a correction. The toggle first appeared in exactly one place at a time — the toolbar while the
+column was closed, and the column's own top-trailing corner while it was open — so that opening the
+sidebar read as the toggle sliding into it. In the running app that in-column control sat *on the cover
+art*, in the band the artwork is supposed to own: small, low-contrast, on top of whatever the album
+looks like, and in the way of the artwork running to the window's top edge. The toolbar item,
+meanwhile, is AppKit's own control for exactly this job. So the control stays in the toolbar, in the
+region above the column, and **no interactive view occupies the column's backdrop band** — the rule the
+artwork bullet below already stated. The transport's lyrics/queue buttons and ⌘L drive the same state,
+so the column, the toggle and the shortcuts can never disagree.
 
-**The toggle is deliberately never in the toolbar while the column is open.** The toolbar lays its
-items out across the whole window and knows nothing about the column, so anything trailing lands on
-top of it; worse, when two items share a placement macOS draws one stretched glass capsule behind the
-run, which is what turned the toggle and the playlist search field into a single long pill. Keeping
-the open column's toggle inside the column removes the overlapping run entirely, and leaves the
-content's own search/sort/refresh buttons where they belong: in the toolbar, at the trailing edge.
+The app's collapse state and AppKit's pane follow each other in both directions: a page change
+re-derives the pane's collapse, and a collapse the reader performs — the toolbar toggle, a drag, a
+double-click on the divider — is observed on the item and fed back through
+`onInspectorCollapsedChange`, with the app's own writes flagged so they are not read back as a
+reader's action.
 
-**The column is always clamped to the space the window can give it.** A plain `HStack` resolves an
-over-tight fit by letting the *fixed* child win and the flexible one overflow underneath it — which is
-exactly the detail view being cropped behind the sidebar. So the column's drawn width is not the raw
-setting: `NowPlayingSidebarColumnGeometry` caps it at `availableWidth - detailMinWidth - handle`, so
-the stack always fits and nothing can be covered however far the divider is dragged. That arithmetic
-lives in one testable value type rather than inline in the view
-(`NowPlayingSidebarColumnGeometryTests`), because it is the invariant the whole layout rests on.
+**The width the reader drags is AppKit's to remember**, under `NSSplitView.autosaveName`.
+`SettingsManager.nowPlayingSidebarWidth` is now only the width the column *opens at the first time*,
+put through `NowPlayingSidebarColumnGeometry`'s bounds before it reaches the split view
+(`NowPlayingSidebarColumnGeometryTests`); after that the divider is the source of truth and the app
+never writes a width. That is what removes the whole class of "the stored width fights the divider"
+bugs — the ones that made a drag feel like it was fighting back and cropped the content — at the
+source, rather than by clamping harder.
 
-**The drag never mutates the window.** The divider writes its width to view state, persists it once
-(on `mouseUp`), and only then re-derives the window minimum. An earlier version wrote
-`SettingsManager` and re-derived the window minimum on every mouse-move event, so the window tried to
-resize itself *between* the steps of a drag — together with the missing clamp, that is what made
-resizing feel like it was fighting back and cropped the content.
+**The sidebar takes its size as input, resolved in the pass that draws it.**
+`NowPlayingSidebarView(columnWidth:columnHeight:)` never measures itself; the pane hands it the size
+(`ShellPane`), and `ShellPane` reads that size from a `GeometryReader` — a layout container, so the
+content is built with the size being resolved, in the same pass as the frame the divider is moving.
+This is the second attempt at the same bug and the reason the first one failed: the pane used to
+measure with `.onGeometryChange` into `@State`, which delivers the size on the *next* layout pass, so
+every frame of a drag still drew stale content — the artwork and the embedded queue trailed the
+divider, and if the artwork's height fed back into the next measurement the drag could visibly step.
+The size is taken once, at the top, and nothing inside the column measures the column again.
 
-**The sidebar takes its width as input.** `NowPlayingSidebarView(columnWidth:)` is told the width it
-is drawn in and never measures its own width; a measured width lags the frame it measures by one
-layout pass, which is what left the artwork and the embedded queue a step behind the column mid-drag.
-Only the *height* is still measured, so the artwork can give up height on a short window.
+**The embedded queue fills its width instead of being told one.** `QueueSidePanelView(width:)` takes
+`nil` there, and the AppKit table sizes its column from the scroll view's own width in
+`viewDidLayout`. A scalar width passed down from SwiftUI state is a *copy* of the column's width made
+one pass earlier — the rows and their trailing controls would shift after the column edge did — while
+the scroll view's width is current the moment AppKit lays it out. The classic floating panel still
+states its fixed width, so nothing about it changes.
 
-The window's minimum stays at `detailMinWidth + handle + minWidth`; it deliberately does not grow with
-the column's current width. A column wider than the window admits is shown clamped and returns to its
-set width when the window is widened again, the way a resizable inspector behaves. Opening the column
-still nudges the window wider if it is too narrow for the column's set width, deferred to the next
-runloop tick so it never mutates the window mid-update.
+**The column holds its width when the *window* is resized.** The inspector item is given a holding
+priority just above the page's (251 against the page's 249), so a window resize gives its space to the
+page and leaves the reader's divider where they put it instead of the two flexible panes trading width
+arbitrarily.
+
+**Nothing about the column moves the window.** The window's minimum width used to be raised to the three
+panes' minimums while the column was open — 200 + 680 + 300 = 1180 against a 900pt window. That is a
+minimum the window cannot satisfy *at its own size*, so opening the column on a narrower window (and any
+resize or divider drag on one) worked against an unsatisfiable requirement, which is what the window
+jumping and the column collapsing on a drag were. The page is the pane that gives way instead: its
+minimum follows the width the split view actually has, down to `WindowShellLayout.squeezedContentWidth`
+(320pt), which is the same arithmetic the SwiftUI version of this column used to do in
+`NowPlayingSidebarColumnGeometry.ceiling`. The window's own minimum stays the number its owner stated,
+and the requirement is satisfiable at every width.
+
+### The page's own controls are toolbar items, bounded by the column
+
+When the column was laid out by SwiftUI, the playlist's search/sort/refresh (and the Library/History
+refresh) could not be toolbar items at all: a `.automatic` `ToolbarItem` is pinned to the **window's**
+trailing edge — over the column — and there is no placement that means "the trailing edge of the
+content". Reserving the column's width with a transparent item moved them but made macOS 26 draw the
+reservation as an empty glass capsule the width of the sidebar.
+
+With the window shell in place ([ADR-0030](0030-appkit-window-shell.md)) both workarounds are gone and
+the controls are back in the titlebar, where a macOS app puts them:
+
+- A page **publishes** what it wants there and retracts it on disappearing (`PageToolbarModel`, keyed by
+the page's id so the incoming page's publication cannot be cleared by the outgoing page's retraction).
+- The window renders it as one hosted item (`PageToolbarContribution`), placed *before* the inspector
+tracking separator — so the region it is laid out in ends at the column's divider and the controls can
+never be drawn over the column, at any window size and any column width. Measured in the running app:
+with the column's pane starting at x=1028, the playlist's search → sort → refresh group ends at x=1020.
+- The controls read the **page's own model** during a render of the toolbar's tree, which is what keeps a
+query typed in the titlebar and the list it filters in step. That is why the search text and the refresh
+flag are model state (`PlaylistDetailViewModel.searchText`, `…isRefreshing`) rather than the page's
+`@State`: one piece of state, two view trees. The refresh flag exists because a manual refresh is a
+*background* refresh — `loadingState` stays `.loaded` throughout, so it cannot say whether one is
+running.
+- The Ask AI button and the page's controls are **separated by a fixed space**
+  (`NSToolbarItem.Identifier.space`). macOS 26 fills one glass capsule behind a contiguous run of
+  toolbar items, so two bordered controls next to each other are drawn as a single stretched pill; the
+  space is a real item in the run, so each control keeps its own shape (`WindowToolbarLayoutTests`).
+
+What is **not** done: nothing. The page row (`PageTrailingControls`) is deleted, and the last trace of
+the old shape — `.toolbarBackgroundVisibility(.hidden, for: .automatic)` on a few pages that never had
+these controls — is gone too: it was a no-op with the app stating the toolbar's item list, and it was
+one of the SwiftUI requests that made SwiftUI's window controller manage the window's toolbar itself
+(see [ADR-0030](0030-appkit-window-shell.md)).
 
 Presentation stays a three-value page state on `PlayerService`
 (`NowPlayingSidebarPage`: `overview` / `lyrics` / `queue`, `nil` = hidden), separate from the classic
@@ -114,15 +157,19 @@ fullscreen closes the sidebar.
 The column's chrome is deliberately the album art, not a panel:
 
 - **The artwork is flush to the top of the column**, edge to edge, with no inset and no corner
-  radius. The background wash additionally bleeds *up* behind the toolbar (top edge only — ignoring
+  radius, and — because the column's pane reaches the window's top — it is genuinely behind the
+  toolbar rather than below it. The background wash bleeds the same way (top edge only — ignoring
   every edge once let it spill sideways into the content, which read as the column being padded on
-  the left), so the sidebar's colour still reaches the window's top edge. That bleed is the column's
-  one incursion into the toolbar band, which is exactly where the content's own toolbar controls
-  (playlist search, sort, refresh) sit on top of the column's x-range — so the wash and the artwork
-  are both marked `.allowsHitTesting(false)`. They are decoration, and a `Color` in a background is
-  hit-testable by SwiftUI: without this the invisible layer silently swallowed every click and scroll
-  aimed at those controls (the visual artifact was fixed long before the input block was).
-  No interactive view may ever occupy the toolbar band inside the column.
+  the left), so the sidebar's colour reaches the window's top edge. The wash and the artwork are both
+  marked `.allowsHitTesting(false)`: they are decoration, and a `Color` in a background is
+  hit-testable by SwiftUI, so without this an invisible layer swallowed every click and scroll aimed
+  at whatever was beneath it (the visual artifact was fixed long before the input block was).
+  **No interactive view may occupy the backdrop band inside the column.**
+
+  The artwork itself is pulled up over the toolbar band by the inset the column measures
+  (`NowPlayingSidebarView.topInset`, the difference between the pane's top edge and its content's):
+  reaching the top edge is a *property of the artwork*, not of the page, so only the artwork ignores
+  the inset and the expanded pages' headers keep their place below the toolbar.
 - **The background is a blurred copy of the cover** (`NowPlayingSidebarBackground`), filling the whole
   column. A blur — rather than a palette extracted from the cover — keeps the image's structure, so
   the column reads as one surface made of the album instead of a picture on a flat tint. A gradient
@@ -131,9 +178,9 @@ The column's chrome is deliberately the album art, not a panel:
   available) is masked with a bottom fade, so there is no seam between the cover and its color.
 - **The lyric window and the up-next row sit in translucent glass cards**
   (`NowPlayingSidebarCard`), so the blurred colors show through them.
-- **The collapse button lives in the column itself**, at its top-trailing corner, floating over the
-  artwork in glass rather than sitting in the window toolbar. Because the column starts below the
-  toolbar, the button is never hidden behind it.
+- **The collapse button is the toolbar's**, in the inspector region above the column, never inside the
+  column: nothing interactive sits on the backdrop, so the artwork can run behind the toolbar without a
+  control being drawn on it or hidden by it.
 
 ### The overview is the column
 
@@ -185,8 +232,8 @@ looks like a new track.
 
 - The canvas, a fullscreen-only feature, is visible while browsing.
 - The right sidebar answers "what is playing", "where am I in the lyrics" and "what is next" at a
-  glance, and it behaves like every other sidebar in the app (resizable, toolbar toggle, no
-  floating-card chrome).
+  glance, and it behaves like every other sidebar in the app (draggable divider, remembered width,
+  standard toolbar toggle, no floating-card chrome) without the app implementing any of that.
 - The lyric preview and the classic panel render the same view, so they cannot drift apart; the
   state views and the source footer are literally the same code.
 
@@ -194,8 +241,9 @@ looks like a new track.
 
 - Two sidebar designs means the settings surface, the transport buttons and the toolbar toggle all
   have to stay honest about which one is live.
-- The column has to own its own resize affordance and minimum-width accounting, since it no longer
-  gets them from a system container.
+- The window's structure is AppKit's (see [ADR-0030](0030-appkit-window-shell.md)): the column's
+  width, its divider and its collapse are no longer the app's to state, and the shell cannot be
+  covered by unit tests, so its behaviour is verified by running the app and reading its view tree.
 - The sidebar's three-line window is a *window* onto a sheet sized for a full panel, so it relies on
   `.scrollDisabled` + `ScrollViewProxy` (the sheet keeps centering programmatically) rather than on a
   purpose-built three-row renderer.

@@ -116,8 +116,13 @@ struct ArtistCreditTests {
     func headerIsARowNotASectionHeader() throws {
         let source = try String(contentsOf: Self.playlistDetailViewSource, encoding: .utf8)
 
+        // Indentation is not the point, so the row is matched across any leading whitespace.
+        let headerIsARow = source.range(
+            of: #"self\.headerView\(detail\)\s*\.listRowSeparator\(\.hidden\)"#,
+            options: .regularExpression
+        ) != nil
         #expect(
-            source.contains("self.headerView(detail)\n                    .listRowSeparator(.hidden)"),
+            headerIsARow,
             """
             The header must be the list's first row: it scrolls away with the tracks and the table \
             measures it. See ADR-0023.

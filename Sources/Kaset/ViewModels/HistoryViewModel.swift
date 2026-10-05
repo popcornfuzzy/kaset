@@ -15,6 +15,9 @@ final class HistoryViewModel {
     /// Whether more sections are available to load.
     private(set) var hasMoreSections: Bool = true
 
+    /// Whether the reader's own refresh is in flight, for the refresh control's spinner.
+    private(set) var isRefreshing = false
+
     /// The API client (exposed for navigation to detail views).
     let client: any YTMusicClientProtocol
     private let logger = DiagnosticsLogger.history
@@ -172,6 +175,19 @@ final class HistoryViewModel {
 
         let totalCount = self.sections.count
         self.logger.info("Background history section loading completed, total sections: \(totalCount)")
+    }
+
+    /// Runs the reader's own refresh: the same background refresh the page's pull-to-refresh does, plus
+    /// the flag its toolbar control spins on.
+    ///
+    /// The refresh keeps the current sections on screen and swaps them when the new page arrives, so
+    /// `loadingState` never leaves `.loaded` — which is why this flag has to exist for the control that
+    /// lives in the window's toolbar rather than in the page (see `PageRefreshButton`).
+    @discardableResult
+    func performRefresh() async -> Bool {
+        self.isRefreshing = true
+        defer { self.isRefreshing = false }
+        return await self.refresh()
     }
 
     /// Refreshes history content while keeping existing data visible.
