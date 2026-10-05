@@ -151,6 +151,8 @@ always about. They are `debug`/`info` entries on `player`/`ui`, so the commands 
 | `Toolbar replaced, restoring the app's: …` | The app noticing a replacement and re-taking the toolbar, which is the whole of the fix: this line appears on every push into, and pop out of, a page that states a `navigationTitle` |
 | `Toolbar title hidden: the page has a back control to lead its region` | The window title giving the page region's leading slot to the back control. AppKit draws the title at that edge and lays the region's items out after it, so the back control only reaches the left of the page while the title is out of the way (see `WindowShellController.applyTitleVisibility`) |
 | `Now Playing column top inset: …` | The toolbar band the column's content is inset by — the amount the cover art is pulled up over, so the artwork reaches the window's top edge |
+| `Fullscreen now playing dismissed (Escape\|close button)` | How one fullscreen presentation ended. It separates "the close button does nothing" (no line at all) from a dismissal that ran but did not stick, and it names which of the two controls the reader used |
+| `Click: window=… at=… hit=… appActive=… windowIsKey=…` | Where a left click landed, whether it reached the app at all, and whether the window was key — the difference between a control that never saw the click and one whose action did not stick. Installed by `AppDelegate.installUITrace` |
 
 `Sidebar surface` (with its `rows` and `paint` lines) is the one that answers "the sidebar looks grey":
 it prints every `NSVisualEffectView` in the window, whether it wraps or sits inside the sidebar's view,

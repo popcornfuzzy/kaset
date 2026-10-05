@@ -360,8 +360,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for window in NSApplication.shared.windows where window.canBecomeMain {
             window.delegate = self
             // Enable automatic window frame persistence using autosave name
-            // This ensures window size/position is restored across app launches
-            if window.frameAutosaveName.isEmpty {
+            //
+            // Only this window may wear it. The name is how the app finds its main window —
+            // `AppDelegate.showMainWindowIfNeeded`, `KasetApp.showMainWindow`,
+            // `MainWindow.updateWindowTitleVisibility`, the fullscreen player's host lookup and the
+            // mini player panel's placement all resolve it by name — so a second window carrying it is
+            // not merely remembered with the wrong frame: it makes *every* one of those lookups a
+            // coin-flip between two windows. A window that is not the app's main window keeps its own
+            // name (or none).
+            if window === self.mainWindow, window.frameAutosaveName.isEmpty {
                 window.setFrameAutosaveName(Self.mainWindowAutosaveName)
             }
             // The app creates the main window itself now, so this only fills the gap for a window that

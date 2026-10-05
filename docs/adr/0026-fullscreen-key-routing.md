@@ -31,6 +31,14 @@ swallow a key before it sees it. The monitor does two things:
 - Every other `keyDown` is offered to `NSApp.mainMenu.performKeyEquivalent(with:)`, and swallowed if
   the menu took it.
 
+A presentation also claims its window (`FullscreenNowPlayingView.claimHostWindow`): if the app is not
+active it activates, and if the host window is not key it makes it key. The player covers that window,
+so both halves of "leaving fullscreen is not possible" depended on it — `Escape` typed into a window
+that is not key is that window's key and the monitor leaves it alone (correctly, which is why the guard
+and the claim have to exist together), and a click on a control in a window that is not key is spent
+activating the window before it is a click on the control. A window presenting a sheet is left alone:
+taking the key back would put the sheet behind the window it belongs to.
+
 It deliberately does **not** restate any shortcut. The event goes to the same menu the shortcuts are
 declared in, so there is still exactly one definition of what `Space` does, and the monitor cannot
 drift from it as shortcuts are added or changed.
@@ -56,11 +64,25 @@ drift from it as shortcuts are added or changed.
 - The monitor is a second thing the presentation has to install and tear down correctly. It is
   idempotent (`installKeyMonitorIfNeeded` guards on the existing monitor) and `endPresentation` is
   already required to be, because it is called from both the flag change and `onDisappear`.
+- The monitor has to decide *whose* key it is looking at, and that decision is made per keystroke
+  against a host window resolved at that moment (`FullscreenKeyRouting`). Remembering the window
+  number when the monitor was installed was the first version of this, and it is wrong the moment the
+  app has a window the monitor's snapshot did not know about: the app's window list is not fixed (a
+  settings window opens, the mini player panel is created, the window is re-keyed), and a number
+  captured once is wrong for every key after it — which reads as `Escape` doing nothing while the
+  player covers the window, one of the two halves of the report this settled.
+- A local monitor also sees `Escape` from windows that are not the player's, so the host has to be
+  identified at all: the player is scoped to the window wearing the app's main autosave name, which is
+  now the only window allowed to wear it (`AppDelegate.setupWindowDelegate`). Two windows sharing that
+  name did not merely remember the wrong frame — it made every lookup of the app's main window, the
+  monitor's included, a coin-flip between them.
 
 ### Neutral
 
 - `Escape` keeps its existing single-path behaviour: the monitor consumes it, so `onExitCommand`
-  does not also fire and the player cannot be closed twice from one keystroke.
+  does not also fire and the player cannot be closed twice from one keystroke. The close button also
+  carries `.keyboardShortcut(.cancelAction)` as a declarative second route, for a presentation whose
+  monitor is not installed; the monitor answers first while it is, so the two never both fire.
 - The monitor swallows a key on the strength of the menu's return value, which is documented to mean
   the item was found *and its action performed* — a `true` that did not perform would leave the key
   dead rather than merely unshadowed. `MenuKeyEquivalentRoutingTests` pins both halves for the two

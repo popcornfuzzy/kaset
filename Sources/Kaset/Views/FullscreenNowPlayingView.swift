@@ -51,12 +51,11 @@ struct FullscreenNowPlayingView: View {
     ///
     /// Scoped to the presentation: installed when the player is presented and removed when it is
     /// not (see `startPresentation`/`endPresentation`), so nothing outside the player is affected.
+    ///
+    /// It is deliberately not remembered *which* window it answers for: the host is resolved per
+    /// keystroke (see `FullscreenKeyRouting` and `fullscreenHostWindow`), because a window number
+    /// captured at install time is a number that can be wrong for every key after it.
     @State private var keyMonitor: Any?
-    /// The window the monitor answers for, so a key typed into another window — Settings, a sheet —
-    /// is left alone. The player is an overlay inside the main window, which is found the way
-    /// `KasetApp.showMainWindow()` finds it. `nil` (no window identifiable yet) means the monitor
-    /// answers for every window, which is what it did before it had this guard.
-    @State private var keyMonitorWindowNumber: Int?
     @State private var canvasReady = false
     @State private var canvasFailed = false
     /// How far the incoming artwork is currently nudged off its resting place: positive for a skip
@@ -111,7 +110,7 @@ struct FullscreenNowPlayingView: View {
             .zIndex(10_000)
         }
         .onExitCommand {
-            self.closeFullscreenNowPlaying()
+            self.closeFullscreenNowPlaying(route: .escape)
         }
         // Every feature below is scoped to one *presentation* and is (re)initialized from the flag
         // transition, never from this view instance being new. `MainWindow` keeps the content alive
@@ -241,12 +240,17 @@ struct FullscreenNowPlayingView: View {
     }
 
     private var fullscreenCloseButton: some View {
-        Button { self.closeFullscreenNowPlaying() } label: {
+        Button { self.closeFullscreenNowPlaying(route: .closeButton) } label: {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
                 .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
                 .padding(10).background(.black.opacity(0.36), in: Circle())
         }
         .buttonStyle(.plain)
+        // A second route for `Escape`, through AppKit's cancel-action machinery rather than the
+        // monitor: the monitor answers the key first while it is installed, and this is what is left
+        // if it ever is not (a presentation whose monitor was already torn down, say). The two cannot
+        // both fire for one keystroke — the monitor consumes the key it closes on.
+        .keyboardShortcut(.cancelAction)
         .accessibilityLabel(String(localized: "Exit Fullscreen Now Playing"))
     }
 
@@ -480,7 +484,18 @@ struct FullscreenNowPlayingView: View {
     }
     private func formatTime(_ time: TimeInterval) -> String { guard time.isFinite else { return "0:00" }; let totalSeconds = max(Int(time), 0); return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60) }
     private func updateLyricsPolling(for result: LyricResult) { if case .synced = result { SingletonPlayerWebView.shared.startLyricsPoll() } else { SingletonPlayerWebView.shared.stopLyricsPoll() } }
-    private func closeFullscreenNowPlaying() { withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false } }
+    /// Which control asked to leave, so the log says how a presentation ended — the difference
+    /// between "the close button does nothing" and "the player was never presented" is this line.
+    private enum ExitRoute: String {
+        case closeButton = "close button"
+        case escape = "Escape"
+    }
+
+    private func closeFullscreenNowPlaying(route: ExitRoute) {
+        guard self.playerService.showFullscreenNowPlaying else { return }
+        DiagnosticsLogger.ui.debug("Fullscreen now playing dismissed (\(route.rawValue, privacy: .public))")
+        withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false }
+    }
 
     /// Sets up everything scoped to one fullscreen presentation: the local seek/lyrics mirrors, the
     /// canvas crossfade state, the Escape key monitor, the shared lyrics poll, and the lyric lookup for
@@ -497,9 +512,28 @@ struct FullscreenNowPlayingView: View {
         // A fresh canvas player reports readiness again; a canvas that failed last time gets retried.
         self.canvasReady = false
         self.canvasFailed = false
+        self.claimHostWindow()
         self.installKeyMonitorIfNeeded()
         self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
+    }
+
+    /// Takes the window's focus for the presentation, because the player now covers that window.
+    ///
+    /// Without it a presentation begun over a window the app no longer keys — the floating mini player
+    /// was clicked, another app came forward, the reader was in a second window — leaves `Escape`
+    /// going to that other window and the first click on the close button being spent activating the
+    /// window instead of pressing the button. Both look exactly like a player that cannot be left.
+    @MainActor
+    private func claimHostWindow() {
+        guard self.playerService.showFullscreenNowPlaying,
+              let window = Self.fullscreenHostWindow()
+        else { return }
+        // A sheet on the window is presenting something of its own; taking the key back from it would
+        // put the sheet behind the window it belongs to.
+        guard window.attachedSheet == nil else { return }
+        if !NSApp.isActive { NSApp.activate() }
+        if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
     }
 
     /// Tears the presentation down and hands the shared lyrics poll over when the sidebar lyrics panel
@@ -567,21 +601,31 @@ struct FullscreenNowPlayingView: View {
 
     private func installKeyMonitorIfNeeded() {
         guard self.keyMonitor == nil else { return }
-        let window = NSApplication.shared.windows.first { $0.frameAutosaveName == "KasetMainWindow" }
-            ?? NSApplication.shared.keyWindow
-        self.keyMonitorWindowNumber = window?.windowNumber
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             // A key destined for another window is not ours to answer: the player is behind
-            // whatever the user is actually typing into.
-            if let windowNumber = self.keyMonitorWindowNumber, event.window?.windowNumber != windowNumber {
-                return event
-            }
+            // whatever the user is actually typing into. The host is resolved per keystroke rather
+            // than remembered at install time — see `FullscreenKeyRouting`.
+            guard FullscreenKeyRouting.owns(
+                eventWindowNumber: event.window?.windowNumber,
+                hostWindowNumber: Self.fullscreenHostWindow()?.windowNumber,
+                isSheet: event.window?.sheetParent != nil
+            ) else { return event }
             if event.keyCode == 53 {
-                self.closeFullscreenNowPlaying()
+                self.closeFullscreenNowPlaying(route: .escape)
                 return nil
             }
             return NSApp.mainMenu?.performKeyEquivalent(with: event) == true ? nil : event
         }
+    }
+
+    /// The window the player is drawn in: the app's main window, found the way the rest of the app
+    /// finds it, with the key window as the fallback for a presentation that happens before the shell
+    /// is installed.
+    @MainActor
+    static func fullscreenHostWindow() -> NSWindow? {
+        NSApplication.shared.windows.first { $0.frameAutosaveName == AppDelegate.mainWindowAutosaveName }
+            ?? NSApplication.shared.windows.first { $0.isMainWindow }
+            ?? NSApplication.shared.keyWindow
     }
     private func removeKeyMonitor() { guard let monitor = self.keyMonitor else { return }; NSEvent.removeMonitor(monitor); self.keyMonitor = nil }
 
