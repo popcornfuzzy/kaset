@@ -314,6 +314,17 @@ enum KaraokeFillModel {
     /// deciding that costs one comparison against that one line's fill windows. Because the
     /// declared rule has already stepped past the earlier line, its declared end is behind us,
     /// so testing against its content end is testing against `settleBoundaryMs`.
+    ///
+    /// A row with nothing to sing never takes the highlight off a row that is still sounding.
+    /// The dots — and the short `♪` gap that is a pause too short to draw them — are silence,
+    /// and silence is not the line being sung: the highlight waits for the whole of the row
+    /// above, **lead and backing alike**. A backing vocal is what makes that matter. Apple Music
+    /// writes a phrase whose onsets lie *after* its own paragraph's end — the `(High, the way
+    /// that you're stuck in my head)` under an `I'm sick, I'm sick` paragraph that has already
+    /// run out — so the phrase is still sweeping through the interlude the sheet inserted after
+    /// that paragraph, and the dots sat under a line that was plainly still being sung. A row
+    /// that *is* being sung keeps the old rule: there the lead decides, because the line being
+    /// sung has changed and the next line's lead has already arrived.
     static func highlightIndex(
         in lyrics: SyncedLyrics,
         at timeMs: Int,
@@ -323,6 +334,12 @@ enum KaraokeFillModel {
         guard declared > 0 else { return declared }
 
         let earlier = lyrics.lines[declared - 1]
+
+        if SyncedLyrics.isSilent(lyrics.lines[declared]) {
+            let soundingEnd = self.settleBoundaryMs(for: earlier, timing: timing)
+            return Double(timeMs) < soundingEnd ? declared - 1 : declared
+        }
+
         let contentEnd = self.words(for: earlier, timing: timing).map(\.fillEndMs).max() ?? 0
         return Double(timeMs) < contentEnd ? declared - 1 : declared
     }

@@ -45,6 +45,45 @@ struct SyncedLyricsPauseInterludeTests {
         #expect(activeInterlude?.lineIndex == 1)
     }
 
+    @Test("A pause begins when the row above stops sounding, not at the row's own timestamp")
+    func pauseWaitsForTheRowAbove() {
+        // The row above carries a backing phrase whose onset lies past its own end — the shape
+        // Apple Music writes — so it is still filling when the sheet says the pause began.
+        let lyrics = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(
+                    timeInMs: 0,
+                    duration: 1_000,
+                    text: "I'm sick",
+                    words: [TimedWord(timeInMs: 0, word: "I'm"), TimedWord(timeInMs: 400, word: " sick")],
+                    backgroundWords: [TimedWord(timeInMs: 1_200, word: " high", isBackground: true)]
+                ),
+                SyncedLyricLine(timeInMs: 1_000, duration: 3_000, text: "", words: nil),
+                SyncedLyricLine(timeInMs: 4_000, duration: 1_000, text: "Next", words: nil),
+            ],
+            source: "UnitTest"
+        )
+
+        // The backing word's fill runs 1130…1250, so the row above is sounding until 1250 —
+        // 250 ms after the pause row claims to start.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: lyrics.lines[0]) == 1_250)
+
+        let interlude = lyrics.pauseInterlude(forLineAt: 1)
+        #expect(interlude?.startTimeMs == 1_250)
+        #expect(interlude?.endTimeMs == 4_000)
+        #expect(interlude?.durationMs == 2_750)
+
+        // So the dots rest while the backing is still filling, and begin the moment it lands:
+        // nothing on the row contradicts the phrase that is still being sung.
+        #expect(lyrics.pauseDots(forLineAt: 1, at: 1_000).statuses == [.notSung, .notSung, .notSung])
+        #expect(lyrics.pauseDots(forLineAt: 1, at: 1_249).statuses == [.notSung, .notSung, .notSung])
+        #expect(lyrics.pauseDots(forLineAt: 1, at: 1_250).statuses == [.active, .notSung, .notSung])
+
+        // The row is still a pause by its own shape, whatever the row above is doing.
+        #expect(lyrics.isPauseLine(at: 1))
+        #expect(lyrics.isPauseLine(at: 0) == false)
+    }
+
     private func makeLyricsWithPause(duration: Int) -> SyncedLyrics {
         SyncedLyrics(
             lines: [

@@ -74,8 +74,10 @@ machinery as the lead:
 - `settleBoundaryMs` now also counts the backing ramps. A held backing note can
   outlast the lead's last word; without this the row would leave the display
   clock — and freeze the backing wipe mid-word — while the accompaniment was
-  still filling. The backing still does not drive `highlightIndex`: which line is
-  being sung is decided by the lead.
+  still filling. The backing still does not move the highlight off a line whose
+  *successor is being sung*: there the lead decides, because the line being sung
+  has changed. It does decide where the successor is silence — see the final
+  amendment.
 - The backing row differs from the lead only in color, opacity and size (sidebar
   14 pt `.secondary`, fullscreen 36 pt × 0.62 at white 55 %), with the same
   emphasis (glow and per-character lift) the lead gets.
@@ -245,6 +247,55 @@ also means the lyrics cache schema version does not move: the cache still holds 
 the provider returned, and a song cached before this amendment gets the conversion
 when it is next displayed.
 
+## Amendment: a backing vocal that outlasts its own line
+
+The backing vocal was kept out of `highlightIndex` on the grounds that the lead
+decides which line is being sung. That is right while the *next* line is being
+sung and wrong while the next row is silence, and the difference is visible for
+seconds at a time in real payloads. A cached Unison sheet writes
+`I'm sick, I'm sick` as a paragraph ending at 1:42.718 with
+`(High, the way that you're stuck in my head)` under it, whose onsets run
+1:42.783 → 1:44.979: the phrase's last word lands at 105029 ms, **2311 ms after
+the line's own end**. The next paragraph begins at 1:45.753, so the gap — 3035 ms
+— became a pause row, and the highlight sat on those three dots for the whole
+2.3 s with the backing phrase still sweeping underneath. The same song does it
+twice (111360 → 113614).
+
+Two rules fix it, and they share one boundary:
+
+- **A row with nothing to sing never takes the highlight off a row that is still
+  sounding.** The dots are silence and so is the short `♪` gap, and the highlight
+  now waits for the row above it to finish, **lead and backing alike**
+  (`KaraokeFillModel.highlightIndex` against `settleBoundaryMs`). A row that *is*
+  being sung keeps the older rule: the next line's lead has arrived, so the
+  highlight has already moved and the backing does not drag it back. The hold is
+  bounded by the silent row's own window, so it can never outlast it.
+- **The silence begins where the row above stopped sounding.**
+  `PauseInterlude.startTimeMs` was the pause row's own timestamp — the previous
+  paragraph's declared end — which is a provider artifact, not the start of the
+  silence. It is now `max(row start, settleBoundaryMs(row above))`, so the dots
+  rest while the phrase is still filling and begin on the frame it lands, which is
+  the same frame the highlight moves on. The two cannot disagree, because they are
+  the same boundary; a row whose whole window the row above fills has no silence
+  left to show and its dots read as already sung.
+
+The rows themselves are untouched: a gap still produces exactly one row covering
+it, so the scroll target, the row statuses and every index the display works with
+are what they were. This is a display-time rule like the parentheses pass, so
+`LyricsCacheStore.schemaVersion` does not move.
+
+`isPauseLine` no longer routes through `pauseInterlude`: it is asked of every row
+of the sheet on every render, and it is a question about the row's own shape
+(`isSilent` plus the 600 ms threshold), while "has the pause begun" is a question
+about the row before it. Both read the one `isPauseShape` predicate, so the row
+that draws the dots and the rule that decides when they start still cannot
+disagree about which rows are pauses.
+
+Verified against the machine's real lyrics cache: 83 parsed sheets, 20 ms step
+over every one of them, and no frame anywhere highlights a silent row while the
+row above it is still sounding (229 such frames before the change, in the one
+song that has the shape).
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
@@ -254,7 +305,10 @@ when it is next displayed.
   parser).
 - Backing vocals animate with the same per-character wipe as the lead line,
   synchronized through the shared display clock, while staying visually
-  subordinate (smaller, dimmer, no effect on the highlight).
+  subordinate (smaller, dimmer). They decide the highlight in exactly one place:
+  a row with nothing to sing — a pause, or a `♪` gap — cannot become the line
+  being sung while the row above it is still sounding, which is what a backing
+  vocal outlasting its own line used to make happen.
 - The per-line credit placement is unchanged by this ADR; see
   [ADR-0024](0024-unison-provider.md) for attribution.
 - Cache invalidation is now coupled to the schema version: any future change to

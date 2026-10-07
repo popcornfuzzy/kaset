@@ -494,6 +494,67 @@ struct KaraokeFillModelTests {
         #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1280) == 1)
     }
 
+    @Test("A pause waits for a backing vocal that is still sounding, a sung line does not")
+    func aPauseWaitsForABackingVocal() {
+        // A backing phrase whose onset lies past the line's own end: Apple Music writes these
+        // (the "High, the way that you're stuck in my head" under an "I'm sick, I'm sick"),
+        // and the phrase then fills through the interlude the gap after that line becomes.
+        let sung = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 2_000,
+            text: "one two",
+            words: [TimedWord(timeInMs: 0, word: "one"), TimedWord(timeInMs: 1_600, word: " two")],
+            backgroundWords: [TimedWord(timeInMs: 2_100, word: " oh", isBackground: true)]
+        )
+        let pause = SyncedLyricLine(timeInMs: 2_000, duration: 2_000, text: "", words: nil)
+        let next = SyncedLyricLine(timeInMs: 2_000, duration: 2_000, text: "next line", words: nil)
+
+        // Its last word lands at 2150: 150 ms after the line's declared end.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: sung) == 2_150)
+
+        // The dots are silence, and silence does not take the highlight off a row that is still
+        // being sung: the highlight stays for the whole of the backing phrase.
+        let withPause = SyncedLyrics(lines: [sung, pause], source: "HighlightTest")
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_000) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_149) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_150) == 1)
+
+        // A row that *is* being sung still decides for itself — the next line's lead has
+        // arrived, so the highlight has moved even though the preceding backing phrase is
+        // still sweeping (see `settleBoundaryMs` for why the backing never drives this).
+        let withNextLine = SyncedLyrics(lines: [sung, next], source: "HighlightTest")
+        #expect(KaraokeFillModel.highlightIndex(in: withNextLine, at: 2_000) == 1)
+    }
+
+    @Test("A short gap with nothing to sing does not take the highlight either")
+    func aShortSilentRowWaitsToo() {
+        // The `♪` row is the same silence as the dots, one threshold shorter, so the row above
+        // keeps the highlight on the same terms.
+        let sung = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1_000,
+            text: "one",
+            words: [TimedWord(timeInMs: 0, word: "one")],
+            backgroundWords: [TimedWord(timeInMs: 1_300, word: " oh", isBackground: true)]
+        )
+        let gap = SyncedLyricLine(timeInMs: 1_000, duration: 300, text: "", words: nil)
+        let lyrics = SyncedLyrics(lines: [sung, gap], source: "HighlightTest")
+
+        #expect(!lyrics.isPauseLine(at: 1))
+        #expect(KaraokeFillModel.settleBoundaryMs(for: sung) == 1_350)
+        #expect(lyrics.currentLineIndex(at: 1_000) == 1)
+
+        // For the length of the row that has nothing to sing, the highlight stays where the
+        // singing is — the backing phrase lands at 1350, past the row's own 300 ms window.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_000) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_299) == 0)
+
+        // Past the row, the sheet has nothing left at all: the hold is bounded by the silent
+        // row's own window, so it can never outlast it.
+        #expect(lyrics.currentLineIndex(at: 1_300) == nil)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_300) == nil)
+    }
+
     @Test("A line-synced line has settled before the highlight leaves it")
     func lineSyncedLineSettlesBeforeTheHighlightMoves() {
         let line = SyncedLyricLine(timeInMs: 0, duration: 2000, text: "a whole line", words: nil)

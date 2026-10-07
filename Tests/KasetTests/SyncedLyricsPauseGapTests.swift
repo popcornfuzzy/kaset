@@ -214,6 +214,72 @@ struct SyncedLyricsPauseGapTests {
         #expect(filled.lines[3].words?.isEmpty == false)
     }
 
+    // MARK: - A backing vocal that outlasts its own line
+
+    /// A faithful fragment of a real Unison document, with the shape Apple Music writes when a
+    /// backing vocal continues past the paragraph it sits under: the phrase's onsets lie *after*
+    /// the paragraph's end, so it fills through the interlude the next paragraph's arrival leaves.
+    ///
+    /// Real numbers, from a played-and-cached sheet: `I'm sick, I'm sick` at 1:40.934 with
+    /// `(High, the way that you're stuck in my head)` under it, its last word at 1:44.979, and
+    /// the next paragraph at 1:45.753. The phrase therefore lands at 105029 ms, 2311 ms after
+    /// the line's own end, while the pause row the gap produces starts at 102718 — and the
+    /// highlight used to sit on those dots for that whole 2.3 s with the backing still sweeping.
+    private static let lateBackgroundVocalTTML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word" xml:lang="en">
+    <head><metadata><ttm:title>Limerence</ttm:title></metadata></head>
+    <body dur="3:20.000"><div begin="1:40.934" end="1:46.661" itunes:songPart="Verse">
+    <p begin="1:40.934" end="1:42.718" itunes:key="L1" ttm:agent="v1"><span begin="1:40.934" end="1:41.092">I'm</span> <span begin="1:41.092" end="1:41.615">sick,</span> <span begin="1:41.615" end="1:41.876">I'm</span> <span begin="1:41.876" end="1:42.718">sick</span> <span ttm:role="x-bg"><span begin="1:42.783">(High,</span> <span begin="1:43.061">the</span> <span begin="1:43.263">way</span> <span begin="1:43.604">that</span> <span begin="1:43.860">you're</span> <span begin="1:44.060">stuck</span> <span begin="1:44.414">in</span> <span begin="1:44.680">my</span> <span begin="1:44.979">head)</span></span></p>
+    <p begin="1:45.753" end="1:46.661" itunes:key="L2" ttm:agent="v1"><span begin="1:45.753" end="1:45.946">I'm</span> <span begin="1:45.946" end="1:46.181">sick,</span> <span begin="1:46.181" end="1:46.416">I</span> <span begin="1:46.416" end="1:46.661">know</span></p>
+    </div></body></tt>
+    """
+
+    @Test("A backing vocal that outlasts its line keeps the highlight off the dots")
+    func lateBackingVocalHoldsTheHighlight() throws {
+        let parsed = try #require(TTMLParser.parse(Self.lateBackgroundVocalTTML, source: "Unison"))
+        // The display's own two passes, in its own order (`SyncedLyricsService.forDisplay`).
+        let filled = parsed.convertingParenthesizedBackingVocals().withPauseInterludes()
+
+        #expect(filled.lines.count == 3)
+        let sung = filled.lines[0]
+        #expect(sung.text == "I'm sick, I'm sick")
+        #expect(sung.backgroundText == "High, the way that you're stuck in my head")
+
+        // The rows are untouched by any of this: the pause still covers the whole gap, so the
+        // scroll, the row statuses and the indices the display works with are all as they were.
+        let pause = filled.lines[1]
+        #expect(SyncedLyrics.isSilent(pause))
+        #expect(pause.timeInMs == 102_718)
+        #expect(pause.duration == 3_035)
+        #expect(filled.isPauseLine(at: 1))
+
+        // The backing phrase's last word lands at 105029: 2311 ms after the line's declared end.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: sung) == 105_029)
+
+        // So the highlight is on the line being sung for every millisecond of that, rather than
+        // on the dots underneath it while the phrase is still filling.
+        for timeMs in stride(from: 102_718, to: 105_029, by: 100) {
+            let index = KaraokeFillModel.highlightIndex(in: filled, at: timeMs)
+            #expect(index == 0, "at \(timeMs) ms the highlight was on row \(index ?? -1)")
+        }
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_028) == 0)
+
+        // And it moves onto the pause when the phrase has landed, staying there until the next
+        // line is due.
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_029) == 1)
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_752) == 1)
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_753) == 2)
+
+        // The dots agree about when the pause began — they rest through the phrase and start with
+        // the frame it lands on — so nothing on the row contradicts the line still being sung.
+        #expect(filled.pauseInterlude(forLineAt: 1)?.startTimeMs == 105_029)
+        #expect(filled.pauseDots(forLineAt: 1, at: 102_718).statuses == [.notSung, .notSung, .notSung])
+        #expect(filled.pauseDots(forLineAt: 1, at: 105_028).statuses == [.notSung, .notSung, .notSung])
+        #expect(filled.pauseDots(forLineAt: 1, at: 105_029).statuses == [.active, .notSung, .notSung])
+        #expect(filled.pauseDots(forLineAt: 1, at: 105_753).statuses == [.sung, .sung, .sung])
+    }
+
     // MARK: - The frame budget, which is what the sheet costs to draw
 
     @Test("At most three rows are ever on the display clock, gaps or no gaps")

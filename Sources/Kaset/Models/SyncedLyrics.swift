@@ -327,6 +327,21 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         return self.pauseInterlude(forLineAt: currentIndex, minimumGapMs: minimumGapMs)
     }
 
+    /// The silence a pause row stands for, or `nil` when the row is not a pause.
+    ///
+    /// The row's own shape decides whether it is a pause at all — nothing to sing, for at
+    /// least `minimumGapMs` (see `isPauseShape`). *When* that pause begins is a second
+    /// question, and the row's own timestamp is not always the answer: a backing vocal can
+    /// outlast the line it sits under. Apple Music writes a phrase whose onsets lie past its
+    /// own paragraph's end — the `(High, the way that you're stuck in my head)` under an
+    /// `I'm sick, I'm sick` paragraph that has already run out — and that phrase fills right
+    /// through the gap the sheet calls an interlude. Nothing is sung during a pause, so the
+    /// silence begins where the row above stopped sounding: `KaraokeFillModel.settleBoundaryMs`,
+    /// the same boundary the highlight waits for and the row above stays on the display clock
+    /// for. The dots and the highlight therefore cannot disagree about when it started.
+    ///
+    /// A row that the row above fills right to its end has no silence of its own left to
+    /// show: the window collapses and the dots read as already sung.
     func pauseInterlude(
         forLineAt lineIndex: Int,
         minimumGapMs: Int = Self.defaultPauseGapThresholdMs
@@ -334,16 +349,10 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         guard self.lines.indices.contains(lineIndex) else { return nil }
 
         let line = self.lines[lineIndex]
-        // A line with backing vocals is not a pause: it has something to sing,
-        // even though its lead text is empty.
-        let isPauseText = line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (line.backgroundWords ?? []).isEmpty
-        guard isPauseText else { return nil }
-        guard line.duration >= minimumGapMs else { return nil }
+        guard Self.isPauseShape(line, minimumGapMs: minimumGapMs) else { return nil }
 
-        let startTimeMs = line.timeInMs
         let endTimeMs = line.timeInMs + line.duration
-        guard endTimeMs > startTimeMs else { return nil }
+        let startTimeMs = min(max(line.timeInMs, self.soundingEndMs(beforeLineAt: lineIndex)), endTimeMs)
 
         return PauseInterlude(
             lineIndex: lineIndex,
@@ -353,11 +362,32 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         )
     }
 
+    /// Whether a row is a pause on its own account: nothing to sing, for at least the minimum
+    /// gap. Blind to the row before it on purpose — whether a pause has *begun* is a question
+    /// about time rather than about shape, and the dots are drawn on the row either way.
+    private static func isPauseShape(_ line: SyncedLyricLine, minimumGapMs: Int) -> Bool {
+        Self.isSilent(line) && line.duration >= minimumGapMs
+    }
+
+    /// When the row above a given row has stopped sounding: the later of its declared end and
+    /// the end of its own last fill ramp, lead and backing alike (`KaraokeFillModel.settleBoundaryMs`).
+    /// `0` when there is no row above, which no declared start is ever behind.
+    private func soundingEndMs(beforeLineAt lineIndex: Int) -> Int {
+        guard self.lines.indices.contains(lineIndex - 1) else { return 0 }
+        return Int(KaraokeFillModel.settleBoundaryMs(for: self.lines[lineIndex - 1]).rounded())
+    }
+
+    /// Whether a row draws the pause dots.
+    ///
+    /// Asked of the row's shape alone, and not through `pauseInterlude`, because this is the
+    /// question every row of the sheet is asked on every render and the interlude is a question
+    /// about the row *above* it as well.
     func isPauseLine(
         at lineIndex: Int,
         minimumGapMs: Int = Self.defaultPauseGapThresholdMs
     ) -> Bool {
-        self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) != nil
+        guard self.lines.indices.contains(lineIndex) else { return false }
+        return Self.isPauseShape(self.lines[lineIndex], minimumGapMs: minimumGapMs)
     }
 
     /// The three dots' state at a playback position, for a row that is a pause.
