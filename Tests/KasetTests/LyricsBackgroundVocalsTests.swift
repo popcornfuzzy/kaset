@@ -112,6 +112,236 @@ struct LyricsBackgroundVocalsTests {
         #expect(backingIsAllBacking)
     }
 
+    // MARK: - Parenthesized backing vocals
+
+    /// Apple Music's own marker, with the parentheses its sources leave in the text: the
+    /// phrase sits inside the `x-bg` span, so parsing it faithfully used to put a backing row
+    /// reading `(Yes)` on screen.
+    @Test("a TTML backing span loses the parentheses the source wrote around it")
+    func ttmlBackingVocalsLoseTheirParentheses() throws {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+          <p begin="0:55.644" end="0:57.993">
+            <span ttm:role="x-bg"><span begin="0:55.644" end="0:56.286">(Yes)</span></span>
+            <span begin="0:55.911" end="0:56.161">I</span> <span begin="0:56.161" end="0:56.479">know</span>
+          </p>
+        </div></body></tt>
+        """
+
+        let parsed = try #require(TTMLParser.parse(raw, source: "BetterLyrics"))
+        #expect(parsed.lines[0].backgroundText == "(Yes)")
+
+        let converted = parsed.convertingParenthesizedBackingVocals()
+        #expect(converted.lines[0].text == "I know")
+        #expect(converted.lines[0].backgroundText == "Yes")
+        // The words keep their own timings: only the parentheses are dropped.
+        #expect(converted.lines[0].backgroundWords?.first?.timeInMs == 55_644)
+        #expect(converted.lines[0].backgroundWords?.allSatisfy(\.isBackground) == true)
+    }
+
+    @Test("a backing phrase written across several spans keeps its own word spacing")
+    func ttmlBackingVocalsSpanningWords() throws {
+        let raw = """
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+          <p begin="1:17.574" end="1:20.311">
+            <span begin="1:17.574" end="1:17.955">dancin'</span> <span begin="1:17.955" end="1:18.187">on</span> <span begin="1:18.187" end="1:18.377">my</span> <span begin="1:18.377" end="1:19.168">own</span>
+            <span ttm:role="x-bg"><span begin="1:18.699" end="1:19.371">(Dancin'</span> <span begin="1:19.371" end="1:19.489">on</span> <span begin="1:19.489" end="1:19.657">my</span> <span begin="1:19.657" end="1:20.311">own)</span></span>
+          </p>
+        </div></body></tt>
+        """
+
+        let parsed = try #require(TTMLParser.parse(raw, source: "BetterLyrics"))
+        #expect(parsed.lines[0].backgroundText == "(Dancin' on my own)")
+
+        let converted = parsed.convertingParenthesizedBackingVocals()
+        #expect(converted.lines[0].text == "dancin' on my own")
+        #expect(converted.lines[0].backgroundText == "Dancin' on my own")
+        #expect(converted.lines[0].backgroundWords?.count == 4)
+    }
+
+    /// KuGo and LRCLib write a backing vocal inline in the words of the line, with no marker
+    /// beyond the parentheses — the phrase belongs on the backing row, and the lead lyric on
+    /// the lead line.
+    @Test("an inline phrase moves to the backing row and out of the lead text")
+    func inlinePhraseMovesToBackingRow() {
+        let line = SyncedLyricLine(
+            timeInMs: 47_210,
+            duration: 2_790,
+            text: "You smart (you smart) 누가 You are",
+            words: nil
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "You smart 누가 You are")
+        #expect(converted?.backgroundText == "you smart")
+        // A line-synced backing phrase fills over the line it was taken out of.
+        #expect(converted?.backgroundWords?.map(\.timeInMs) == [47_210])
+    }
+
+    @Test("a line that is nothing but an ad-lib becomes a backing-only row")
+    func adlibOnlyLineBecomesBackingRow() {
+        let line = SyncedLyricLine(timeInMs: 5_000, duration: 1_500, text: "(Oh-oh-oh-oh-oh)", words: nil)
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "")
+        #expect(converted?.backgroundText == "Oh-oh-oh-oh-oh")
+        #expect(converted?.isBackgroundOnly == true)
+        // It has something to sing, so the renderer must not draw the pause dots on it.
+        let sheet = SyncedLyrics(lines: [converted ?? line], source: "LRCLib")
+        #expect(sheet.isPauseLine(at: 0) == false)
+        #expect(SyncedLyrics.isSilent(converted ?? line) == false)
+    }
+
+    @Test("a section label is dropped rather than sung on the backing row")
+    func sectionLabelIsDropped() {
+        let line = SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "(Chorus)", words: nil)
+        #expect(LyricsBackingParentheses.converted(line) == nil)
+
+        let inline = SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "Sing it (x2)", words: nil)
+        let converted = LyricsBackingParentheses.converted(inline)
+        #expect(converted?.text == "Sing it")
+        #expect(converted?.backgroundWords == nil)
+
+        let numbered = SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "(Pre-Chorus 2)", words: nil)
+        #expect(LyricsBackingParentheses.converted(numbered) == nil)
+    }
+
+    @Test("an opener the source never closed stays in the lyric")
+    func unclosedParenthesisStaysInTheLead() {
+        let line = SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "Hold on (tonight", words: nil)
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "Hold on (tonight")
+        #expect(converted?.backgroundWords == nil)
+    }
+
+    @Test("a word-timed phrase the source never closed keeps its words once, and as lead")
+    func unclosedWordPhraseIsRestored() {
+        let line = SyncedLyricLine(
+            timeInMs: 1_000,
+            duration: 2_000,
+            text: "Hold on (tonight",
+            words: [
+                TimedWord(timeInMs: 1_000, word: "Hold"),
+                TimedWord(timeInMs: 1_400, word: " on (tonight"),
+            ]
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.backgroundWords == nil)
+        #expect(converted?.words?.map(\.word) == ["Hold", " on (tonight"])
+        #expect(converted?.text == "Hold on (tonight")
+    }
+
+    @Test("a phrase a word-timed line opened in one word and closed in another is one phrase")
+    func phraseSpanningWordsKeepsItsOnset() {
+        let line = SyncedLyricLine(
+            timeInMs: 1_000,
+            duration: 2_000,
+            text: "You (you smart)",
+            words: [
+                TimedWord(timeInMs: 1_000, word: "You"),
+                TimedWord(timeInMs: 1_400, word: " (you"),
+                TimedWord(timeInMs: 1_800, word: " smart)"),
+            ]
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "You")
+        #expect(converted?.words?.map(\.word) == ["You"])
+        // The phrase fills from the onset of the word that opened it, not the line's.
+        #expect(converted?.backgroundWords == [TimedWord(timeInMs: 1_400, word: "you smart", isBackground: true)])
+    }
+
+    /// An enhanced LRC can carry a phrase in the line's text that it never timed as a word;
+    /// the karaoke row draws the words, so they are the ones that must not mention it.
+    @Test("a phrase only the line's text carries goes to the backing row over the line's window")
+    func phraseOnlyInTheLineText() {
+        let line = SyncedLyricLine(
+            timeInMs: 1_000,
+            duration: 3_000,
+            text: "You smart (you smart)",
+            words: [
+                TimedWord(timeInMs: 1_000, word: "You"),
+                TimedWord(timeInMs: 1_400, word: " smart"),
+            ]
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "You smart")
+        #expect(converted?.words?.map(\.word) == ["You", " smart"])
+        #expect(converted?.backgroundWords?.map(\.timeInMs) == [1_000])
+        #expect(converted?.backgroundText == "you smart")
+    }
+
+    @Test("a line with no parentheses is handed back unchanged")
+    func lineWithoutParenthesesIsUnchanged() {
+        let line = SyncedLyricLine(
+            timeInMs: 10_000,
+            duration: 2_000,
+            text: "Nothing  to see",
+            words: [TimedWord(timeInMs: 10_000, word: "Nothing")],
+            backgroundWords: [TimedWord(timeInMs: 10_200, word: " Ooh", isBackground: true)]
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.id == line.id)
+        #expect(converted?.text == "Nothing  to see")
+        #expect(converted?.words == line.words)
+        #expect(converted?.backgroundWords == line.backgroundWords)
+    }
+
+    @Test("a converted phrase is separated from the backing words already on the row")
+    func convertedPhraseKeepsItsSpace() {
+        let line = SyncedLyricLine(
+            timeInMs: 10_000,
+            duration: 2_000,
+            text: "Nothing to see (or not)",
+            words: nil,
+            backgroundWords: [TimedWord(timeInMs: 10_200, word: "Ooh", isBackground: true)]
+        )
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "Nothing to see")
+        #expect(converted?.backgroundText == "Ooh or not")
+    }
+
+    @Test("an instrumental interlude is not mistaken for a label")
+    func interludeSurvives() {
+        let line = SyncedLyricLine(timeInMs: 3_000, duration: 1_500, text: "", words: nil)
+        let converted = LyricsBackingParentheses.converted(line)
+
+        #expect(converted?.text == "")
+        #expect(converted?.backgroundWords == nil)
+        #expect(SyncedLyrics(lines: [converted ?? line], source: "Test").isPauseLine(at: 0))
+    }
+
+    @Test("the sheet conversion keeps every line's identity and source")
+    func sheetConversionKeepsIdentity() {
+        let line = SyncedLyricLine(timeInMs: 0, duration: 2_000, text: "Sing (along)", words: nil)
+        let lyrics = SyncedLyrics(lines: [line], source: "KuGo")
+
+        let converted = lyrics.convertingParenthesizedBackingVocals()
+
+        #expect(converted.source == "KuGo")
+        #expect(converted.lines.first?.id == line.id)
+        #expect(converted.lines.first?.timeInMs == 0)
+        #expect(converted.lines.first?.duration == 2_000)
+    }
+
+    @Test("a plain sheet has the phrase removed, since it has no backing row to show it on")
+    func plainSheetDropsThePhrase() {
+        let lyrics = Lyrics(
+            text: "Line one\n(Oh-oh-oh-oh-oh)\n(Chorus)\nYou smart (you smart)\ntrailing ",
+            source: "Source: LRCLib"
+        )
+
+        let converted = lyrics.removingParenthesizedBackingVocals()
+
+        #expect(converted.text == "Line one\nYou smart\ntrailing ")
+        #expect(converted.source == "Source: LRCLib")
+    }
+
     // MARK: - Pause detection
 
     @Test("a line that carries only backing vocals is not a pause")

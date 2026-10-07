@@ -345,19 +345,28 @@ final class SyncedLyricsService {
         }
     }
 
-    /// The result as the display wants it: a synced sheet gains a pause row for every
-    /// interlude its provider left as a gap in the timeline (see
+    /// The result as the display wants it: a backing vocal its source wrote in parentheses
+    /// moves onto the line's backing row (see `LyricsBackingParentheses`), and a synced sheet
+    /// gains a pause row for every interlude its provider left as a gap in the timeline (see
     /// `SyncedLyrics.withPauseInterludes`).
     ///
-    /// Done here rather than in the parsers because the gaps are a property of the sheet,
-    /// not of any one format — a word-synced TTML and a line-synced one both leave their
-    /// interludes implicit — and rather than in the views, because what the dots need is a
-    /// line: every index the display works with has to agree on it. The cached result is
-    /// left as parsed, so the rows are not written to disk twice over and a cache written
-    /// before this existed still gets them.
+    /// Done here rather than in the parsers because both are properties of the sheet, not of
+    /// any one format — every provider's payload spells backing vocals and interludes its own
+    /// way, and a word-synced TTML and a line-synced one both leave their interludes implicit
+    /// — and rather than in the views, because what the dots need is a line: every index the
+    /// display works with has to agree on it. Backing vocals are resolved first, because a line
+    /// left holding only a backing row has something to sing and is not an interlude. The
+    /// cached result is left as parsed, so the rows are not written to disk twice over and a
+    /// cache written before either pass existed still gets them.
     private static func forDisplay(_ result: LyricResult) -> LyricResult {
-        guard case let .synced(lyrics) = result else { return result }
-        return .synced(lyrics.withPauseInterludes())
+        switch result {
+        case let .synced(lyrics):
+            .synced(lyrics.convertingParenthesizedBackingVocals().withPauseInterludes())
+        case let .plain(lyrics):
+            .plain(lyrics.removingParenthesizedBackingVocals())
+        case .unavailable:
+            result
+        }
     }
 
     private static func source(of result: LyricResult) -> String? {

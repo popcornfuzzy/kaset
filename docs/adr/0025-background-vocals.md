@@ -175,6 +175,76 @@ like the fill they sit among. Their rise now comes from the shared playback
 clock, which stops when the app is paused, where the dot's own timeline used to
 keep running to the display's refresh rate.
 
+## Amendment: backing vocals written in parentheses
+
+Modelling backing vocals structurally fixed the rows, but not every source marks
+one. The ones that do not spell it with **parentheses**, and the parentheses
+reached the screen — either as a dimmed backing row printing its own bracket, or
+as text in the middle of a lyric line. Reading the providers' live payloads shows
+where each of them stands:
+
+- **Unison, BetterLyrics and Paxsenix all serve Apple Music TTML**, and Apple's
+  marker keeps the punctuation *inside* the span it marks:
+  `<span ttm:role="x-bg"><span>(Yes)</span></span>` (Espresso), and for a phrase
+  sung over the lead, `<span ttm:role="x-bg"><span>(Dancin'</span> …
+  <span>own)</span></span>` (Shake It Off). Parsing that markup faithfully — which
+  is what `TTMLParser` does — produces a backing row reading `(Yes)`, brackets
+  included.
+- **KuGo's LRC marks nothing at all** and puts the phrase in the words of the
+  line: `[00:47.21]You smart (you smart) 누가 You are` (Kill This Love). The
+  parentheses are the entire signal. Its metadata lines (`[ti:Espresso
+  (Explicit)]`) are a different matter and are already stripped by
+  `KuGoProvider.normalize`.
+- **LRCLib's submissions** use the same convention in two shapes — a whole line
+  of ad-lib (`(Holy shit)`, `(Oh-oh-oh-oh-oh)`) and a leading phrase
+  (`(You got to) shake it off`).
+- **Paxsenix only leaks them through TTML.** Its ELRC spells backing vocals as
+  `[bg: <00:55.644>Yes<00:56.286>]` lines with no brackets — dropped today, since
+  the format has no line-level timestamp for them — and its `content` array flags
+  them with `background: true` and clean text (`Yes`, not `(Yes)`).
+
+The parenthesis is therefore not something to display, it is the instruction: the
+phrase belongs on the backing row, without it. `LyricsBackingParentheses` reads
+them out, and `SyncedLyricsService.forDisplay` applies it to every result before
+it reaches the panel — ahead of `withPauseInterludes`, because a line left holding
+only a backing row has something to sing and is not an interlude.
+
+- **Backing text the provider already modelled** (`backgroundWords`) only loses the
+  parentheses: `(Yes)` reads `Yes`, and `(Dancin'` … `own)` becomes `Dancin' on my
+  own`. The words keep their own onsets, and a syllable continuation that
+  legitimately has no leading space is not given one.
+- **A phrase in a line-synced line's text** becomes one backing word over that
+  line's own window. The words were never timed apart from the line, so nothing
+  finer is known and nothing finer is invented — the same reasoning
+  `KaraokeFillModel.backgroundWords(for:)` already uses for a line-level payload.
+- **A phrase in a word-timed line** keeps the onset of the word that opened it, and
+  the scan carries its depth across the whole word list: a phrase that opens in one
+  word and closes in another (`(you` … `smart)`) is one phrase with one onset, and a
+  word the phrase cuts in half keeps what is left of it. The two representations of
+  a line must never disagree, because karaoke draws the words while everything else
+  reads the text, so a word-timed line's text is rebuilt from the words that remain.
+- **A line that was nothing else** (`(Oh-oh-oh-oh-oh)`) keeps its row as a
+  backing-only line and shows no lead text — it is exactly the shape a Paxsenix
+  `background` line already has, and `isSilent` already reads it as sung rather than
+  as a pause.
+- **A phrase that names part of the sheet** — `(Chorus)`, `(Pre-Chorus 2)`, `(x2)` —
+  is not a vocal: singing it on the backing row would be worse than not showing it,
+  so it is dropped. A line left with nothing after that (a bare `(Chorus)`) loses its
+  line.
+- **A plain sheet has no backing row to move a phrase onto**, so there the phrase is
+  removed instead, and a line that was nothing but a phrase loses its line.
+  `LyricsParser`'s route to plain lyrics is currently commented out, which leaves
+  `LRCLibProvider`'s plain and Unison's plain submissions on this path.
+- **An opener a source never closed is not a phrase** — it did not finish what it
+  started — so its text stays in the lyric rather than disappearing from the sheet.
+
+It is a display-time pass, not a parse-time one, on the same grounds as the pause
+rows: it is a property of the sheet rather than of a format (five providers, three
+shapes of payload), and every index the display works with has to see the result. It
+also means the lyrics cache schema version does not move: the cache still holds what
+the provider returned, and a song cached before this amendment gets the conversion
+when it is next displayed.
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
