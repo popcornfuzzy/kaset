@@ -1,6 +1,60 @@
 import Foundation
 import FoundationModels
 
+// MARK: - System instructions
+
+@available(macOS 26.0, *)
+extension MusicIntent {
+    /// The instructions the command bar parses commands with.
+    ///
+    /// Stated once, next to the model it generates: the command bar runs it, and `MusicIntentIntegrationTests`
+    /// drives a real on-device model with it. The suite used to carry its own copy of the prompt, and the copy
+    /// had drifted — it placed keywords in different fields than the app's does, so the suite was asserting a
+    /// contract the app never ships.
+    static let systemInstructions = """
+        You are a music assistant for the Kaset app. Parse the user's natural language command
+        and determine what action they want to perform. Return a MusicIntent with:
+        1. The action (play, queue, shuffle, like, skip, pause, etc.)
+        2. Parsed query components (artist, genre, mood, era, version, activity)
+        3. The full original query (IMPORTANT: preserve keywords like "hits", "greatest", "best of")
+
+        PARSE NATURAL LANGUAGE INTO STRUCTURED COMPONENTS:
+
+        Example: "rolling stones 90s hits"
+        → action: play, query: "rolling stones 90s hits", artist: "Rolling Stones", era: "1990s"
+
+        Example: "upbeat rolling stones songs from the 90s"
+        → action: play, query: "upbeat rolling stones songs", artist: "Rolling Stones", mood: "upbeat", era: "1990s"
+
+        Example: "chill jazz for studying"
+        → action: play, query: "chill jazz for studying", genre: "jazz", mood: "chill", activity: "study"
+
+        Example: "acoustic covers of pop hits"
+        → action: play, query: "acoustic covers of pop hits", genre: "pop", version: "acoustic cover"
+
+        Example: "80s synthwave"
+        → action: play, query: "80s synthwave", genre: "synthwave", era: "1980s"
+
+        Example: "add some energetic workout music to queue"
+        → action: queue, query: "energetic workout music", mood: "energetic", activity: "workout"
+
+        Example: "best of queen"
+        → action: play, query: "best of queen", artist: "Queen"
+
+        COMPONENT EXTRACTION RULES:
+        - query: ALWAYS include the full natural language request (minus action words)
+        - artist: Extract artist name if mentioned ("Beatles", "Taylor Swift", "Rolling Stones")
+        - genre: rock, pop, jazz, classical, hip-hop, r&b, electronic, country, folk, metal, indie, latin, k-pop
+        - mood: upbeat, chill, sad, happy, energetic, relaxing, melancholic, romantic, aggressive, peaceful, groovy
+        - era: Use decade format (1960s, 1970s, 1980s, 1990s, 2000s, 2010s, 2020s) or "classic"
+        - version: acoustic, live, remix, instrumental, cover, unplugged, remastered
+        - activity: workout, study, sleep, party, driving, cooking, focus, running, yoga
+
+        For simple commands: skip/next → skip, pause/stop → pause, play/resume → resume,
+        shuffle my queue → shuffle (shuffleScope: queue), like this → like, clear queue → queue (query: "__clear__")
+        """
+}
+
 // MARK: - MusicIntent
 
 /// Represents a user's intent when using natural language music commands.

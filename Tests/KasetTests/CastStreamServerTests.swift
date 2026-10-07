@@ -22,7 +22,10 @@ struct CastStreamServerTests {
         // The receiver dials in first and the audio follows, which is the order the Cast device hits:
         // it loads the URL, keeps the connection open, and waits for Kaset to play something.
         let streaming = Task { @MainActor in
-            let (bytes, response) = try await URLSession.shared.bytes(for: URLRequest(url: url, timeoutInterval: 5))
+            // Generous, like the wait below: every step of this test — the accept, the request parse, the
+            // response — runs on the main actor, so a request that shares the machine with the rest of the
+            // suite can be a long way behind the client that sent it.
+            let (bytes, response) = try await URLSession.shared.bytes(for: URLRequest(url: url, timeoutInterval: 30))
             let http = try #require(response as? HTTPURLResponse)
             #expect(http.statusCode == 200)
             #expect(http.value(forHTTPHeaderField: "Content-Type") == "audio/aac")
@@ -31,8 +34,16 @@ struct CastStreamServerTests {
             return try await self.receive(byteCount: audio.count, from: bytes)
         }
 
-        try await self.waitUntil { server.streamingClientCount > 0 }
-        #expect(server.streamingClientCount == 1)
+        // The shared rendezvous, which reports a timeout as its own failure: the suite used to have a
+        // private wait that returned silently when it gave up, so a receiver that never connected showed up
+        // as "the count is not 1" — the wrong statement about the wrong thing.
+        await waitUntil("the receiver to be connected and streaming", timeout: .seconds(20)) {
+            server.streamingClientCount > 0
+        }
+        #expect(
+            server.streamingClientCount == 1,
+            "the server is streaming to \(server.streamingClientCount) clients, and this test opens one"
+        )
         server.enqueue(audio)
 
         #expect(try await streaming.value == audio)
@@ -81,18 +92,5 @@ struct CastStreamServerTests {
             if received.count >= byteCount { break }
         }
         return received
-    }
-
-    /// Waits for a condition, so tests do not race the server's connection handling.
-    @MainActor
-    private func waitUntil(
-        timeout: Duration = .seconds(5),
-        _ condition: @MainActor () -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
     }
 }

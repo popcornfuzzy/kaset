@@ -22,8 +22,16 @@ struct ArtistDetailViewModelTests {
         SongActionsHelper.artistLibraryReconciliationRetryDelays = [.milliseconds(1), .milliseconds(1)]
     }
 
+    /// Waits for the artist library reconciliation to settle.
+    ///
+    /// It runs in its own task, so a fixed sleep is a guess about the machine: under the full suite — every
+    /// test in parallel, on the same main actor — the refresh had not run yet when the assertions did, and the
+    /// test failed on timing rather than on behaviour. This waits for the work itself, and reports a
+    /// reconciliation that never settles as its own failure.
     private func awaitArtistReconciliation() async {
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the artist library reconciliation to settle", timeout: .seconds(5)) {
+            !SongActionsHelper.isReconcilingArtistLibrary
+        }
     }
 
     // MARK: - Initial State Tests

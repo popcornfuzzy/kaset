@@ -27,8 +27,13 @@ struct SongActionsHelperTests {
         SongActionsHelper.artistLibraryReconciliationRetryDelays = [.milliseconds(1), .milliseconds(1)]
     }
 
+    /// Waits for the artist library reconciliation to settle (see `ArtistDetailViewModelTests`): the work runs
+    /// in its own task, so waiting for it is what makes these assertions about the reconciliation rather than
+    /// about how fast the machine happened to be.
     private func awaitArtistReconciliation() async {
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the artist library reconciliation to settle", timeout: .seconds(5)) {
+            !SongActionsHelper.isReconcilingArtistLibrary
+        }
     }
 
     @Test("addPlaylistToLibrary keeps optimistic playlist when refresh response is stale")

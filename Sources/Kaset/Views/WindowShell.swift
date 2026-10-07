@@ -238,6 +238,7 @@ final class WindowShellController: NSSplitViewController {
         showsNowPlayingToggle: false,
         canGoBack: false,
         pageControls: nil,
+        sidebarHeader: nil,
         onBack: {},
         onAI: {}
     )

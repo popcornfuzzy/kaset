@@ -17,23 +17,23 @@ import Testing
 /// 2. **Relaxed matching**: Checks multiple fields (e.g., mood OR query) for expected content
 /// 3. **Case-insensitive**: All string comparisons are lowercased
 /// 4. **Fresh sessions**: Each attempt uses a new `LanguageModelSession` to avoid context drift
+/// 5. **The app's own prompt**: the session is given `MusicIntent.systemInstructions` — the instructions the
+///    command bar ships — rather than a copy of them. It used to carry a copy, and the copy had drifted: it
+///    told the model to put the search text in `query` only when it was a song or artist name, where the app
+///    tells it to keep the *whole* request there. So the suite asserted a contract the app never shipped, and
+///    two of its assertions failed against a model that was in fact doing exactly what the app asks for.
 ///
 /// ## Running These Tests
 ///
-/// Run only integration tests:
+/// These tests call the machine's on-device model and take ~4s each, so they are **opt-in** and are skipped
+/// by a plain `swift test` (see `IntegrationTestGate`). Run them deliberately:
 /// ```bash
-/// xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-///   -only-testing:KasetTests/MusicIntentIntegrationTests
-/// ```
-///
-/// Run all unit tests (integration tests auto-skip if AI unavailable):
-/// ```bash
-/// xcodebuild test -scheme Kaset -destination 'platform=macOS' \
-///   -only-testing:KasetTests
+/// KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter MusicIntentIntegrationTests
 /// ```
 @Suite(
     .tags(.integration, .slow),
     .serialized,
+    .enabled(if: IntegrationTestGate.isEnabled, IntegrationTestGate.requirement),
     .enabled(if: SystemLanguageModel.default.availability == .available, "Apple Intelligence required")
 )
 @MainActor
@@ -43,23 +43,9 @@ struct MusicIntentIntegrationTests {
     /// Maximum number of retry attempts for flaky LLM calls.
     private static let maxRetries = 3
 
-    /// System prompt for intent parsing - provides clear field definitions for consistent parsing.
-    private static let systemPrompt = """
-    Parse music commands into MusicIntent. Be precise about field placement:
-
-    Actions: play, queue, shuffle, like, dislike, skip, previous, pause, resume, search
-
-    Fields (use exact field for each concept):
-    - query: The raw search text or song/artist name
-    - artist: Specific artist/band name (e.g., "Beatles", "Taylor Swift")
-    - genre: Music genre (rock, jazz, hip-hop, classical, electronic, pop, country)
-    - mood: Emotional quality (upbeat, chill, sad, happy, energetic, relaxing, melancholic)
-    - era: Time period (1980s, 1990s, 2000s, classic)
-    - version: Recording type (acoustic, live, remix, instrumental, cover)
-    - activity: What user is doing (workout, study, sleep, party, driving, cooking, focus, running, yoga)
-
-    IMPORTANT: "for studying", "for workout", "for sleep" → put in activity field, not mood.
-    """
+    /// The instructions the app itself parses commands with. Not a copy: the tests are about the prompt the
+    /// command bar ships, and a copy is free to drift from it (see the suite's documentation).
+    private static let systemPrompt = MusicIntent.systemInstructions
 
     // MARK: - Test Helpers
 

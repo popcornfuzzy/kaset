@@ -10,6 +10,16 @@ enum SongActionsHelper {
 
     private static var artistLibraryReconciliationTasks: [String: Task<Void, Never>] = [:]
 
+    /// Whether an artist library reconciliation is still running.
+    ///
+    /// The reconciliations are their own tasks (they wait for backend propagation, refresh the library and
+    /// may reapply the optimistic state), so a reader that needs to know the work has settled has to ask
+    /// about the work. The suites that drive them do exactly that instead of sleeping a fixed duration and
+    /// hoping the machine was fast enough (`ArtistDetailViewModelTests.awaitArtistReconciliation`).
+    static var isReconcilingArtistLibrary: Bool {
+        !self.artistLibraryReconciliationTasks.isEmpty
+    }
+
     private static func artistLibraryAliases(for artist: Artist, channelId: String) -> [String] {
         var ids = Set([channelId, artist.id])
         if let publicChannelId = artist.publicChannelId {

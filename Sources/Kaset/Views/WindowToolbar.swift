@@ -1,6 +1,64 @@
 import AppKit
 import SwiftUI
 
+// MARK: - NowPlayingSidebarToolbarHeader
+
+/// The Now Playing column's own header: back to the overview, and the name of the page being shown.
+///
+/// The column's expanded pages used to draw this header inside the column, just below the window's
+/// toolbar. That band is the window's chrome, not the column's layout: content cannot be laid out in it,
+/// so every page carried a strip of empty column between the toolbar and its first row while the toolbar
+/// row itself held nothing but the toggle. Stating the header as a toolbar item puts it where a macOS
+/// sidebar keeps its controls — in the band above the column — and lets the page's content begin at the
+/// top of the column, with no gap above it.
+@available(macOS 26.0, *)
+struct NowPlayingSidebarToolbarHeader {
+    /// The page's name, drawn beside the back control.
+    let title: String
+    /// Returns the column to its overview. The column's own page state is the app's, so the action is a
+    /// closure rather than a selector.
+    let onBack: () -> Void
+}
+
+// MARK: - NowPlayingSidebarToolbarHeaderView
+
+/// The column's header as the toolbar draws it: the back chevron and the page's name.
+///
+/// Deliberately the same shape the header had inside the column — a quiet chevron and a semibold label —
+/// so moving it into the toolbar does not change what the reader reads.
+@available(macOS 26.0, *)
+struct NowPlayingSidebarToolbarHeaderView: View {
+    let header: NowPlayingSidebarToolbarHeader
+
+    var body: some View {
+        // One control, not a glyph beside a label: the whole capsule is the target, so the name is as
+        // clickable as the chevron. `contentShape` inside the label — after the padding — is what makes the
+        // item's own inset part of the button rather than dead glass around it.
+        Button(action: self.header.onBack) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+
+                Text(self.header.title)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            // The toolbar draws its glass capsule behind the item's *content*, so this inset is what keeps
+            // the chevron and the name off the capsule's own edge. The controls that share the toolbar
+            // (search field, menus, buttons) carry their own padding; a header that is only a glyph and a
+            // label has none of its own, and without this the capsule hugged both.
+            .padding(.horizontal, 10)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(String(localized: "Back to Now Playing"))
+        .accessibilityLabel(String(localized: "Back to Now Playing"))
+        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.backButton)
+    }
+}
+
 // MARK: - WindowToolbarItems
 
 /// What the window's toolbar shows: the app's own items, and whether the regions AppKit owns are in play.
@@ -24,6 +82,9 @@ struct WindowToolbarItems {
     var canGoBack: Bool
     /// The page's own controls (search, sort, refresh), or `nil` while the page on screen has none.
     var pageControls: PageToolbarContribution?
+    /// The Now Playing column's header, or `nil` while the column is closed or is showing its overview:
+    /// the overview *is* the top of the column, so it needs no header of its own.
+    var sidebarHeader: NowPlayingSidebarToolbarHeader?
     var onBack: () -> Void
     var onAI: () -> Void
 
@@ -76,6 +137,12 @@ struct WindowToolbarItems {
         // belongs there — would have nowhere to go.
         if self.tracksColumn {
             identifiers.append(.inspectorTrackingSeparator)
+            // The column's own header, at the leading edge of the region above the column — where the
+            // column begins — so the flexible space that follows pushes only the toggle to the window's
+            // trailing edge.
+            if self.sidebarHeader != nil {
+                identifiers.append(WindowToolbarItem.sidebarHeader)
+            }
         }
         if self.showsNowPlayingToggle {
             // A flexible space per region: with the column open the toggle's region is the inspector's,
@@ -109,6 +176,8 @@ enum WindowToolbarItem {
     static let pageControls = NSToolbarItem.Identifier("Kaset.toolbar.page")
     /// The toggle that opens the Now Playing sidebar, shown while it is closed.
     static let nowPlaying = NSToolbarItem.Identifier("Kaset.toolbar.nowPlaying")
+    /// The Now Playing column's header (back and page name), shown while one of its pages is open.
+    static let sidebarHeader = NSToolbarItem.Identifier("Kaset.toolbar.sidebarHeader")
 }
 
 // MARK: - WindowToolbarController
@@ -142,12 +211,16 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     /// The hosting view of the page's controls. Held so the page can update them in place: the item is
     /// AppKit's, the content is the page's, and only the latter changes as the reader works.
     private var pageControlsView: NSHostingView<AnyView>?
+    /// The hosting view of the Now Playing column's header, held for the same reason: opening a different
+    /// page of the column changes the name in the header, not the item it lives in.
+    private var sidebarHeaderView: NSHostingView<AnyView>?
     private var items = WindowToolbarItems(
         tracksColumn: false,
         showsAI: false,
         showsNowPlayingToggle: false,
         canGoBack: false,
         pageControls: nil,
+        sidebarHeader: nil,
         onBack: {},
         onAI: {}
     )
@@ -156,7 +229,14 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     func apply(items: WindowToolbarItems, onAI: @escaping () -> Void) {
         self.items = items
         self.pageControlsView?.rootView = items.pageControls?.content ?? AnyView(EmptyView())
+        self.sidebarHeaderView?.rootView = Self.sidebarHeaderContent(for: items.sidebarHeader)
         self.refresh()
+    }
+
+    /// The column's header, as the hosted view it is drawn by.
+    private static func sidebarHeaderContent(for header: NowPlayingSidebarToolbarHeader?) -> AnyView {
+        guard let header else { return AnyView(EmptyView()) }
+        return AnyView(NowPlayingSidebarToolbarHeaderView(header: header))
     }
 
     /// Gives the window the app's toolbar, or takes back the one this app already installed.
@@ -213,24 +293,34 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
         self.refresh()
     }
 
-    /// Re-points the toolbar's page-controls item at this controller's current content.
+    /// Re-points the toolbar's hosted items at this controller's current content.
     ///
     /// AppKit keeps the items of a toolbar that is already in a window and only asks its delegate for the
-    /// ones it does not have. A toolbar the app re-takes therefore comes with whatever page-controls item
-    /// was built before, which would otherwise keep drawing the old page's controls for good.
+    /// ones it does not have. A toolbar the app re-takes therefore comes with whatever hosted item was
+    /// built before, which would otherwise keep drawing the old page's controls for good.
     private func rehostPageControls(in toolbar: NSToolbar) {
-        guard let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageControls })
-        else {
-            return
+        if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageControls }) {
+            let host = item.view as? NSHostingView<AnyView> ?? {
+                let created = NSHostingView(rootView: self.items.pageControls?.content ?? AnyView(EmptyView()))
+                created.sizingOptions = [.intrinsicContentSize]
+                item.view = created
+                return created
+            }()
+            host.rootView = self.items.pageControls?.content ?? AnyView(EmptyView())
+            self.pageControlsView = host
         }
-        let host = item.view as? NSHostingView<AnyView> ?? {
-            let created = NSHostingView(rootView: self.items.pageControls?.content ?? AnyView(EmptyView()))
-            created.sizingOptions = [.intrinsicContentSize]
-            item.view = created
-            return created
-        }()
-        host.rootView = self.items.pageControls?.content ?? AnyView(EmptyView())
-        self.pageControlsView = host
+
+        if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.sidebarHeader }) {
+            let content = Self.sidebarHeaderContent(for: self.items.sidebarHeader)
+            let host = item.view as? NSHostingView<AnyView> ?? {
+                let created = NSHostingView(rootView: content)
+                created.sizingOptions = [.intrinsicContentSize]
+                item.view = created
+                return created
+            }()
+            host.rootView = content
+            self.sidebarHeaderView = host
+        }
     }
 
     /// Whether the window's current toolbar is the one this controller installed.
@@ -298,6 +388,7 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             WindowToolbarItem.ai,
             WindowToolbarItem.pageControls,
             .inspectorTrackingSeparator,
+            WindowToolbarItem.sidebarHeader,
             WindowToolbarItem.nowPlaying,
         ]
     }
@@ -347,6 +438,18 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
             self.pageControlsView = host
+            return item
+
+        case WindowToolbarItem.sidebarHeader:
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            // A hosted SwiftUI group rather than AppKit controls built by hand, for the same reason the
+            // page's controls are: the header is the column's own view of the app's state, and hosting it
+            // keeps one implementation of it (`NowPlayingSidebarToolbarHeaderView`) rather than a second
+            // one written against AppKit.
+            let host = NSHostingView(rootView: Self.sidebarHeaderContent(for: self.items.sidebarHeader))
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            self.sidebarHeaderView = host
             return item
 
         case WindowToolbarItem.nowPlaying:

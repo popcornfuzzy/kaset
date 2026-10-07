@@ -18,7 +18,8 @@ struct WindowToolbarLayoutTests {
         showsAI: Bool = false,
         showsNowPlayingToggle: Bool = false,
         canGoBack: Bool = false,
-        hasPageControls: Bool = false
+        hasPageControls: Bool = false,
+        hasSidebarHeader: Bool = false
     ) -> WindowToolbarItems {
         WindowToolbarItems(
             tracksColumn: tracksColumn,
@@ -27,6 +28,9 @@ struct WindowToolbarLayoutTests {
             canGoBack: canGoBack,
             pageControls: hasPageControls
                 ? PageToolbarContribution(id: "test", content: AnyView(EmptyView()))
+                : nil,
+            sidebarHeader: hasSidebarHeader
+                ? NowPlayingSidebarToolbarHeader(title: "Up Next", onBack: {})
                 : nil,
             onBack: {},
             onAI: {}
@@ -115,6 +119,59 @@ struct WindowToolbarLayoutTests {
         #expect(!self.items(tracksColumn: true).identifiers.contains(WindowToolbarItem.pageControls))
     }
 
+    @Test("The column's header leads the region above the column, and the toggle still trails it")
+    func sidebarHeaderLeadsTheColumnRegion() throws {
+        let identifiers = self.items(
+            tracksColumn: true,
+            showsNowPlayingToggle: true,
+            hasSidebarHeader: true
+        ).identifiers
+        let separator = try #require(identifiers.firstIndex(of: .inspectorTrackingSeparator))
+        let header = try #require(identifiers.firstIndex(of: WindowToolbarItem.sidebarHeader))
+        #expect(header == separator + 1, "the column's header must lead the region above the column")
+        // The header is not part of a right-aligned run, so the flexible space after it still pushes only
+        // the toggle to the window's trailing edge.
+        let space = try #require(identifiers.firstIndex(of: .flexibleSpace))
+        let toggle = try #require(identifiers.firstIndex(of: WindowToolbarItem.nowPlaying))
+        #expect(header < space)
+        #expect(space < toggle)
+        #expect(identifiers.filter { $0 == .flexibleSpace }.count == 1)
+    }
+
+    @Test("The column's header item is a hosted view, and the header it draws has a size")
+    func sidebarHeaderIsHosted() throws {
+        let controller = WindowToolbarController()
+        let item = try #require(
+            controller.toolbar(
+                NSToolbar(identifier: NSToolbar.Identifier("Kaset.tests.header")),
+                itemForItemIdentifier: WindowToolbarItem.sidebarHeader,
+                willBeInsertedIntoToolbar: true
+            )
+        )
+        #expect(item.view is NSHostingView<AnyView>)
+
+        // The header is the same shape the column used to draw itself, so it must lay out to more than
+        // nothing — a hosted view that collapses to zero width is an item the toolbar would draw as a gap.
+        let host = NSHostingView(
+            rootView: NowPlayingSidebarToolbarHeaderView(
+                header: NowPlayingSidebarToolbarHeader(title: "Up Next", onBack: {})
+            )
+        )
+        host.layout()
+        #expect(host.fittingSize.width > 20)
+        #expect(host.fittingSize.height > 10)
+    }
+
+    @Test("No column header without a page of the column, and none while the column is closed")
+    func noSidebarHeaderWithoutAPage() {
+        #expect(!self.items(tracksColumn: true).identifiers.contains(WindowToolbarItem.sidebarHeader))
+        // A closed column has no region above it, so the header has nowhere to be drawn.
+        #expect(
+            !self.items(hasSidebarHeader: true).identifiers.contains(WindowToolbarItem.sidebarHeader),
+            "a header was stated for a column that is not open"
+        )
+    }
+
     @Test("The AI button and the page's controls share one right-aligned run, AI first")
     func sharedRightAlignedRun() throws {
         let identifiers = self.items(showsAI: true, hasPageControls: true).identifiers
@@ -140,6 +197,25 @@ struct WindowToolbarLayoutTests {
     func loneControlKeepsNoSeparator() {
         #expect(!self.items(hasPageControls: true).identifiers.contains(.space))
         #expect(!self.items(showsAI: true).identifiers.contains(.space))
+    }
+}
+
+/// The name the Now Playing column's header shows, per page.
+///
+/// The column draws no header of its own any more, so this is what the toolbar puts in the band above the
+/// column — and the overview must state none, because it *is* the top of the column: there is nothing
+/// above it to go back to, and no name to label it with.
+@Suite("Now Playing column header titles")
+@MainActor
+struct NowPlayingSidebarHeaderTitleTests {
+    @Test("Every page but the overview names itself")
+    func pageTitles() {
+        #expect(NowPlayingSidebarPage.overview.toolbarTitle == nil)
+        #expect(NowPlayingSidebarPage.lyrics.toolbarTitle != nil)
+        #expect(NowPlayingSidebarPage.queue.toolbarTitle != nil)
+        // Two pages, two names: a header that showed the same word for both would not say where the
+        // reader is.
+        #expect(NowPlayingSidebarPage.lyrics.toolbarTitle != NowPlayingSidebarPage.queue.toolbarTitle)
     }
 }
 

@@ -348,9 +348,11 @@ struct NowPlayingSidebarView: View {
 
     @ViewBuilder
     private var lyricsPage: some View {
+        // No header of its own: the back control and this page's name are the window toolbar's, in the
+        // band above the column (`NowPlayingSidebarToolbarHeader`). A header drawn here would sit *below*
+        // that band — the band is the window's chrome, so content cannot be laid out in it — which is what
+        // left a strip of empty column above every page while only the artwork filled it.
         VStack(spacing: 0) {
-            self.pageHeader(title: String(localized: "Lyrics"))
-
             switch self.lyricsState {
             case .noTrack:
                 LyricsStateView(
@@ -421,11 +423,10 @@ struct NowPlayingSidebarView: View {
 
     @ViewBuilder
     private var queuePage: some View {
+        // The column's own header is the toolbar's (see `lyricsPage`), so the queue starts at the top of
+        // the column: its rows run from the toolbar band's bottom edge down to the footer.
         VStack(spacing: 0) {
-            self.pageHeader(title: String(localized: "Up Next"))
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
-
-            // The queue's own header would be a second title under this page's header, and its card
+            // The queue's own header would be a second title under the column's header, and its card
             // chrome belongs to the floating panel — everything else (automix chips, reordering,
             // undo/redo, clear) is the same queue the classic panel shows.
             //
@@ -442,34 +443,6 @@ struct NowPlayingSidebarView: View {
             .padding(.horizontal, NowPlayingSidebarLayout.padding)
             .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.queuePage)
         }
-    }
-
-    /// Header of an expanded page: back to the overview, and where you are.
-    private func pageHeader(title: String) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                withAnimation(AppAnimation.standard) {
-                    self.playerService.setNowPlayingSidebarPage(.overview)
-                }
-            } label: {
-                Image(systemName: "chevron.backward")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help(String(localized: "Back to Now Playing"))
-            .accessibilityLabel(String(localized: "Back to Now Playing"))
-            .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.backButton)
-
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-
-            Spacer(minLength: 0)
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 6)
     }
 
     // MARK: - Section Header

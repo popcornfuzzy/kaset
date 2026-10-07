@@ -123,6 +123,25 @@ minimum follows the width the split view actually has, down to `WindowShellLayou
 `NowPlayingSidebarColumnGeometry.ceiling`. The window's own minimum stays the number its owner stated,
 and the requirement is satisfiable at every width.
 
+### The column's pages have no header of their own
+
+The lyrics and queue pages first drew the "back to Now Playing" chevron and the page's name
+*themselves*, just below the window's toolbar. That band is the window's chrome — content cannot be
+laid out in it — so the whole band above a page was empty column, and only the overview filled it
+(with the artwork, which is decoration and may sit under the toolbar). The header is the toolbar's
+now: `WindowToolbarItem.sidebarHeader` sits at the leading edge of the region above the column and is
+drawn by `NowPlayingSidebarToolbarHeaderView` (back chevron plus the page's name, the same shape the
+in-column header had). It is the rule the collapse toggle already followed — the column's controls live
+in the band above it — applied to the pages, and it is stated as an *item* rather than as text drawn on
+the backdrop so the control stays clickable: what the toolbar draws, AppKit hit-tests.
+
+`NowPlayingSidebarPage.toolbarTitle` is what the header shows (`nil` for `overview`, which *is* the top
+of the column and has nothing above it to go back to), so the column's page state and its toolbar are
+one statement. The pages therefore begin at the top of the column: the queue's rows run from the band's
+bottom edge down to the footer, and the lyric sheet from the same line. The window title's own slot is
+untouched — it is given up to the *page's* back control while the page can pop, and the column's header
+is a separate item in the column's own region.
+
 ### The page's own controls are toolbar items, bounded by the column
 
 When the column was laid out by SwiftUI, the playlist's search/sort/refresh (and the Library/History
@@ -191,7 +210,9 @@ The column's chrome is deliberately the album art, not a panel:
   The artwork itself is pulled up over the toolbar band by the inset the column measures
   (`NowPlayingSidebarView.topInset`, the difference between the pane's top edge and its content's):
   reaching the top edge is a *property of the artwork*, not of the page, so only the artwork ignores
-  the inset and the expanded pages' headers keep their place below the toolbar.
+  the inset. The expanded pages start at the top of the column's content instead — their back control
+  and name are toolbar items in the band above the column, never inside it (see *The column's pages
+  have no header of their own*).
 - **The background is a blurred copy of the cover** (`NowPlayingSidebarBackground`), filling the whole
   column. A blur — rather than a palette extracted from the cover — keeps the image's structure, so
   the column reads as one surface made of the album instead of a picture on a flat tint. A gradient

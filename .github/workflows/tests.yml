@@ -96,8 +96,12 @@ jobs:
 
       # LLM output is non-deterministic, so these are never a merge gate: they
       # run nightly and on demand, and may need a re-run. See docs/testing.md.
+      #
+      # KASET_INTEGRATION_TESTS is what asks for the suite: it costs ~66s of
+      # on-device model calls, so a plain `swift test` skips it
+      # (IntegrationTestGate) and this job has to opt in.
       - name: Run integration tests
-        run: 'swift test -q --no-parallel --filter "MusicIntentIntegrationTests"'
+        run: 'KASET_INTEGRATION_TESTS=1 swift test -q --no-parallel --filter "MusicIntentIntegrationTests"'
 
   macos_ui_tests:
     name: macOS UI Tests

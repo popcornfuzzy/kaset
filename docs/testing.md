@@ -148,6 +148,8 @@ await waitUntil("the like to be cached") { manager.status(for: song.videoId, acc
 let second = Task { await manager.unlike(song, accountID: accountID, client: mockClient, debounce: window) }
 ```
 
+When the work runs in a task of its own — the artist library reconciliation does, since it waits out backend propagation — wait for *that* to finish rather than for a duration. `SongActionsHelper.isReconcilingArtistLibrary` exists for exactly this, and the suites that drive the reconciliation wait on it (`ArtistDetailViewModelTests.awaitArtistReconciliation`, `SongActionsHelperTests.awaitArtistReconciliation`) instead of the 50ms sleep that used to let a loaded machine fail the test on timing.
+
 A sleep is still the right tool for asserting that something *did not* happen — `#expect(self.mockClient.rateSongCalled == false)` has no event to wait for. Say so in a comment, so it is not mistaken for a rendezvous.
 
 ### Test Tags
@@ -384,7 +386,11 @@ The `MusicIntentIntegrationTests` suite validates LLM parsing of natural languag
 #### Requirements
 
 - macOS 26+ with Apple Intelligence enabled
-- Tests skip gracefully when AI is unavailable via `throw TestSkipped()`
+- **Opt-in**: `KASET_INTEGRATION_TESTS=1`, because each test costs seconds of on-device model calls. A plain
+  `swift test` skips the suite with that as its stated reason (`IntegrationTestGate`), which is what keeps the
+  default run at ~36s instead of ~87s — and the model load itself is what used to make timing-sensitive suites
+  elsewhere in the same run flake (the local Cast stream server, the artist library reconciliation)
+- Tests also skip themselves when AI is unavailable (`.enabled(if: SystemLanguageModel.default.availability == .available, ...)`)
 
 #### Flakiness Mitigation
 
@@ -394,7 +400,12 @@ LLM outputs are inherently non-deterministic. These tests mitigate flakiness by:
 2. **Relaxed matching**: Checks multiple fields (e.g., `mood` OR `query`) for expected content
 3. **Case-insensitive**: All string comparisons are lowercased
 4. **Fresh sessions**: Each attempt uses a new `LanguageModelSession` to avoid context drift
-5. **Excluded from CI**: the unit-test jobs skip this suite by name (see [CI Configuration](#ci-configuration))
+5. **The app's own prompt**: the session is given `MusicIntent.systemInstructions` — the instructions the
+   command bar ships — rather than a copy. The copy had drifted: it told the model to put the search text in
+   `query` only when it was a song or artist name, where the app tells it to keep the *whole* request there. So
+   two assertions failed against a model that was doing exactly what the app asks for; they are the reason this
+   is one string in `MusicIntent.swift` rather than one in the app and one in the suite
+6. **Excluded from CI**: the unit-test jobs skip this suite by name (see [CI Configuration](#ci-configuration))
 
 #### CI Configuration
 
@@ -405,10 +416,10 @@ Non-deterministic or environment-dependent tests never gate a pull request or a 
 swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 ```
 
-The Apple Intelligence suite runs in the scheduled `macos_integration_tests` job (nightly and on `workflow_dispatch`), where a failure is a signal to investigate rather than a blocked merge:
+The Apple Intelligence suite runs in the scheduled `macos_integration_tests` job (nightly and on `workflow_dispatch`), where a failure is a signal to investigate rather than a blocked merge. The job sets the gate, since the suite is opt-in:
 
 ```bash
-swift test -q --no-parallel --filter "MusicIntentIntegrationTests"
+KASET_INTEGRATION_TESTS=1 swift test -q --no-parallel --filter "MusicIntentIntegrationTests"
 ```
 
 Other environment-dependent suites to keep out of the merge gate:
@@ -436,7 +447,7 @@ Other environment-dependent suites to keep out of the merge gate:
 
 ```bash
 # Run ONLY integration tests (requires Apple Intelligence)
-swift test --filter "MusicIntentIntegrationTests"
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "MusicIntentIntegrationTests"
 
 # Run the full unit suite the way CI does
 swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
@@ -445,6 +456,7 @@ swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 #### Test Characteristics
 
 - **Tagged**: `.integration` and `.slow` for easy filtering
+- **Opt-in**: `KASET_INTEGRATION_TESTS=1`; the suite is skipped otherwise, with that as its stated reason
 - **Auto-skip**: Uses `.enabled(if:)` to skip entire suite when AI unavailable
 - **Parameterized**: Efficient coverage with Swift Testing's `arguments:`
 - **Retry-enabled**: Up to 3 attempts per test to handle LLM non-determinism

@@ -15,4 +15,16 @@ enum NowPlayingSidebarPage: String, CaseIterable, Hashable, Sendable {
     case lyrics
     /// The next-song row opened into the full queue.
     case queue
+
+    /// The page's name, as the column's toolbar header shows it, or `nil` for the overview.
+    ///
+    /// The overview is the top of the column itself — artwork, lyric window, next song — so it has no name
+    /// to state and no header to state it in: nothing is above it to go back to.
+    var toolbarTitle: String? {
+        switch self {
+        case .overview: nil
+        case .lyrics: String(localized: "Lyrics")
+        case .queue: String(localized: "Up Next")
+        }
+    }
 }

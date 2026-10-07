@@ -625,6 +625,7 @@ struct MainWindow: View {
                 showsNowPlayingToggle: self.playerService.isNowPlayingSidebarEnabled,
                 canGoBack: self.pageNavigation.canGoBack,
                 pageControls: self.pageToolbar.contribution,
+                sidebarHeader: self.nowPlayingSidebarToolbarHeader,
                 onBack: { self.pageNavigation.goBack() },
                 onAI: { self.isCommandBarPresented = true }
             )
@@ -728,6 +729,23 @@ struct MainWindow: View {
             minInspectorWidth: Layout.nowPlayingSidebarMinWidth,
             maxInspectorWidth: Layout.nowPlayingSidebarMaxWidth
         )
+    }
+
+    /// The Now Playing column's header, or `nil` while the column is closed or is on its overview.
+    ///
+    /// The column draws no header of its own: its pages' back control and name are the window toolbar's,
+    /// in the region above the column, so a page's content starts at the top of the column instead of
+    /// below the strip of empty column the window's toolbar band used to leave above it.
+    private var nowPlayingSidebarToolbarHeader: NowPlayingSidebarToolbarHeader? {
+        guard self.playerService.isNowPlayingSidebarVisible,
+              let title = self.playerService.nowPlayingSidebarPage?.toolbarTitle
+        else { return nil }
+        return NowPlayingSidebarToolbarHeader(title: title) {
+            HapticService.toggle()
+            withAnimation(AppAnimation.standard) {
+                self.playerService.setNowPlayingSidebarPage(.overview)
+            }
+        }
     }
 
     /// The width the Now Playing sidebar opens at the first time this build runs.

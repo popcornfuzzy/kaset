@@ -45,6 +45,7 @@ struct WindowShellTitleTests {
                 showsNowPlayingToggle: false,
                 canGoBack: canGoBack,
                 pageControls: nil,
+                sidebarHeader: nil,
                 onBack: {},
                 onAI: {}
             ),
