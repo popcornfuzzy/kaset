@@ -476,14 +476,30 @@ struct PlayerServiceTests {
 
     // MARK: - Now Playing Sidebar Tests
 
-    @Test("Now Playing sidebar starts hidden")
-    func nowPlayingSidebarInitiallyHidden() {
-        #expect(self.playerService.nowPlayingSidebarPage == nil)
-        #expect(self.playerService.isNowPlayingSidebarVisible == false)
+    @Test("The launch state of the column follows which sidebar design is enabled")
+    func sidebarLaunchStateFollowsEnabledDesign() {
+        let previous = SettingsManager.shared.nowPlayingSidebarEnabled
+        defer { SettingsManager.shared.nowPlayingSidebarEnabled = previous }
+
+        // A reader on the classic panels gets a closed column at launch.
+        SettingsManager.shared.nowPlayingSidebarEnabled = false
+        let classic = PlayerService()
+        #expect(classic.nowPlayingSidebarPage == nil)
+        #expect(classic.isNowPlayingSidebarVisible == false)
+
+        // The sidebar design is the default, so the column is already open — before the window's
+        // first layout, which is why `PlayerService.init` states it rather than `MainWindow`.
+        SettingsManager.shared.nowPlayingSidebarEnabled = true
+        let sidebar = PlayerService()
+        #expect(sidebar.nowPlayingSidebarPage == .overview)
+        #expect(sidebar.isNowPlayingSidebarVisible)
     }
 
     @Test("First press opens the sidebar overview, the second expands the requested page")
     func toggleNowPlayingSidebarExpandsFromOverview() {
+        // The button's state machine starts from a closed column, whichever design launched it.
+        self.playerService.closeNowPlayingSidebar()
+
         self.playerService.toggleNowPlayingSidebar(page: .lyrics)
         #expect(self.playerService.nowPlayingSidebarPage == .overview)
 
@@ -497,6 +513,8 @@ struct PlayerServiceTests {
 
     @Test("Each transport button switches to its own page while the sidebar is open")
     func toggleNowPlayingSidebarSwitchesPages() {
+        self.playerService.closeNowPlayingSidebar()
+
         self.playerService.toggleNowPlayingSidebar(page: .lyrics)
         self.playerService.toggleNowPlayingSidebar(page: .lyrics)
         #expect(self.playerService.nowPlayingSidebarPage == .lyrics)

@@ -34,8 +34,19 @@ Three constraints shaped the design:
 
 Add a third right-sidebar design, the **Now Playing sidebar** (`NowPlayingSidebarView`), selected by
 `SettingsManager.nowPlayingSidebarEnabled`, surfaced as *Use Now Playing Sidebar* in General settings.
-It is **off by default**, so the classic panels remain the default experience and nothing about them
-changes for anyone who does not opt in.
+It is **on by default**: the column is the app's right sidebar out of the box, and the classic
+lyrics/queue panels are what a reader opts into.
+
+This started the other way round — the sidebar shipped **off**, so the existing panels could not
+change under anyone — and was flipped once the column had replaced the panels' own jobs (the queue
+is embedded in it, the lyric window is the same sheet) and its launch path was proven
+(`PlayerService.init` opens the column when the setting is on, so the window's first layout already
+has it). Worth stating because of how the default is *read*: `object(forKey:) as? Bool ?? true`
+means the sidebar is the behaviour for a reader who has **never touched the setting** (no stored
+key), while one who deliberately turned it off has a stored `false` and keeps the panels. The flip
+therefore reaches new and untouched profiles, not people who stated a preference — and the classic
+panels, their presentation state and the transport's lyrics/queue buttons all stay exactly as they
+were for them.
 
 ### A column, not a panel
 

@@ -629,6 +629,8 @@
 
 "This episode has no captions on YouTube, so there is no transcript to show." = "This episode has no captions on YouTube, so there is no transcript to show.";
 
+"This is the default. When off, the Lyrics and Queue buttons keep opening their own panels." = "This is the default. When off, the Lyrics and Queue buttons keep opening their own panels.";
+
 "Sign in to YouTube Music" = "Sign in to YouTube Music";
 
 "Transcript" = "Transcript";
@@ -744,8 +746,6 @@
 "What would you like to do?" = "What would you like to do?";
 
 "What's New in Kaset" = "What's New in Kaset";
-
-"When off, the Lyrics and Queue buttons keep opening their own panels." = "When off, the Lyrics and Queue buttons keep opening their own panels.";
 
 "When enabled, you can use natural language commands, AI-powered playlist refinement, and lyrics explanations." = "When enabled, you can use natural language commands, AI-powered playlist refinement, and lyrics explanations.";
 

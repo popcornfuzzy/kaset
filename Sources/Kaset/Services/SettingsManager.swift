@@ -428,8 +428,9 @@ final class SettingsManager {
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
-        // Default off: the classic lyrics/queue panels stay the default experience.
-        self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? false
+        // Default on: the sidebar is the app's right-sidebar design out of the box. A reader who
+        // prefers the classic lyrics/queue panels opts out and gets a stored `false` back.
+        self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? true
 
         self.nowPlayingSidebarWidth = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarWidth) as? Double ?? 380
         // Default off: the floating in-window mini player remains what the PiP button does.

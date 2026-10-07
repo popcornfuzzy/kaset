@@ -78,24 +78,34 @@ struct SettingsManagerTests {
         #expect(manager.preferAudioVersionsEnabled == true)
     }
 
-    @Test("Default nowPlayingSidebarEnabled is false")
+    @Test("Default nowPlayingSidebarEnabled is true")
     func defaultNowPlayingSidebarEnabled() {
-        // The classic lyrics/queue panels are the default experience, so the Now Playing sidebar is
-        // opt-in. Like the other default tests, this expects an unmodified UserDefaults.
+        // The Now Playing sidebar is the default right-sidebar design; the classic lyrics/queue
+        // panels are the opt-out. Like the other default tests, this expects an unmodified
+        // UserDefaults.
 
         let manager = SettingsManager.shared
-        #expect(manager.nowPlayingSidebarEnabled == false)
+        #expect(manager.nowPlayingSidebarEnabled == true)
     }
 
     @Test("nowPlayingSidebarEnabled persists to UserDefaults")
     func nowPlayingSidebarEnabledPersists() {
         let manager = SettingsManager.shared
         let original = manager.nowPlayingSidebarEnabled
-        defer { manager.nowPlayingSidebarEnabled = original }
+        // Leave UserDefaults exactly as it was found: a machine that has never stored this key must
+        // not gain one from a test run, or the "default is ..." test above would read the test's
+        // leftovers instead of the reader's real state.
+        let hadStoredValue = UserDefaults.standard.object(forKey: "settings.nowPlayingSidebarEnabled") != nil
+        defer {
+            manager.nowPlayingSidebarEnabled = original
+            if !hadStoredValue {
+                UserDefaults.standard.removeObject(forKey: "settings.nowPlayingSidebarEnabled")
+            }
+        }
 
-        manager.nowPlayingSidebarEnabled = true
+        manager.nowPlayingSidebarEnabled = false
 
-        #expect(UserDefaults.standard.bool(forKey: "settings.nowPlayingSidebarEnabled") == true)
+        #expect(UserDefaults.standard.bool(forKey: "settings.nowPlayingSidebarEnabled") == false)
 
         manager.nowPlayingSidebarEnabled = original
     }

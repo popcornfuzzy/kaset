@@ -121,7 +121,7 @@ struct GeneralSettingsView: View {
                 Toggle("Use Now Playing Sidebar", isOn: self.$settings.nowPlayingSidebarEnabled)
                     .help("Replace the Lyrics and Queue side panels with one artwork sidebar: animated canvas, a live three-line lyric preview and the next song, each expanding to the full experience")
 
-                Text("When off, the Lyrics and Queue buttons keep opening their own panels.")
+                Text("This is the default. When off, the Lyrics and Queue buttons keep opening their own panels.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
