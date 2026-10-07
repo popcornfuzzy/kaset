@@ -66,6 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the app at all — and neither is visible from a view's own state.
         self.installUITrace()
 
+        // Measures a main thread that stops answering, from a thread that is still running — the one
+        // thing the app cannot log about itself. See `MainThreadStallReporter`.
+        MainThreadStallReporter.shared.start()
+
         // Restore saved queue if available
         self.playerService?.restoreQueueFromPersistence()
     }

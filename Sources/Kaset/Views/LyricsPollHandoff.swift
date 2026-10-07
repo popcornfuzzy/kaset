@@ -5,18 +5,19 @@ import Foundation
 /// Who owns the shared WebView lyrics poll while the lyrics UI changes presenter.
 ///
 /// The high-frequency lyric poll is a single flag inside the shared WebView, but two views consume it:
-/// the sidebar lyrics panel and the fullscreen now-playing lyrics. When one of them goes away it must
+/// the lyrics panel and the fullscreen now-playing lyrics. When one of them goes away it must
 /// *hand the poll over* instead of stopping it, or the surviving view's karaoke highlight freezes until
-/// the next track change.
+/// the next track change — the poll is what reports playback time, so a stop with lyrics still on screen
+/// freezes every sheet at once (`PlayerService.currentTimeMs` comes from it).
 ///
 /// Both rules are evaluated while the presentation transition is in flight, which is why they take the
 /// flag values directly: `showLyrics` and `showFullscreenNowPlaying` already hold their post-transition
 /// values by the time a disappearing view runs its teardown.
 enum LyricsPollHandoff {
-    /// Whether the sidebar lyrics panel must leave the poll running when it disappears.
+    /// Whether a lyrics sheet must leave the poll running when it disappears.
     ///
-    /// The panel disappears for two reasons: the user closed it, or the fullscreen view took over the
-    /// lyrics (opening fullscreen closes the sidebar). Only the second one still needs the poll.
+    /// A sheet disappears for two reasons: the reader closed it, or the fullscreen view took over the
+    /// lyrics. Only the second one still needs the poll.
     static func shouldKeepPollingAfterSidebarDisappears(
         isFullscreenPresented: Bool,
         hasSyncedLyrics: Bool
@@ -26,13 +27,26 @@ enum LyricsPollHandoff {
 
     /// Whether the fullscreen view must stop the poll once it is dismissed.
     ///
-    /// Exiting fullscreen through the lyrics shortcut opens the sidebar panel in the same update, so the
+    /// Exiting fullscreen through the lyrics shortcut can open a lyrics panel in the same update, so that
     /// panel can already be the new consumer by the time this view is torn down.
     static func shouldStopPollingAfterFullscreenDismiss(
-        isSidebarLyricsVisible: Bool,
+        isLyricsSheetVisible: Bool,
         hasSyncedLyrics: Bool
     ) -> Bool {
-        !(isSidebarLyricsVisible && hasSyncedLyrics)
+        !(isLyricsSheetVisible && hasSyncedLyrics)
+    }
+
+    /// Whether the reader has a lyrics sheet on screen, from either of the app's two lyric designs.
+    ///
+    /// The reader's right sidebar is a **column**, and a column that was open stays open behind the
+    /// fullscreen player. So on the way out of the player it is the sidebar's own page that has to be asked,
+    /// not just the classic panel's flag: asking only the flag stopped the poll while the lyrics it feeds
+    /// were still on screen, which froze the sidebar's karaoke the moment the player was closed.
+    static func isLyricsSheetVisible(
+        isClassicPanelVisible: Bool,
+        nowPlayingSidebarPage: NowPlayingSidebarPage?
+    ) -> Bool {
+        isClassicPanelVisible || nowPlayingSidebarPage == .lyrics
     }
 
     /// Whether the loaded lyrics are synced *and* belong to the track on screen.

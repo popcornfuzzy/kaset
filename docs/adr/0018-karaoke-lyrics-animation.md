@@ -198,6 +198,27 @@ is carried as a layout value (so syllable runs stay glued), and a wrapped row st
 instead of inheriting the gap of its first word. Fill direction is per word: a right-to-left word fills
 from its trailing edge, so Arabic and Hebrew lyrics fill the way they read.
 
+### A unit is split into the words it carries
+
+A provider is free to timestamp a **phrase** — or a whole line — as one unit. The line then arrives with
+word timings (`isLineSynced` is false), so it is drawn through the flow layout, where one unit is one
+**atom**: an atom wider than the box it is drawn in cannot wrap, because the layout can only break
+*between* subviews. So the row was drawn as one line wider than the panel and ran out of it — on this
+app's Now Playing sidebar, straight out of the lyric card, which is how it was reported.
+
+The layout therefore splits each unit into the words it already contains
+(`KaraokeFillModel.wordRuns(in:)` / `fragments(of:runs:characterWidths:)`), and each piece is its own
+subview with its own fill mask. It costs nothing where timings are per word — a unit with no whitespace
+in it is one piece, and one that happens to be a whole line's text is deliberately **not** routed to the
+line-synced `Text` path, because its progressive wipe is the point of word-by-word sync. The pieces take
+slices of the unit's own fill window, weighted by the character widths, which is the tiling
+`characters(for:weightedBy:)` already applies inside a word, one level up: a piece's window ends where
+the character at its boundary would have ended, and a piece carries the whitespace that followed it, so
+the pieces tile the unit exactly and the karaoke edge sweeps it in one continuous pass — across a break
+as well as across a word. The first piece keeps the unit's own word boundary (a provider writes the
+syllables of one word as separate units, and that boundary must not become a space); every later piece
+is a word of its own.
+
 `KaraokeTimeSource` decides per row whether it is live: the line being sung, the line after it, and
 the line that has just finished until its content is settled run on the display clock; every other row
 is handed a settled position and its timeline is **paused in place** rather than removed. Per-frame work

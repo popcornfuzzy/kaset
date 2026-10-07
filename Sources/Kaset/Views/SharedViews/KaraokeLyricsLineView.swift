@@ -14,6 +14,12 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct KaraokeLineLayout: Equatable {
     /// The words to draw, each with its own fill window.
+    ///
+    /// One entry per **layout word**, not per provider unit: a unit that carries several words is
+    /// split into one entry each (`KaraokeFillModel.fragments(of:runs:characterWidths:)`), because the
+    /// flow layout treats an entry as an atom and a phrase — or a whole line — timed as one unit could
+    /// not wrap, so it ran out of the panel it was drawn in. A unit with no whitespace in it is one
+    /// entry, and a line-synced line is one entry drawn as one `Text`, which wraps itself.
     let words: [KaraokeWord]
     /// Measured advance width of each word's text.
     let textWidths: [CGFloat]
@@ -71,7 +77,21 @@ struct KaraokeLineLayout: Equatable {
             return zip(starts, starts.dropFirst()).map { abs($1 - $0) }
         }
 
-        let words = KaraokeFillModel.words(for: line)
+        // A line the provider timed only as a whole is drawn as one `Text` (which wraps itself), so
+        // its single unit is its layout. A word-timed line is drawn through the flow layout, where a
+        // unit is an atom: each unit is split into the words it carries, so a phrase — or a whole
+        // line — timed as one unit can wrap instead of running out of the panel.
+        let isLineSynced = (line.words ?? []).isEmpty
+        let units = KaraokeFillModel.words(for: line)
+        let words = isLineSynced
+            ? units
+            : units.flatMap { unit in
+                KaraokeFillModel.fragments(
+                    of: unit,
+                    runs: KaraokeFillModel.wordRuns(in: unit.text),
+                    characterWidths: characterWidths(of: unit.text)
+                )
+            }
         let space = width(of: " ")
         let characterWidths = words.map { characterWidths(of: $0.text) }
         self.words = words
@@ -89,7 +109,7 @@ struct KaraokeLineLayout: Equatable {
         self.lineHeight = font.ascender - font.descender + font.leading
         self.fontSize = fontSize
         self.weight = weight
-        self.isLineSynced = (line.words ?? []).isEmpty
+        self.isLineSynced = isLineSynced
     }
 
     private static func nsWeight(for weight: Font.Weight) -> NSFont.Weight {

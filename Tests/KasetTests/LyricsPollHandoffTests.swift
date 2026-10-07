@@ -30,26 +30,55 @@ struct LyricsPollHandoffTests {
         ) == false)
     }
 
-    @Test("Dismissing fullscreen stops the poll unless the sidebar panel takes it")
+    @Test("Dismissing fullscreen stops the poll unless a lyrics sheet takes it")
     func fullscreenHandsPollToSidebar() {
-        // Exiting fullscreen through the lyrics shortcut opens the sidebar panel in the same update, so
-        // the panel is already the new consumer when the fullscreen view is torn down.
+        // Exiting fullscreen through the lyrics shortcut opens a lyrics panel in the same update, so the
+        // panel is already the new consumer when the fullscreen view is torn down.
         #expect(LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: true,
+            isLyricsSheetVisible: true,
             hasSyncedLyrics: true
         ) == false)
         #expect(LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: false,
+            isLyricsSheetVisible: false,
             hasSyncedLyrics: true
         ))
         #expect(LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: true,
+            isLyricsSheetVisible: true,
             hasSyncedLyrics: false
         ))
         #expect(LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: false,
+            isLyricsSheetVisible: false,
             hasSyncedLyrics: false
         ))
+    }
+
+    @Test("A lyrics sheet is on screen when the reader's sidebar shows its lyrics card")
+    func sidebarLyricsCardCountsAsAVisibleSheet() {
+        // The column stays open behind the fullscreen player, so on the way out of the player it is the
+        // sidebar's own page that decides whether the poll still has a consumer. Asking only the classic
+        // panel's flag stopped the poll out from under the sidebar's lyrics and froze its karaoke.
+        #expect(LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: false,
+            nowPlayingSidebarPage: .lyrics
+        ))
+        #expect(LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: true,
+            nowPlayingSidebarPage: nil
+        ))
+
+        // The sidebar's other pages, and a closed column, are not lyrics sheets.
+        #expect(LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: false,
+            nowPlayingSidebarPage: .overview
+        ) == false)
+        #expect(LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: false,
+            nowPlayingSidebarPage: .queue
+        ) == false)
+        #expect(LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: false,
+            nowPlayingSidebarPage: nil
+        ) == false)
     }
 
     @Test("Only synced lyrics for the playing track count")

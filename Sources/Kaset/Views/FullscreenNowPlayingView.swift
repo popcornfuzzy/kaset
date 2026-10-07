@@ -58,6 +58,9 @@ struct FullscreenNowPlayingView: View {
     @State private var keyMonitor: Any?
     @State private var canvasReady = false
     @State private var canvasFailed = false
+    /// When the reader asked to leave, so the exit can report how long it took to land. The one number
+    /// that says whether "leaving sometimes takes really long" is happening in the build in front of them.
+    @State private var dismissalRequestedAt: Date?
     /// How far the incoming artwork is currently nudged off its resting place: positive for a skip
     /// forward, negative for a skip back, zero when nothing is arriving.
     @State private var trackArrivalOffset: CGFloat = 0
@@ -128,13 +131,21 @@ struct FullscreenNowPlayingView: View {
                 self.endPresentation()
             }
         }
+        // These three mirrors stop while the player is hidden. It is mounted for the whole session from its
+        // first presentation on (so leaving it is not an insertion/removal that has to complete), which
+        // makes the hidden player's cost something to state explicitly: a karaoke sheet redrawing four
+        // times a second behind an invisible overlay, and a lyric lookup fetched for a player nobody has
+        // open. `startPresentation` seeds all of it again when the reader comes back.
         .onChange(of: self.playerService.progress) { _, _ in
+            guard self.playerService.showFullscreenNowPlaying else { return }
             if !self.isSeeking { self.seekValue = self.normalizedProgress }
         }
         .onChange(of: self.playerService.currentTimeMs) { _, newTimeMs in
+            guard self.playerService.showFullscreenNowPlaying else { return }
             self.lyricsTimeMs = newTimeMs
         }
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
+            guard self.playerService.showFullscreenNowPlaying else { return }
             self.startLyricsLoad(for: newVideoId)
             self.animateTrackArrival()
         }
@@ -246,11 +257,12 @@ struct FullscreenNowPlayingView: View {
                 .padding(10).background(.black.opacity(0.36), in: Circle())
         }
         .buttonStyle(.plain)
-        // A second route for `Escape`, through AppKit's cancel-action machinery rather than the
-        // monitor: the monitor answers the key first while it is installed, and this is what is left
-        // if it ever is not (a presentation whose monitor was already torn down, say). The two cannot
-        // both fire for one keystroke — the monitor consumes the key it closes on.
-        .keyboardShortcut(.cancelAction)
+        // Deliberately no `.keyboardShortcut(.cancelAction)` here. It reads like a free second route for
+        // `Escape`, but it registers the button with AppKit's key-equivalent machinery, and the button's
+        // action removes the view that key-equivalent registration belongs to — mutating the window's
+        // chrome and its command table from inside the dispatch of the key that just ran. `Escape`
+        // already has two routes that do not do that: `.onExitCommand` above, which is the responder
+        // chain's own cancel action, and the monitor below.
         .accessibilityLabel(String(localized: "Exit Fullscreen Now Playing"))
     }
 
@@ -493,8 +505,25 @@ struct FullscreenNowPlayingView: View {
 
     private func closeFullscreenNowPlaying(route: ExitRoute) {
         guard self.playerService.showFullscreenNowPlaying else { return }
-        DiagnosticsLogger.ui.debug("Fullscreen now playing dismissed (\(route.rawValue, privacy: .public))")
-        withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false }
+        DiagnosticsLogger.ui.notice("Fullscreen now playing dismissed (\(route.rawValue, privacy: .public))")
+        MainThreadStallReporter.shared.note("the fullscreen player was asked to leave (\(route.rawValue))")
+        self.dismissalRequestedAt = Date()
+        // The dismissal leaves the event that asked for it before it touches the flag.
+        //
+        // Every route in here is a key or a click: `Escape` arrives inside AppKit's event dispatch (the
+        // monitor runs from `nextEventMatchingMask`, `.onExitCommand` from the responder chain) and the
+        // button inside the mouse event that pressed it. Clearing the flag from there tears down the
+        // overlay, restores the window's toolbar and re-lays the titlebar *while AppKit is still inside
+        // that dispatch* — and a titlebar layout that waits on the runloop turn the event itself is
+        // holding is a window that stops responding until something else happens. Reported as "it hangs
+        // when I press Escape or the button, and then pressing play/pause with the mouse lets it go".
+        // One turn of the runloop later none of it is re-entrant, and the reader cannot see the turn.
+        Task { @MainActor in
+            guard self.playerService.showFullscreenNowPlaying else { return }
+            MainThreadStallReporter.shared.note("the fullscreen dismissal is being applied")
+            withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false }
+            DiagnosticsLogger.ui.notice("Fullscreen now playing dismissal applied")
+        }
     }
 
     /// Sets up everything scoped to one fullscreen presentation: the local seek/lyrics mirrors, the
@@ -512,10 +541,24 @@ struct FullscreenNowPlayingView: View {
         // A fresh canvas player reports readiness again; a canvas that failed last time gets retried.
         self.canvasReady = false
         self.canvasFailed = false
-        self.claimHostWindow()
+        DiagnosticsLogger.ui.notice("Fullscreen now playing presentation started")
+        MainThreadStallReporter.shared.note("the fullscreen player is being presented")
+        self.scheduleClaimHostWindow()
         self.installKeyMonitorIfNeeded()
         self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
+    }
+
+    /// The claim, one runloop turn after the update that asked for it.
+    ///
+    /// Outside that update for the same reason the dismissal is (see `closeFullscreenNowPlaying`):
+    /// making a window key and active re-enters the window's own layout, and this is not the only code
+    /// that responds to the presentation flag.
+    @MainActor
+    private func scheduleClaimHostWindow() {
+        Task { @MainActor in
+            self.claimHostWindow()
+        }
     }
 
     /// Takes the window's focus for the presentation, because the player now covers that window.
@@ -532,8 +575,17 @@ struct FullscreenNowPlayingView: View {
         // A sheet on the window is presenting something of its own; taking the key back from it would
         // put the sheet behind the window it belongs to.
         guard window.attachedSheet == nil else { return }
-        if !NSApp.isActive { NSApp.activate() }
-        if !window.isKeyWindow { window.makeKeyAndOrderFront(nil) }
+        let wasActive = NSApp.isActive
+        let wasKey = window.isKeyWindow
+        if !wasActive { NSApp.activate() }
+        if !wasKey { window.makeKeyAndOrderFront(nil) }
+        // Only when something actually had to change: the line answers "did the presentation have to
+        // take the window back", which is the state the exit routes used to fail in.
+        if !wasActive || !wasKey {
+            let message = "Fullscreen now playing took the window: appActive=\(wasActive) "
+                + "windowKey=\(wasKey) window=\(window.title)"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+        }
     }
 
     /// Tears the presentation down and hands the shared lyrics poll over when the sidebar lyrics panel
@@ -542,16 +594,48 @@ struct FullscreenNowPlayingView: View {
     /// Called from the presentation change *and* from `onDisappear`, so it must be idempotent.
     @MainActor
     private func endPresentation() {
+        DiagnosticsLogger.ui.notice("Fullscreen now playing presentation ended")
+        MainThreadStallReporter.shared.note("the fullscreen presentation ended")
+        // How long the reader's exit actually took, end to end: the number that turns "leaving sometimes
+        // takes really long" into something a log can be read against.
+        if let requestedAt = self.dismissalRequestedAt {
+            self.dismissalRequestedAt = nil
+            let seconds = Date().timeIntervalSince(requestedAt)
+            let message = "Fullscreen now playing exit sequence completed in "
+                + "\(String(format: "%.2f", seconds))s"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+        }
         self.loadTask?.cancel()
         self.loadTask = nil
         self.removeKeyMonitor()
+        // The poll is *reconciled* here, not merely stopped. It is what reports playback time
+        // (`PlayerService.currentTimeMs`), so stopping it while a lyrics sheet is still on screen freezes
+        // that sheet — and the sheet that remains is now usually the reader's own sidebar, whose column
+        // stays open behind the player. Asking only the classic panel's flag stopped the poll out from
+        // under the sidebar's lyrics and left its karaoke stuck on the line it had reached.
+        let hasSyncedLyrics = self.syncedLyricsService.hasSyncedLyrics(
+            for: self.playerService.currentTrack?.videoId
+        )
+        let isLyricsSheetVisible = LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: self.playerService.showLyrics,
+            nowPlayingSidebarPage: self.playerService.nowPlayingSidebarPage
+        )
         if LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: self.playerService.showLyrics,
-            hasSyncedLyrics: self.syncedLyricsService.hasSyncedLyrics(
-                for: self.playerService.currentTrack?.videoId
-            )
+            isLyricsSheetVisible: isLyricsSheetVisible,
+            hasSyncedLyrics: hasSyncedLyrics
         ) {
             SingletonPlayerWebView.shared.stopLyricsPoll()
+            DiagnosticsLogger.player.notice("Lyrics poll stopped: no lyrics sheet left on screen")
+        } else {
+            // Something is still showing lyrics, so the poll is left running — and started again if it had
+            // been stopped, which is the state that froze the sidebar's karaoke.
+            SingletonPlayerWebView.shared.startLyricsPoll()
+            SingletonPlayerWebView.shared.sendCurrentLyricsTime()
+            let message = "Lyrics poll handed over on leaving the player: "
+                + "sheetVisible=\(isLyricsSheetVisible) sidebarPage="
+                + "\(self.playerService.nowPlayingSidebarPage?.rawValue ?? "hidden") "
+                + "synced=\(hasSyncedLyrics)"
+            DiagnosticsLogger.player.notice("\(message, privacy: .public)")
         }
     }
 
@@ -611,6 +695,7 @@ struct FullscreenNowPlayingView: View {
                 isSheet: event.window?.sheetParent != nil
             ) else { return event }
             if event.keyCode == 53 {
+                DiagnosticsLogger.ui.notice("Escape reached the fullscreen player's key monitor")
                 self.closeFullscreenNowPlaying(route: .escape)
                 return nil
             }

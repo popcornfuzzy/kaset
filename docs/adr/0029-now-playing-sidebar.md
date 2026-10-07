@@ -150,7 +150,18 @@ Presentation stays a three-value page state on `PlayerService`
 (`NowPlayingSidebarPage`: `overview` / `lyrics` / `queue`, `nil` = hidden), separate from the classic
 `showLyrics`/`showQueue` flags, and the column's presence is *derived* from it in `MainWindow`
 (`isNowPlayingSidebarVisible`). Opening either design closes the other and exits fullscreen; entering
-fullscreen closes the sidebar.
+fullscreen **leaves the sidebar where it is** — the player covers the window, so the column behind it is
+out of sight either way, and closing it there changed the reader's window layout from a view they did not
+touch (AppKit collapsing the split item, the window's minimum width restated for the panes that are left)
+in the same turn the player was being put up. A column the reader had open is still open when they come
+back out.
+
+The **lyrics poll hand-off** follows from that: leaving the player hands the WebView poll over whenever a
+lyrics sheet is still on screen, and the sheet that remains is usually this column. So the hand-off asks
+the column's own page, not just the classic panel's `showLyrics` flag (`LyricsPollHandoff.isLyricsSheetVisible`),
+and it reconciles the poll rather than only stopping it. The poll is what reports playback time
+(`PlayerService.currentTimeMs`), so stopping it with lyrics still on screen froze this sidebar's karaoke on
+the line it had reached — a stop that was correct only while opening the player closed the column.
 
 ### A surface made of the album
 

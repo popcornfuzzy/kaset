@@ -254,12 +254,18 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     }
 
     /// Whether the full-window now playing experience is visible.
+    ///
+    /// It leaves the **Now Playing sidebar where it is**. The player covers the window, so the column
+    /// behind it is out of sight either way — but closing it here changed the reader's window layout from a
+    /// view they did not touch, and gave the presentation a *window* operation to perform (AppKit collapses
+    /// the split item, the window's minimum width is restated for the panes that are left, and it may be
+    /// resized to hold them) in the same turn that the player was being put up. A column that was open is
+    /// still open when the reader comes back out, which is what they left.
     var showFullscreenNowPlaying: Bool = false {
         didSet {
             if self.showFullscreenNowPlaying {
                 self.showLyrics = false
                 self.showQueue = false
-                self.nowPlayingSidebarPage = nil
             }
         }
     }
@@ -273,7 +279,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     var nowPlayingSidebarPage: NowPlayingSidebarPage? {
         didSet {
             guard self.nowPlayingSidebarPage != nil else { return }
-            // One right sidebar at a time, and the sidebar is not shown over fullscreen.
+            // One right sidebar at a time. Opening the column is the reader asking for it, so it also
+            // leaves the fullscreen player — the reverse direction of `showFullscreenNowPlaying`, which
+            // deliberately leaves the column alone.
             if self.showLyrics { self.showLyrics = false }
             if self.showQueue { self.showQueue = false }
             if self.showFullscreenNowPlaying { self.showFullscreenNowPlaying = false }

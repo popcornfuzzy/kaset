@@ -268,6 +268,14 @@ toolbar's controller. Each of those was in the previous design and each was a bu
 - Two bordered controls are never adjacent: macOS 26 fills one glass capsule behind a contiguous run of
   items, so the Ask AI button and the page's own controls are separated by an `NSToolbarItem.Identifier
   .space`. Without it they were drawn as one stretched pill.
+- The column's collapse is applied one runloop turn after the SwiftUI update that asked for it
+  (`WindowShellController.scheduleInspectorVisibility`), because it is a window operation — AppKit
+  collapses the split item, the window's minimum width is restated for the panes that are left, and the
+  window can be grown to hold them — and it is asked for from inside an update: opening the fullscreen
+  player hides the column (`PlayerService.showFullscreenNowPlaying`), so the reader's exit from the player
+  is asked for while AppKit is still finishing that collapse. It joins the window's chrome change and the
+  player's dismissal in the same rule ([ADR-0026](0026-fullscreen-key-routing.md)): nothing that resizes
+  the window or re-lays out its titlebar runs inside the update that asked for it.
 - A page's controls reach the toolbar through a contribution the *page* publishes, not through anything the
   page declares declaratively: a page states what belongs in the titlebar for as long as it is the page on
   screen (`PageToolbarModel`), and the controls are hosted SwiftUI reading the page's model — so they are

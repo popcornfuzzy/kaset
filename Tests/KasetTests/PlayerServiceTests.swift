@@ -539,13 +539,20 @@ struct PlayerServiceTests {
         #expect(self.playerService.nowPlayingSidebarPage == nil)
     }
 
-    @Test("Fullscreen now playing closes the Now Playing sidebar")
-    func fullscreenClosesNowPlayingSidebar() {
+    @Test("Fullscreen now playing leaves the Now Playing sidebar open")
+    func fullscreenLeavesNowPlayingSidebarOpen() {
         self.playerService.setNowPlayingSidebarPage(.lyrics)
 
         self.playerService.showFullscreenNowPlaying = true
 
-        #expect(self.playerService.nowPlayingSidebarPage == nil)
+        // The player covers the window, so the column behind it is out of sight either way. Closing it
+        // here would change the reader's window layout from a view they did not touch — and would give
+        // the presentation a window operation to perform in the same turn it was being put up.
+        #expect(self.playerService.nowPlayingSidebarPage == .lyrics)
+
+        self.playerService.showFullscreenNowPlaying = false
+
+        #expect(self.playerService.nowPlayingSidebarPage == .lyrics)
     }
 
     @Test("Opening the Now Playing sidebar exits fullscreen")

@@ -329,28 +329,44 @@ struct KaraokeLyricsRenderTests {
                 words: [TimedWord(timeInMs: 0, word: text)]
             )
             let layout = KaraokeLineLayout(line: line, fontSize: 20)
-            let characters = try #require(layout.characters.first)
-            let drawn = CTLineCreateWithAttributedString(
-                NSAttributedString(
-                    string: text,
-                    attributes: [.font: NSFont.systemFont(ofSize: 20, weight: .bold)]
+
+            // A unit whose text carries several words is laid out as those words — that is what gives
+            // a phrase timed as one unit somewhere to wrap — so its cells are read per layout word.
+            // A word with no whitespace in it is its own layout word, so the spacey cases below still
+            // read the whole unit's text.
+            #expect(layout.words.map(\.text) == text.split(separator: " ").map(String.init))
+
+            for wordIndex in layout.words.indices {
+                let wordText = layout.words[wordIndex].text
+                let characters = layout.characters[wordIndex]
+                let drawn = CTLineCreateWithAttributedString(
+                    NSAttributedString(
+                        string: wordText,
+                        attributes: [.font: NSFont.systemFont(ofSize: 20, weight: .bold)]
+                    )
                 )
-            )
 
-            var pen: CGFloat = 0
-            var offset = 0
-            for (index, character) in characters.enumerated() {
-                let start = CGFloat(CTLineGetOffsetForStringIndex(drawn, offset, nil))
-                #expect(abs(pen - start) < 0.05, "cell \(index) of `\(text)` sits at \(pen); the glyph is drawn at \(start)")
-                pen += layout.characterWidths[0][index]
-                offset += character.text.utf16.count
+                var pen: CGFloat = 0
+                var offset = 0
+                for (index, character) in characters.enumerated() {
+                    let start = CGFloat(CTLineGetOffsetForStringIndex(drawn, offset, nil))
+                    #expect(
+                        abs(pen - start) < 0.05,
+                        "cell \(index) of `\(wordText)` sits at \(pen); the glyph is drawn at \(start)"
+                    )
+                    pen += layout.characterWidths[wordIndex][index]
+                    offset += character.text.utf16.count
+                }
+
+                // And the cells add up to the width the word is drawn across, which is the width the flow
+                // layout reserved for it.
+                let advance = CGFloat(CTLineGetTypographicBounds(drawn, nil, nil, nil))
+                #expect(abs(pen - advance) < 0.05, "the cells of `\(wordText)` span \(pen) of \(advance)")
+                #expect(
+                    abs(layout.textWidths[wordIndex] - advance) < 0.05,
+                    "the box of `\(wordText)` is \(layout.textWidths[wordIndex]) of \(advance)"
+                )
             }
-
-            // And the cells add up to the width the word is drawn across, which is the width the flow
-            // layout reserved for it.
-            let advance = CGFloat(CTLineGetTypographicBounds(drawn, nil, nil, nil))
-            #expect(abs(pen - advance) < 0.05, "the cells of `\(text)` span \(pen) of \(advance)")
-            #expect(abs(layout.textWidths[0] - advance) < 0.05, "the word's box is \(layout.textWidths[0]) of \(advance)")
         }
     }
 
@@ -658,6 +674,23 @@ struct KaraokeLyricsRenderTests {
         )
         let gluedColumns = try Self.columnAlphas(line: glued, at: -500, fontSize: 40)
         #expect(Self.longestGap(in: gluedColumns) < gap)
+    }
+
+    /// A unit the provider timed as a phrase is one atom to the flow layout, and an atom wider than
+    /// the box cannot wrap: it was drawn as a single row wider than its panel. A unit is therefore
+    /// split into the words it carries, and this holds the row to wrapping on one.
+    @Test("A unit timed as a phrase wraps inside the box like a row of words")
+    func phraseUnitWraps() throws {
+        let text = "alpha bravo charlie"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 4000,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+
+        let rendered = try Self.render(line: line, at: -500, fontSize: 20, width: 110, height: 120)
+        #expect(Self.inkBands(of: rendered).count >= 2)
     }
 
     @Test("A long line wraps to the margin without indenting the wrapped row")

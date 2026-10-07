@@ -691,6 +691,100 @@ struct KaraokeCharacterTests {
     }
 }
 
+// MARK: - KaraokeFragmentTests
+
+/// A unit a provider timed as a phrase — or as a whole line — is one atom to the flow layout, and
+/// an atom wider than the box it is drawn in cannot wrap: the row was drawn as one line wider than
+/// the panel it was in. These hold the split that gives it somewhere to break — the unit's own
+/// words, each carrying its slice of the unit's fill window, so the row wraps and the karaoke edge
+/// still sweeps the unit in one continuous pass.
+@Suite(.tags(.model))
+struct KaraokeFragmentTests {
+    /// One word-timed unit, as the provider handed it over.
+    private static func unit(text: String) -> KaraokeWord {
+        KaraokeWord(index: 0, text: text, isNewWord: true, fillStartMs: 1000, fillEndMs: 3000)
+    }
+
+    private static func fragments(text: String, widths: [CGFloat]) -> [KaraokeWord] {
+        KaraokeFillModel.fragments(
+            of: Self.unit(text: text),
+            runs: KaraokeFillModel.wordRuns(in: text),
+            characterWidths: widths
+        )
+    }
+
+    @Test("A unit is split at the whitespace it already carries")
+    func unitSplitsAtItsOwnSpaces() {
+        let text = "alpha bravo charlie"
+        let fragments = Self.fragments(text: text, widths: [CGFloat](repeating: 10, count: text.count))
+
+        #expect(fragments.map(\.text) == ["alpha", "bravo", "charlie"])
+        // The whitespace is dropped out of the pieces and the layout puts its own space between
+        // them, as it does between two units: the row reads as the same text with the same gaps.
+        #expect(fragments.allSatisfy { !$0.text.contains(" ") })
+        #expect(fragments.map(\.isNewWord) == [true, true, true])
+
+        // The first piece keeps the unit's own boundary — a provider writes the syllables of one
+        // word as separate units, and that boundary must not become a space — and every later piece
+        // is a word of its own.
+        let glued = KaraokeFillModel.fragments(
+            of: KaraokeWord(index: 0, text: "alpha bravo", isNewWord: false, fillStartMs: 0, fillEndMs: 100),
+            runs: KaraokeFillModel.wordRuns(in: "alpha bravo"),
+            characterWidths: [CGFloat](repeating: 10, count: 11)
+        )
+        #expect(glued.map(\.isNewWord) == [false, true])
+    }
+
+    @Test("The pieces tile the unit's own fill window, in proportion to their widths")
+    func fragmentsTileTheUnitWindow() {
+        let text = "wide narrow"
+        let widths: [CGFloat] = [40, 10, 20, 30, 10, 8, 8, 8, 8, 8, 8]
+        let unit = Self.unit(text: text)
+        let fragments = Self.fragments(text: text, widths: widths)
+        #expect(fragments.count == 2)
+
+        // The slices meet: the first starts with the unit, the next begins where the last ended, and
+        // the last ends with the unit. A unit's fill is therefore unchanged by the split.
+        #expect(fragments[0].fillStartMs == unit.fillStartMs)
+        #expect(fragments[1].fillStartMs == fragments[0].fillEndMs)
+        #expect(abs(fragments[1].fillEndMs - unit.fillEndMs) < 0.001)
+        #expect(abs(fragments.map(\.durationMs).reduce(0, +) - unit.durationMs) < 0.001)
+
+        // The wide word holds the edge for longer than the narrow one, so the edge crosses the unit
+        // at the speed of the text it is crossing — across a break as well as across a word.
+        #expect(fragments[0].durationMs > fragments[1].durationMs)
+    }
+
+    @Test("A unit of one word is one piece, and reads exactly as it did")
+    func aSingleWordUnitIsOnePiece() {
+        let unit = Self.unit(text: "extraordinary")
+        let fragments = Self.fragments(text: "extraordinary", widths: [CGFloat](repeating: 10, count: 13))
+
+        #expect(fragments == [unit])
+    }
+
+    @Test("A unit with nothing to split stays whole")
+    func aUnitWithNothingToSplitStaysWhole() {
+        #expect(KaraokeFillModel.wordRuns(in: "").isEmpty)
+        #expect(KaraokeFillModel.wordRuns(in: "   ").isEmpty)
+
+        let blank = KaraokeWord(index: 0, text: "", isNewWord: true, fillStartMs: 0, fillEndMs: 100)
+        #expect(KaraokeFillModel.fragments(of: blank, runs: [], characterWidths: []) == [blank])
+    }
+
+    @Test("Missing widths still split, sharing the window equally by character")
+    func fragmentsFallBackToEqualShares() {
+        let unit = Self.unit(text: "ab cd")
+        let fragments = Self.fragments(text: "ab cd", widths: [])
+
+        #expect(fragments.map(\.text) == ["ab", "cd"])
+        // Each character is worth the same share, and a piece carries the whitespace that followed
+        // it: two characters plus the space against two characters.
+        #expect(abs(fragments[0].durationMs - unit.durationMs * 0.6) < 0.001)
+        #expect(abs(fragments[1].durationMs - unit.durationMs * 0.4) < 0.001)
+    }
+}
+
 private extension Array {
     subscript(safe index: Int) -> Element? {
         self.indices.contains(index) ? self[index] : nil

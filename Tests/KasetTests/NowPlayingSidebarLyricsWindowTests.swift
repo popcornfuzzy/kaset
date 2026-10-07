@@ -125,6 +125,148 @@ struct NowPlayingSidebarLyricsWindowTests {
             "the window never reached the line being sung (\(followed.maxX - followed.minX)px of \(Int(wideRowWidth * followed.scale))px)"
         )
     }
+
+    /// A line the provider timed as word timings still has to wrap inside the card it is drawn in.
+    ///
+    /// A provider is free to timestamp a phrase — or a whole line — as **one** unit. The line then
+    /// arrives with word timings (`isLineSynced` is false), so it is drawn through the karaoke flow
+    /// layout, where one unit is one atom: an atom wider than the box cannot wrap, so the row was
+    /// drawn as one line wider than the card and ran out of it instead of wrapping.
+    ///
+    /// The card is what the sidebar's lyric preview is, so this hosts the real nesting — sheet in
+    /// card, card in the column's padding — and reads the pixels it drew. The sheet's scroll view
+    /// clips what runs out of it, so an unwrapped row shows up as **one** row of ink drawn to the
+    /// clip rather than as ink past the card; the row that wrapped shows two or three. The ink is
+    /// checked against the card's own edge as well, since a row that wraps must sit inside it.
+    @Test("A word-timed line that arrives as one wide unit wraps inside the card")
+    func wordTimedUnitWiderThanTheCardWraps() throws {
+        let text = "alpha bravo charlie delta echo foxtrot golf hotel india julliet"
+        let lyrics = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(
+                    timeInMs: 0,
+                    duration: 6000,
+                    text: text,
+                    words: [TimedWord(timeInMs: 0, word: text)]
+                ),
+            ],
+            source: "SidebarLyricsWindowTest"
+        )
+
+        // The unit is wider than the card's own text box, so there is something to wrap.
+        let layout = KaraokeLineLayout(line: lyrics.lines[0], fontSize: 16)
+        let unitWidth = zip(layout.textWidths, layout.gaps).reduce(CGFloat(0)) { $0 + $1.0 + $1.1 }
+        let boxWidth = Self.cardTextBoxWidth
+        #expect(unitWidth > boxWidth, "the harness's unit is \(unitWidth)pt inside a \(boxWidth)pt box")
+
+        let driver = SidebarLyricsWindowDriver()
+        let window = self.hostCard(driver, lyrics: lyrics)
+        defer { window.orderOut(nil) }
+        guard let hosting = window.contentView as? NSHostingView<SidebarLyricsCardWindowHarness> else {
+            Issue.record("the harness did not install its content view")
+            return
+        }
+
+        self.pump(1.0)
+        guard let bounds = Self.inkBounds(hosting) else {
+            Issue.record("the hosted sheet drew nothing")
+            return
+        }
+
+        let inkRight = CGFloat(bounds.maxX) / bounds.scale
+        #expect(
+            inkRight <= Self.cardRightEdge,
+            "the line ran \(Int(inkRight - Self.cardRightEdge))pt past the card's right edge"
+        )
+
+        let bands = Self.inkRowBands(hosting)
+        #expect(
+            bands >= 2,
+            "the unit (\(Int(unitWidth))pt in a \(Int(boxWidth))pt box) was drawn as \(bands) row(s)"
+        )
+    }
+
+    /// Contiguous runs of scanlines carrying ink, one per drawn row of text.
+    private static func inkRowBands(_ view: NSView) -> Int {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return 0 }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        guard let data = rep.bitmapData, rep.samplesPerPixel >= 4 else { return 0 }
+
+        let samples = rep.samplesPerPixel
+        let rowBytes = rep.bytesPerRow
+        var bands = 0
+        var inBand = false
+        var previousInkedRow = -10
+        for y in 0 ..< rep.pixelsHigh {
+            let row = data + y * rowBytes
+            let inked = (0 ..< rep.pixelsWide).contains { row[$0 * samples + 3] > 20 }
+            if inked {
+                if !inBand || y - previousInkedRow > 3 { bands += 1 }
+                inBand = true
+                previousInkedRow = y
+            } else {
+                inBand = false
+            }
+        }
+        return bands
+    }
+
+    // MARK: - The card's own geometry
+
+    /// The card's right edge in the column this harness is hosted at, and the text box inside it:
+    /// the column, less the section's padding, the card's padding and the sheet's own inset.
+    private static let columnWidth: CGFloat = 352
+    private static let cardRightEdge = Self.columnWidth - NowPlayingSidebarLayout.padding
+    private static let cardTextBoxWidth = Self.columnWidth
+        - NowPlayingSidebarLayout.padding * 2
+        - 20
+        - 32
+
+    /// Hosts the sidebar's lyric *card* the way the overview draws it.
+    private func hostCard(_ driver: SidebarLyricsWindowDriver, lyrics: SyncedLyrics) -> NSWindow {
+        let hosting = NSHostingView(
+            rootView: SidebarLyricsCardWindowHarness(driver: driver, lyrics: lyrics)
+        )
+        hosting.frame = NSRect(x: 0, y: 0, width: Self.columnWidth, height: 260)
+        hosting.wantsLayer = true
+        let window = NSWindow(
+            contentRect: hosting.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hosting
+        window.orderBack(nil)
+        return window
+    }
+}
+
+// MARK: - The card harness
+
+/// The overview's lyric card: the same sheet, in the same card, at the same padding.
+@MainActor
+private struct SidebarLyricsCardWindowHarness: View {
+    let driver: SidebarLyricsWindowDriver
+    let lyrics: SyncedLyrics
+
+    var body: some View {
+        NowPlayingSidebarCard {
+            VStack(alignment: .leading, spacing: 4) {
+                SyncedLyricsDisplayView(
+                    lyrics: self.lyrics,
+                    currentTimeMs: self.driver.currentTimeMs,
+                    isPlaying: true,
+                    isCovered: false,
+                    allowsScrolling: false,
+                    onSeek: { _ in }
+                )
+                .frame(height: NowPlayingSidebarLayout.lyricsPreviewHeight)
+                .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
+            }
+        }
+        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
 }
 
 // MARK: - Harness

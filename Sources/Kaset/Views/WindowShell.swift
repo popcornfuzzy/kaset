@@ -247,6 +247,8 @@ final class WindowShellController: NSSplitViewController {
     private var needsStateApply = true
     private var hasSeededDivider = false
     private var pendingToolbarInstall: Task<Void, Never>?
+    /// A column visibility the app asked for, waiting for the update that asked to finish.
+    private var pendingInspectorVisibility: Task<Void, Never>?
     private var inspectorCollapseObservation: NSKeyValueObservation?
     /// Watches for anything putting its own toolbar in the window (see `observeToolbarTakeover`).
     private var toolbarObservation: NSKeyValueObservation?
@@ -340,6 +342,22 @@ final class WindowShellController: NSSplitViewController {
         if layoutChanged {
             self.applyStateToItems()
         } else {
+            // Opening or closing the Now Playing column is a *window* operation — AppKit collapses the
+            // split item, the window's minimum is restated for it, and the window can be grown to hold
+            // it — and it is asked for from inside a SwiftUI update. Opening the fullscreen player does
+            // exactly that (`PlayerService.showFullscreenNowPlaying` hides the column), so the exit that
+            // follows is asked for while AppKit is still finishing that collapse. Applying it one runloop
+            // turn later is the same move the window's chrome change and the player's dismissal make
+            // (`MainWindow.scheduleWindowChromeUpdate`), and for the same reason.
+            self.scheduleInspectorVisibility()
+        }
+    }
+
+    /// The column's visibility, one runloop turn after the update that asked for it (see `apply`).
+    private func scheduleInspectorVisibility() {
+        self.pendingInspectorVisibility?.cancel()
+        self.pendingInspectorVisibility = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
             self.applyInspectorVisibility()
         }
     }
@@ -411,9 +429,13 @@ final class WindowShellController: NSSplitViewController {
         guard let inspectorItem = self.inspectorItem else { return }
         let shouldCollapse = !self.state.showsInspector
         if inspectorItem.isCollapsed != shouldCollapse {
+            MainThreadStallReporter.shared.note(
+                shouldCollapse ? "the Now Playing column is being collapsed" : "the Now Playing column is being opened"
+            )
             self.isApplyingState = true
             inspectorItem.isCollapsed = shouldCollapse
             self.isApplyingState = false
+            MainThreadStallReporter.shared.note("the Now Playing column's collapse was applied")
         }
         // All three follow every change to the column: the window's minimum is restated for the panes that
         // are now open, the window is made wide enough to hold them rather than left to squeeze the page,
@@ -448,6 +470,7 @@ final class WindowShellController: NSSplitViewController {
             frame.origin.x -= max(0, frame.maxX - visible.maxX)
             frame.size.width = min(frame.size.width, visible.width)
         }
+        MainThreadStallReporter.shared.note("the window is being grown to the panes' minimum")
         window.setFrame(frame, display: true, animate: false)
         let message = "Shell window widened to its minimum: content=\(Int(window.contentLayoutRect.width)) "
             + "minimum=\(Int(minimum)) columnOpen=\(self.inspectorItem?.isCollapsed == false)"
@@ -550,7 +573,11 @@ final class WindowShellController: NSSplitViewController {
     /// Reports a collapse the reader performed, so the app's page state follows the pane.
     private func inspectorCollapseDidChange(_ collapsed: Bool) {
         let source = self.isApplyingState ? "app" : "reader"
-        self.logger.debug("Now Playing column collapsed=\(collapsed) source=\(source)")
+        // Notice, not debug: this is one of the steps the fullscreen player's exit is made of (opening it
+        // hides the column, and AppKit collapses the split item while the player's own presentation is
+        // still settling), and a `debug` line is not persisted, so it is invisible to `log show` exactly
+        // when it is needed.
+        self.logger.notice("Now Playing column collapsed=\(collapsed, privacy: .public) source=\(source, privacy: .public)")
         guard !self.isApplyingState else { return }
         self.onInspectorCollapsedChange?(collapsed)
     }

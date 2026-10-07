@@ -39,6 +39,29 @@ and the claim have to exist together), and a click on a control in a window that
 activating the window before it is a click on the control. A window presenting a sheet is left alone:
 taking the key back would put the sheet behind the window it belongs to.
 
+The player is **mounted from its first presentation on and then driven by attributes** — opacity,
+hit-testing, accessibility — rather than being inserted and removed for each one (`MainWindow`'s overlay,
+latched by `hasPresentedFullscreenNowPlaying`). A `.transition` makes the disappearance something that has
+to *complete* before the view leaves the tree, in a transaction the reader's key or click only starts: a
+removal still waiting to settle is a player still on screen with its state already cleared, reported as
+"leaving fullscreen sometimes takes really long". Opacity has no completion step, so the state change is
+never waiting on an animation; the presentation's own lifecycle was already driven by the flag, so nothing
+depended on the view being new. What the hidden player must not cost is stated where it is spent: the
+lyrics mirror and the lyric lookup stop while it is hidden (`FullscreenNowPlayingView`), and the canvas
+lookup was already keyed on the flag.
+
+Both ends of a presentation also stay out of the dispatch that asked for them. The dismissal
+(`closeFullscreenNowPlaying`), the claim above, and the window's chrome change
+(`MainWindow.scheduleWindowChromeUpdate`) each run one runloop turn later, from a
+`Task { @MainActor … }`. Every
+route in is an event — `Escape` arrives inside AppKit's dispatch (the monitor runs from
+`nextEventMatchingMask`, `onExitCommand` from the responder chain), and the button inside the click
+that pressed it — and clearing the flag from there tears the overlay down, restores the window's
+toolbar and re-lays the titlebar *while that dispatch is still open*. A titlebar layout waiting on the
+runloop turn the event itself is holding is a window that stops responding until something else
+happens: reported as "pressing `Escape` or the button hangs, and then pressing play/pause with the
+mouse lets it go". One turn later none of it is re-entrant, and that turn is not visible.
+
 It deliberately does **not** restate any shortcut. The event goes to the same menu the shortcuts are
 declared in, so there is still exactly one definition of what `Space` does, and the monitor cannot
 drift from it as shortcuts are added or changed.
@@ -80,9 +103,23 @@ drift from it as shortcuts are added or changed.
 ### Neutral
 
 - `Escape` keeps its existing single-path behaviour: the monitor consumes it, so `onExitCommand`
-  does not also fire and the player cannot be closed twice from one keystroke. The close button also
-  carries `.keyboardShortcut(.cancelAction)` as a declarative second route, for a presentation whose
-  monitor is not installed; the monitor answers first while it is, so the two never both fire.
+  does not also fire and the player cannot be closed twice from one keystroke.
+- The close button deliberately carries **no** `.keyboardShortcut(.cancelAction)`. It reads like a free
+  second route for `Escape` for a presentation whose monitor is not installed, but it registers the
+  button with AppKit's key-equivalent machinery — and the button's action is the removal of the very
+  view whose registration is being dispatched, so the window's chrome and its command table would be
+  mutated from inside the dispatch of the key that just ran. `Escape` keeps two routes that do not do
+  that: `onExitCommand`, which is the responder chain's own cancel action, and the monitor.
+- Measured end to end: `Fullscreen now playing exit sequence completed in 0.02s` — the dismissal, the
+  window hearing it, the chrome coming back and the presentation ending, from a driver that posts a real
+  `Escape` at the app. Leaving is a state change now, not a transition that has to finish.
+- Measured with a driver that posts real events at the app (a `keyDown` through
+  `NSApp.postEvent`, a click at the close button's own reported frame): both routes run the whole exit
+  sequence — dismissal, the window hearing the flag, the chrome coming back, the presentation ending —
+  in ≈0.35 s, in a window **and** in system full screen. The close button sits 44 pt below the window's
+  top because the overlay respects the titlebar band, and 12 pt below it in system full screen; a click
+  that assumed 12 pt in a window hits nothing at all, which is a harness that missed rather than a
+  button that does not respond.
 - The monitor swallows a key on the strength of the menu's return value, which is documented to mean
   the item was found *and its action performed* — a `true` that did not perform would leave the key
   dead rather than merely unshadowed. `MenuKeyEquivalentRoutingTests` pins both halves for the two

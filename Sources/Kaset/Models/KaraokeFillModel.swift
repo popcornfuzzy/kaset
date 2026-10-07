@@ -385,6 +385,90 @@ enum KaraokeFillModel {
         return clockMs < self.settleBoundaryMs(for: line, timing: timing)
     }
 
+    // MARK: - Layout fragments
+
+    /// The stretches of a unit's text that are laid out — and wrapped — as separate words.
+    ///
+    /// A provider is free to timestamp a phrase, or a whole line, as **one** unit: the unit then
+    /// carries several words' text, and the flow layout treats a unit as an atom. An atom wider
+    /// than the box it is drawn in cannot wrap, so the row was drawn as one line wider than the
+    /// panel it was in and was clipped by it. Splitting the unit at the whitespace it already
+    /// contains gives the row somewhere to break, and it is where a reader would break it too.
+    ///
+    /// Ranges are over the unit's **characters** (`Array(text)`), so they line up with the character
+    /// widths the renderer measures, and the whitespace itself is left out of the pieces: the gap
+    /// between two pieces is the renderer's own space, exactly as it is between two units. A unit
+    /// with no whitespace in it is one piece, so every per-word line takes this path unchanged.
+    static func wordRuns(in text: String) -> [Range<Int>] {
+        let characters = Array(text)
+        var runs: [Range<Int>] = []
+        var start: Int?
+        for (index, character) in characters.enumerated() {
+            if character.isWhitespace {
+                if let current = start {
+                    runs.append(current ..< index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+        }
+        if let current = start { runs.append(current ..< characters.count) }
+        return runs
+    }
+
+    /// A unit drawn as the pieces it is laid out in, each carrying the slice of the unit's own fill
+    /// window that matches the share of the unit's text it holds.
+    ///
+    /// The tiling is the one `characters(for:weightedBy:)` applies inside a word, one level up: the
+    /// shares are summed over the unit's character widths, so a piece's window ends exactly where
+    /// the character at its boundary would have ended and the karaoke edge still sweeps the unit in
+    /// one continuous pass — across a break as well as across a word. A piece runs to the start of
+    /// the piece after it, so it carries the slice of the whitespace between them: the pieces tile
+    /// the unit's window exactly, and the edge keeps moving over the gap rather than stalling on it.
+    ///
+    /// The first piece inherits the unit's own word boundary, because a provider writes the
+    /// syllables of one word as several units and that boundary must not become a space. Every
+    /// later piece is a word of its own — it was preceded by whitespace in the unit's text.
+    static func fragments(
+        of word: KaraokeWord,
+        runs: [Range<Int>],
+        characterWidths: [CGFloat]
+    ) -> [KaraokeWord] {
+        let characters = Array(word.text)
+        guard !runs.isEmpty, !characters.isEmpty else { return [word] }
+
+        let total = characterWidths.reduce(0, +)
+        let shares: [Double] = if characterWidths.count == characters.count, total > 0 {
+            characterWidths.map { Double($0 / total) }
+        } else {
+            Array(repeating: 1 / Double(characters.count), count: characters.count)
+        }
+        var cumulative = [Double](repeating: 0, count: characters.count + 1)
+        for index in characters.indices {
+            cumulative[index + 1] = cumulative[index] + shares[index]
+        }
+
+        return runs.enumerated().compactMap { position, run in
+            guard !run.isEmpty,
+                  run.lowerBound >= 0,
+                  run.upperBound <= characters.count
+            else { return nil }
+            let next = position + 1 < runs.count ? runs[position + 1].lowerBound : characters.count
+            return KaraokeWord(
+                index: word.index,
+                text: String(characters[run]),
+                isNewWord: position == 0 ? word.isNewWord : true,
+                fillStartMs: word.fillStartMs + word.durationMs * cumulative[run.lowerBound],
+                // The last piece ends where the unit does, exactly: the tiling never leaves a sliver
+                // of the unit unfilled, whatever the floating-point sum of the shares came to.
+                fillEndMs: position == runs.count - 1
+                    ? word.fillEndMs
+                    : word.fillStartMs + word.durationMs * cumulative[next]
+            )
+        }
+    }
+
     // MARK: - Word-timed lines
 
     private static func timedWords(

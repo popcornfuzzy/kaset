@@ -85,6 +85,14 @@ struct MainWindow: View {
     /// pages publish into this (`PageNavigationModel`).
     @State private var pageNavigation = PageNavigationModel()
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
+    /// The pending window-chrome change for the fullscreen player (see `scheduleWindowChromeUpdate`).
+    @State private var windowChromeTask: Task<Void, Never>?
+    /// Whether the fullscreen player has ever been opened this launch.
+    ///
+    /// It is mounted from the first presentation on and then driven by attributes rather than being
+    /// inserted and removed for each one — see the overlay in `body`. Nothing is built for a reader who
+    /// never opens it.
+    @State private var hasPresentedFullscreenNowPlaying = false
 
     /// Video state the fullscreen podcast experience shares with the layer below.
     /// Owned here because this view owns the WebView layer.
@@ -242,17 +250,38 @@ struct MainWindow: View {
         }
         .overlay {
             // Podcast episodes get the listening experience above; songs keep artwork + lyrics.
-            if self.playerService.showFullscreenNowPlaying, !self.playerService.isCurrentTrackPodcast {
+            if self.hasPresentedFullscreenNowPlaying, !self.playerService.isCurrentTrackPodcast {
+                // Mounted once and then driven by attributes, never inserted and removed per presentation.
+                //
+                // A `.transition` makes the disappearance something that has to *complete* before the view
+                // leaves the tree, and it runs in a transaction of its own that the reader's key or click
+                // only starts: a removal still waiting to settle is a player that is still on screen with
+                // its state already cleared — reported as "leaving fullscreen sometimes takes really
+                // long", where the model has changed and the screen has not. Opacity carries no completion
+                // step: it is applied with the next draw, and the state change never waits on an animation.
+                // The presentation's own lifecycle is already driven by the flag (`startPresentation` /
+                // `endPresentation` through `onChange`), so it never depended on this view being new.
                 FullscreenNowPlayingView(client: self.client)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .opacity(self.playerService.showFullscreenNowPlaying ? 1 : 0)
+                    .allowsHitTesting(self.playerService.showFullscreenNowPlaying)
+                    .accessibilityHidden(!self.playerService.showFullscreenNowPlaying)
+                    .animation(.easeInOut(duration: 0.22), value: self.playerService.showFullscreenNowPlaying)
                     .zIndex(10)
             }
         }
         .onAppear {
-            self.updateWindowTitleVisibility(for: self.playerService.showFullscreenNowPlaying)
+            self.hasPresentedFullscreenNowPlaying = self.playerService.showFullscreenNowPlaying
+            self.scheduleWindowChromeUpdate(for: self.playerService.showFullscreenNowPlaying)
         }
         .onChange(of: self.playerService.showFullscreenNowPlaying) { _, isShown in
-            self.updateWindowTitleVisibility(for: isShown)
+            // The flag reached the window. Logged because the whole exit is a sequence across two
+            // objects — the player clears the flag, the window hears it and gives the toolbar back — and
+            // "leaving the player does nothing" is one of them never arriving.
+            let message = "Main window saw the fullscreen player presented=\(isShown)"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+            MainThreadStallReporter.shared.note("the window saw the fullscreen player = \(isShown)")
+            if isShown { self.hasPresentedFullscreenNowPlaying = true }
+            self.scheduleWindowChromeUpdate(for: isShown)
         }
         .onChange(of: self.showCommandBar.wrappedValue) { _, newValue in
             if newValue {
@@ -519,6 +548,21 @@ struct MainWindow: View {
         }
     }
 
+    /// The window's chrome change waits for the update that asked for it to finish.
+    ///
+    /// Hiding or restoring the toolbar is an AppKit layout of the titlebar, and it used to happen from
+    /// inside the SwiftUI update that was adding or removing the fullscreen overlay. On the way out that is
+    /// the update that has just torn the overlay down *and* is still inside the event that asked for it
+    /// (the `Escape` key, or the close button's click), which is where leaving the player stopped
+    /// responding — see `FullscreenNowPlayingView.closeFullscreenNowPlaying`. One runloop turn later the
+    /// overlay is gone, that event has finished, and the window is free to lay its titlebar out.
+    private func scheduleWindowChromeUpdate(for isFullscreenNowPlaying: Bool) {
+        self.windowChromeTask?.cancel()
+        self.windowChromeTask = Task { @MainActor in
+            self.updateWindowTitleVisibility(for: isFullscreenNowPlaying)
+        }
+    }
+
     private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {
         // Deliberately not `keyWindow`: with the detached mini player open the key window can be the
         // panel, and this would then hide the *panel's* title while leaving the main window's alone.
@@ -532,10 +576,17 @@ struct MainWindow: View {
             return
         }
 
+        MainThreadStallReporter.shared.note("the window's chrome is being changed for the fullscreen player")
         window.titleVisibility = isFullscreenNowPlaying ? .hidden : .visible
         // The fullscreen Now Playing experience takes over the window, so the toolbar goes with it —
         // the same hidden state SwiftUI's `.toolbarVisibility(.hidden)` used to ask for.
         window.toolbar?.isVisible = !isFullscreenNowPlaying
+        // The other end of the exit sequence (see the log in `body`): the toolbar and the title are back
+        // and the window is what it was. The line after which nothing arrives is the step that stalled.
+        let message = "Main window chrome for the fullscreen player: fullscreen=\(isFullscreenNowPlaying) "
+            + "toolbarVisible=\(window.toolbar?.isVisible ?? false) "
+            + "titleVisible=\(window.titleVisibility == .visible) key=\(window.isKeyWindow)"
+        DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
     }
 
     // MARK: - Main Content
