@@ -228,6 +228,15 @@ struct KaraokeLyricsLineView: View {
     /// being sung. `0` renders a plain wipe, which is what Reduce Motion uses.
     var emphasis: Double = 1.0
     var lineSpacing: CGFloat = 2
+    /// Whether this is the *other* singer's line, which Apple Music draws against the
+    /// trailing edge of the sheet (`SyncedLyricLine.isOppositeTurn`).
+    ///
+    /// It moves the whole line — every word of it, and every wrapped row of a long line — and
+    /// never changes the order the words are read or the direction they fill in: a
+    /// right-aligned English line is still a left-to-right line that happens to sit on the
+    /// right. The one exception is text that reads right-to-left, which is drawn from its
+    /// trailing edge by its own script and needs nothing from this flag.
+    var isTrailingAligned: Bool = false
 
     @Environment(\.layoutDirection) private var layoutDirection
 
@@ -280,7 +289,11 @@ struct KaraokeLyricsLineView: View {
         .font(.system(size: self.layout.fontSize, weight: self.layout.weight))
         .lineSpacing(self.lineSpacing)
         .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // The line is one `Text`, so its own alignment is what places it: the frame puts the
+        // text against the edge it belongs on, and the multiline alignment applies the same
+        // edge to every row a wrapped phrase breaks into.
+        .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
+        .multilineTextAlignment(self.isTrailingAligned ? .trailing : .leading)
     }
 
     private var wordTimedText: some View {
@@ -289,7 +302,8 @@ struct KaraokeLyricsLineView: View {
             gaps: self.layout.gaps,
             lineHeight: self.layout.lineHeight,
             lineSpacing: self.lineSpacing,
-            isRightToLeft: self.layoutDirection == .rightToLeft
+            isRightToLeft: self.layoutDirection == .rightToLeft,
+            isTrailingAligned: self.isTrailingAligned
         ) {
             ForEach(self.layout.words.indices, id: \.self) { index in
                 KaraokeWordView(
@@ -306,7 +320,9 @@ struct KaraokeLyricsLineView: View {
             }
         }
         .font(.system(size: self.layout.fontSize, weight: self.layout.weight))
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // The layout places each row of words inside the width it is given; the frame decides
+        // with which edge a shorter content sits when the width is unbounded.
+        .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
     }
 }
 
@@ -596,6 +612,9 @@ struct KaraokeWordFlowLayout: Layout {
     var lineSpacing: CGFloat = 0
     /// Right-to-left lyrics wrap and fill from the trailing edge.
     var isRightToLeft: Bool = false
+    /// Whether each visual row ends at the trailing edge of its container rather than
+    /// starting at the leading one — the other singer's lines.
+    var isTrailingAligned: Bool = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews _: Subviews, cache _: inout ()) -> CGSize {
         let rows = self.rows(fitting: proposal.width ?? .infinity)
@@ -610,7 +629,12 @@ struct KaraokeWordFlowLayout: Layout {
         var top = bounds.minY
 
         for row in self.rows(fitting: bounds.width) {
-            var pen = self.isRightToLeft ? bounds.maxX : bounds.minX
+            // Right-to-left text starts at the trailing edge by its own script, which is where
+            // a trailing-aligned row sits anyway; every other row is shifted left by its own
+            // width, so the row ends on the trailing edge and its words still read forwards.
+            var pen = self.isRightToLeft
+                ? bounds.maxX
+                : (self.isTrailingAligned ? bounds.maxX - row.width : bounds.minX)
             for (position, index) in row.indices.enumerated() {
                 guard subviews.indices.contains(index) else { continue }
                 // A wrapped row starts at the margin: the gap a word asks for only

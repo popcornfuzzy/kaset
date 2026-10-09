@@ -867,6 +867,9 @@ private struct FullscreenSyncedLyricsView: View {
                     Spacer().frame(height: 28)
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
+                        // A line is drawn against the edge its singer has; a row with nothing to
+                        // sing follows the line above it (`SyncedLyrics.isTrailingAligned(at:)`).
+                        let isTrailingAligned = self.lyrics.isTrailingAligned(at: index)
                         if self.lyrics.isPauseLine(at: index) {
                             KaraokeTimeSource(
                                 line: line,
@@ -878,12 +881,13 @@ private struct FullscreenSyncedLyricsView: View {
                                 FullscreenPauseDotsLineView(
                                     dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
                                     status: status,
-                                    isHovered: self.hoveredLineId == line.id
+                                    isHovered: self.hoveredLineId == line.id,
+                                    isTrailingAligned: isTrailingAligned
                                 )
                             }
                             .animation(AppAnimation.lyricLine, value: self.currentLineIndex)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
                             .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
                             .onTapGesture { self.onSeek(line.timeInMs) }
@@ -891,6 +895,7 @@ private struct FullscreenSyncedLyricsView: View {
                         } else {
                             FullscreenSyncedLineView(
                                 line: line,
+                                isTrailingAligned: isTrailingAligned,
                                 status: status,
                                 isLive: self.isLive(lineIndex: index),
                                 clock: self.clock,
@@ -900,13 +905,18 @@ private struct FullscreenSyncedLyricsView: View {
                             )
                             .foregroundStyle(.white)
                             .opacity(self.opacity(for: status, lineId: line.id))
-                            .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
+                            // Anchored to the edge the row sits on: an other-singer line grows
+                            // and shrinks from its own side.
+                            .scaleEffect(
+                                self.scale(for: status, lineId: line.id),
+                                anchor: isTrailingAligned ? .trailing : .leading
+                            )
                             // Distant lines recede out of focus the way Apple Music lets go
                             // of the lines around the one being sung.
                             .blur(radius: self.blur(for: status))
                             .animation(AppAnimation.lyricLine, value: self.currentLineIndex)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
                             .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
                             .onTapGesture { self.onSeek(line.timeInMs) }
@@ -922,6 +932,11 @@ private struct FullscreenSyncedLyricsView: View {
 
                     Spacer().frame(height: 84)
                 }
+                // A margin on the trailing edge only, because that is the edge a duet's other
+                // singer is drawn against: the sheet runs to the panel's right edge, so a
+                // right-aligned line would otherwise end exactly on it. The leading edge is
+                // where the lyrics column starts, next to the artwork, and stays there.
+                .padding(.trailing, 16)
             }
             .scrollIndicators(.hidden)
             .onScrollPhaseChange { _, phase in
@@ -1062,6 +1077,8 @@ private struct FullscreenSyncedLyricsView: View {
 @available(macOS 26.0, *)
 private struct FullscreenSyncedLineView: View {
     let line: SyncedLyricLine
+    /// The edge this row is drawn against, resolved by the sheet like every other row's.
+    let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
     let isLive: Bool
     let clock: LyricsPlaybackClock
@@ -1099,14 +1116,15 @@ private struct FullscreenSyncedLineView: View {
                     .lineSpacing(18)
                     .foregroundStyle(.white)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: self.isTrailingAligned ? .trailing : .leading, spacing: 6) {
                     if hasLead {
                         KaraokeLyricsLineView(
                             layout: layout,
                             displayTimeMs: displayTimeMs,
                             color: .white,
                             emphasis: self.emphasis,
-                            lineSpacing: 18
+                            lineSpacing: 18,
+                            isTrailingAligned: self.isTrailingAligned
                         )
                     }
                     if let backgroundLayout {
@@ -1120,7 +1138,8 @@ private struct FullscreenSyncedLineView: View {
                             displayTimeMs: displayTimeMs,
                             color: .white.opacity(0.55),
                             emphasis: self.emphasis,
-                            lineSpacing: 8
+                            lineSpacing: 8,
+                            isTrailingAligned: self.isTrailingAligned
                         )
                     }
                 }
@@ -1147,7 +1166,10 @@ private struct FullscreenPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
     let isHovered: Bool
-    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
+    /// The dots belong on the edge of the line above them — an interlude inside the other
+    /// singer's section is a pause in *their* part.
+    var isTrailingAligned: Bool = false
+    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: self.isTrailingAligned ? .trailing : .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
     /// The bounce is a value off the row's own display clock rather than a timeline of its own:
     /// the row is already redrawing per frame while it is the one being sung, and two clocks on
     /// one row are two chances to disagree about when that is.

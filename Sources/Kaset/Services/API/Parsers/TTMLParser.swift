@@ -18,6 +18,15 @@ import Foundation
 /// words are collected into `backgroundWords` rather than the lead line: they
 /// overlap the lead in time, so mixing them in would glue their text onto the
 /// lead line and drag the karaoke fill backwards.
+///
+/// A `<p ttm:agent="v2">` attributes the line to one of the agents declared in
+/// the document's metadata — `<ttm:agent type="person" xml:id="v1">` — which is how
+/// a duet says who is singing. Lines belonging to an agent other than the one the
+/// document leads with become `SyncedLyricLine.isOppositeTurn`, so the display can
+/// put them against the other edge of the sheet. Apple's own beat-by-beat example
+/// for *Dancing With A Stranger* is this shape exactly: `v1` (Sam Smith) and `v2`
+/// (Normani) alternate verse by verse, and a `v3` declared as `type="group"` —
+/// both of them together — appears in the outro.
 enum TTMLParser {
     /// Parses TTML into word- or line-synced lyrics.
     ///
@@ -96,6 +105,21 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
     private var backgroundSpansSeen = 0
     private var backgroundPendingSpaceBetweenSpans = false
 
+    // Singers. The document's metadata declares its agents (`<ttm:agent type="person"
+    // xml:id="v1">`), and each paragraph names one.
+    /// What each declared agent is, by id: `person`, `group`, `other`.
+    private var agentTypes: [String: String] = [:]
+    /// The agent the sheet leads with: the first *person* the metadata declares, or — for a
+    /// document that declares none — the first agent to appear on a paragraph. Every other
+    /// agent is the other singer.
+    private var leadAgent: String?
+    /// The agent of the enclosing `<div>`, for a document that attributes a whole section
+    /// rather than each paragraph. TTML metadata attributes are inherited, so a `<p>` that
+    /// declares its own wins over it.
+    private var sectionAgent: String?
+    /// The agent of the paragraph being read.
+    private var lineAgent: String?
+
     // The word span currently being read.
     private var spanText = ""
     private var spanBeginMs: Int?
@@ -123,9 +147,17 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
-        switch elementName.lowercased() {
+        switch Self.localName(elementName) {
+        case "agent":
+            // `<ttm:agent type="person" xml:id="v1"/>`, declared in the metadata before the
+            // body is read. The type says whether this is one singer or everyone, and the
+            // declaration order is the document's own idea of who leads.
+            self.declareAgent(attributeDict)
+        case "div":
+            self.sectionAgent = Self.attribute(named: "agent", in: attributeDict)
         case "p":
             self.beginLine()
+            self.lineAgent = Self.attribute(named: "agent", in: attributeDict) ?? self.sectionAgent
             self.lineBeginMs = Self.timeToMs(attributeDict["begin"])
             self.lineEndMs = Self.timeToMs(attributeDict["end"])
             if self.lineBeginMs != nil || self.lineEndMs != nil {
@@ -200,7 +232,7 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         namespaceURI: String?,
         qualifiedName qName: String?
     ) {
-        switch elementName.lowercased() {
+        switch Self.localName(elementName) {
         case "span":
             if self.skippedSpanDepth > 0 {
                 self.skippedSpanDepth -= 1
@@ -241,6 +273,34 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         }
     }
 
+    // MARK: - Singers
+
+    /// Records one `<ttm:agent>` declaration from the document's metadata.
+    private func declareAgent(_ attributeDict: [String: String]) {
+        guard let id = Self.attribute(named: "id", in: attributeDict)?.trimmingCharacters(in: .whitespaces),
+              !id.isEmpty
+        else { return }
+
+        let type = Self.attribute(named: "type", in: attributeDict)?.lowercased()
+        self.agentTypes[id] = type
+        if self.leadAgent == nil, type == "person" { self.leadAgent = id }
+    }
+
+    /// Whether the paragraph being read is the other singer's turn.
+    ///
+    /// The lead is whoever the metadata declares first as a person, falling back to the first
+    /// agent a document with no declarations ever puts on a paragraph. A *group* — the
+    /// document's own word for everyone singing together — is not one singer taking over from
+    /// the other, so its lines stay where the lead's are.
+    private func oppositeTurn(for agent: String?) -> Bool {
+        guard let agent else { return false }
+        if self.leadAgent == nil, self.agentTypes[agent] != "group" {
+            self.leadAgent = agent
+        }
+        guard agent != self.leadAgent else { return false }
+        return self.agentTypes[agent] != "group"
+    }
+
     // MARK: - Line state
 
     private func beginLine() {
@@ -264,6 +324,7 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
         self.spanBeginMs = nil
         self.needsLeadingSpace = false
         self.skippedSpanDepth = 0
+        self.lineAgent = nil
     }
 
     private func endLine() {
@@ -288,6 +349,9 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             ?? backgroundWords?.first?.timeInMs
             ?? 0
         let end = self.lineEndMs ?? (begin + 4_000)
+        // Resolved before the line is stored, and once per paragraph: it is what tells the
+        // display which edge of the sheet this line belongs against.
+        let isOppositeTurn = self.oppositeTurn(for: self.lineAgent)
 
         // An empty `<p begin end>` is an instrumental interlude spelled out rather than
         // left to the timeline, and the renderer turns such a line into the pause dots. It
@@ -304,7 +368,8 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
                 duration: max(1, end - begin),
                 text: "",
                 words: nil,
-                backgroundWords: nil
+                backgroundWords: nil,
+                isOppositeTurn: isOppositeTurn
             ))
             return
         }
@@ -314,8 +379,19 @@ private final class TTMLParserDelegate: NSObject, XMLParserDelegate {
             duration: max(1, end - begin),
             text: leadText,
             words: leadWords,
-            backgroundWords: backgroundWords
+            backgroundWords: backgroundWords,
+            isOppositeTurn: isOppositeTurn
         ))
+    }
+
+    /// The element name without its namespace prefix, lowercased.
+    ///
+    /// A TTML document may write its metadata elements with a prefix (`ttm:agent`,
+    /// `ttm:role`) or, under the default namespace, without one. Which element it is does not
+    /// depend on the prefix, so everything here is matched on the local name.
+    private static func localName(_ elementName: String) -> String {
+        let lowered = elementName.lowercased()
+        return lowered.split(separator: ":").last.map(String.init) ?? lowered
     }
 
     /// Finds a namespaced TTML metadata attribute (e.g. `ttm:role`) regardless

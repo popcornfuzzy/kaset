@@ -58,6 +58,17 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     /// dragging the karaoke fill backwards and gluing the two together.
     let backgroundWords: [TimedWord]?
 
+    /// Whether the source marks this line as the *other* singer's turn.
+    ///
+    /// Apple Music TTML attributes each paragraph to an agent — `<p ttm:agent="v2">` — and
+    /// declares those agents in the document's metadata, so a duet alternates between two of
+    /// them; the display draws the line that is not the song's first singer's against the
+    /// trailing edge. Paxsenix says the same thing structurally, with an `oppositeTurn` flag
+    /// on a content line and a `{v2}` voice marker in its ELRC. It is resolved where the
+    /// source is read, because only the source knows which agent is the lead: resolving it
+    /// later would need the whole document back (`SyncedLyrics.hasOppositeTurns`).
+    let isOppositeTurn: Bool
+
     /// Backing-vocal text the source never timed.
     ///
     /// A line-synced source spells its backing vocal in the line's own text and times the line
@@ -75,6 +86,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         words: [TimedWord]?,
         backgroundWords: [TimedWord]? = nil,
         untimedBackgroundText: String? = nil,
+        isOppositeTurn: Bool = false,
         id: UUID? = nil
     ) {
         self.id = id ?? UUID()
@@ -84,6 +96,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         self.words = words
         self.backgroundWords = backgroundWords
         self.untimedBackgroundText = untimedBackgroundText
+        self.isOppositeTurn = isOppositeTurn
     }
 
     /// The line's backing-vocal text, or `nil` when it has none.
@@ -150,7 +163,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, timeInMs, duration, text, words, backgroundWords, untimedBackgroundText
+        case id, timeInMs, duration, text, words, backgroundWords, untimedBackgroundText, isOppositeTurn
     }
 
     init(from decoder: Decoder) throws {
@@ -163,6 +176,8 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         // Absent in caches written before backing vocals were modelled.
         self.backgroundWords = try container.decodeIfPresent([TimedWord].self, forKey: .backgroundWords)
         self.untimedBackgroundText = try container.decodeIfPresent(String.self, forKey: .untimedBackgroundText)
+        // Absent in caches written before singer turns were modelled.
+        self.isOppositeTurn = try container.decodeIfPresent(Bool.self, forKey: .isOppositeTurn) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -174,6 +189,11 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         try container.encodeIfPresent(self.words, forKey: .words)
         try container.encodeIfPresent(self.backgroundWords, forKey: .backgroundWords)
         try container.encodeIfPresent(self.untimedBackgroundText, forKey: .untimedBackgroundText)
+        // Only written when true, the way `TimedWord.isBackground` is: a false is the default
+        // every document without agents gets, and writing it would grow every cache file.
+        if self.isOppositeTurn {
+            try container.encode(true, forKey: .isOppositeTurn)
+        }
     }
 }
 
@@ -209,6 +229,34 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
     /// Whether any line carries backing vocals.
     var hasBackgroundVocals: Bool {
         self.lines.contains { $0.hasBackingVocal }
+    }
+
+    /// Whether the sheet attributes any line to a singer other than its first one, so the
+    /// display knows whether this is a duet at all.
+    var hasOppositeTurns: Bool {
+        self.lines.contains { $0.isOppositeTurn }
+    }
+
+    /// The edge the row at an index is drawn against.
+    ///
+    /// A line answers for itself (`isOppositeTurn`). A pause row does not: nothing is sung on
+    /// it and it has no singer of its own — it is the silence *inside* somebody's section — so
+    /// it follows the line above it, which is the line it is a pause in. A row that is itself a
+    /// pause is stepped over on the way up, so two interludes in a row both follow the last
+    /// line that was actually sung.
+    func isTrailingAligned(at lineIndex: Int, minimumGapMs: Int = Self.defaultPauseGapThresholdMs) -> Bool {
+        guard self.lines.indices.contains(lineIndex) else { return false }
+        guard self.isPauseLine(at: lineIndex, minimumGapMs: minimumGapMs) else {
+            return self.lines[lineIndex].isOppositeTurn
+        }
+
+        for index in stride(from: lineIndex - 1, through: 0, by: -1)
+            where !self.isPauseLine(at: index, minimumGapMs: minimumGapMs)
+        {
+            return self.lines[index].isOppositeTurn
+        }
+        // Nothing above it was sung, so the row's own declaration is all there is.
+        return self.lines[lineIndex].isOppositeTurn
     }
 
 

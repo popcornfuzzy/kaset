@@ -242,8 +242,14 @@ final class PaxsenixProvider: LyricsProvider {
 
     /// Parses the ELRC format: `[mm:ss.cc]{agent}text` lines followed by
     /// `<word:start:end|word:start:end>` word-timing lines (times in seconds).
+    ///
+    /// The `{agent}` marker names the singer the line belongs to — the same ids Apple's TTML
+    /// uses (`{v1}`, `{v2}`). The first voice a document names leads, so every other voice is
+    /// the second singer and its lines are drawn against the other edge. This format declares
+    /// nothing about *what* an agent is, so unlike TTML there is no group to recognize: a
+    /// document that writes one voice on every line simply has no turns.
     static func parseELRC(_ raw: String, source: String = "Paxsenix") -> SyncedLyrics? {
-        var timed: [(timeMs: Int, text: String, words: [TimedWord]?)] = []
+        var timed: [(timeMs: Int, text: String, words: [TimedWord]?, voice: String?)] = []
         var pendingWords: [TimedWord]?
 
         for rawLine in raw.components(separatedBy: .newlines) {
@@ -262,27 +268,32 @@ final class PaxsenixProvider: LyricsProvider {
             }
 
             guard let (timeMs, rest) = Self.parseLRCTime(line) else { continue }
+            // Read before the markers are stripped: the voice is metadata, not lyric text.
+            let voice = Self.voiceAgent(in: rest)
             let text = Self.stripAgents(rest).trimmingCharacters(in: .whitespaces)
             // An empty timed line is an instrumental gap: it is kept (unlike in
             // plain LRC) so the renderer can show the pause dots there.
             guard !text.isEmpty else {
-                timed.append((timeMs, text, nil))
+                timed.append((timeMs, text, nil, voice))
                 pendingWords = nil
                 continue
             }
-            timed.append((timeMs, text, pendingWords))
+            timed.append((timeMs, text, pendingWords, voice))
             pendingWords = nil
         }
 
         guard !timed.isEmpty else { return nil }
         var lines: [SyncedLyricLine] = []
+        var leadVoice: String?
         for (index, entry) in timed.enumerated() {
             let nextMs = index + 1 < timed.count ? timed[index + 1].timeMs : entry.timeMs + 4_000
+            if leadVoice == nil, let voice = entry.voice { leadVoice = voice }
             lines.append(SyncedLyricLine(
                 timeInMs: entry.timeMs,
                 duration: max(1, nextMs - entry.timeMs),
                 text: entry.text,
-                words: entry.words
+                words: entry.words,
+                isOppositeTurn: entry.voice != nil && entry.voice != leadVoice
             ))
         }
         return SyncedLyrics(lines: lines, source: source)
@@ -342,6 +353,10 @@ final class PaxsenixProvider: LyricsProvider {
                 // An empty timed entry is an instrumental gap, not noise: keep it so
                 // the renderer can show the pause dots there, exactly as line-synced
                 // lyrics already do.
+                // A content line the provider marks as the opposite turn is the second
+                // singer's, the same fact Apple's TTML carries as `ttm:agent`.
+                let isOppositeTurn = line.oppositeTurn == true
+
                 guard !lineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || backgroundWords != nil
                 else {
@@ -351,7 +366,8 @@ final class PaxsenixProvider: LyricsProvider {
                         duration: max(1, nextMs - startMs),
                         text: "",
                         words: nil,
-                        backgroundWords: nil
+                        backgroundWords: nil,
+                        isOppositeTurn: isOppositeTurn
                     ))
                     continue
                 }
@@ -361,7 +377,8 @@ final class PaxsenixProvider: LyricsProvider {
                     duration: max(1, nextMs - startMs),
                     text: lineText,
                     words: lineWords,
-                    backgroundWords: backgroundWords
+                    backgroundWords: backgroundWords,
+                    isOppositeTurn: isOppositeTurn
                 ))
             }
             guard !lines.isEmpty else { return .unavailable }
@@ -532,6 +549,18 @@ final class PaxsenixProvider: LyricsProvider {
 
     private static func stripAgents(_ text: String) -> String {
         text.replacingOccurrences(of: #"\{[^}]*\}"#, with: "", options: .regularExpression)
+    }
+
+    /// The voice an ELRC line belongs to, from its `{v2}` marker.
+    ///
+    /// Only a marker shaped like Apple's agent ids counts. The format writes other things in
+    /// braces — a backing-vocal marker among them — and those are not a second singer, so a
+    /// line without a `{vN}` is a line without a declared voice.
+    private static func voiceAgent(in text: String) -> String? {
+        guard let range = text.range(of: #"\{\s*v\d+\s*\}"#, options: .regularExpression) else { return nil }
+        return text[range]
+            .trimmingCharacters(in: CharacterSet(charactersIn: "{} \t"))
+            .lowercased()
     }
 
     // MARK: - Decoding types

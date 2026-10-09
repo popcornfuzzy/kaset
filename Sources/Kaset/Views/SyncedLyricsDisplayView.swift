@@ -129,6 +129,7 @@ struct SyncedLyricsDisplayView: View {
                                 SyncedPauseDotsLineView(
                                     dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
                                     status: status,
+                                    isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                     onTap: { self.onSeek(line.timeInMs) }
                                 )
                             }
@@ -137,6 +138,7 @@ struct SyncedLyricsDisplayView: View {
                             SyncedLineView(
                                 line: line,
                                 lineIndex: index,
+                                isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                 status: status,
                                 isLive: self.isLive(lineIndex: index),
                                 clock: self.clock,
@@ -431,6 +433,10 @@ struct KaraokeTimeSource<Content: View>: View {
 struct SyncedPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
+    /// Whether the dots belong against the trailing edge, which is the edge of the line above
+    /// them (`SyncedLyrics.isTrailingAligned(at:)`): an interlude inside the other singer's
+    /// section is a pause in *their* part, and the dots are drawn where their lines are.
+    var isTrailingAligned: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -439,10 +445,13 @@ struct SyncedPauseDotsLineView: View {
                 self.dotView(for: self.status(of: dotIndex))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
         .padding(.vertical, 7)
         .opacity(self.lineOpacity(for: self.status))
-        .scaleEffect(self.lineScale(for: self.status), anchor: .leading)
+        .scaleEffect(
+            self.lineScale(for: self.status),
+            anchor: self.isTrailingAligned ? .trailing : .leading
+        )
         .animation(.easeInOut(duration: 0.35), value: self.dots.statuses)
         .animation(AppAnimation.lyricLine, value: self.status)
         .contentShape(Rectangle())
@@ -508,6 +517,10 @@ struct SyncedLineView: View {
     let line: SyncedLyricLine
     /// Index of this line, so the pause-dot lookup never scans the whole lyric sheet.
     let lineIndex: Int
+    /// The edge this row is drawn against, which the sheet resolves — a line from its own
+    /// singer, a row with nothing to sing from the line above it
+    /// (`SyncedLyrics.isTrailingAligned(at:)`).
+    let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
     let isLive: Bool
     let clock: LyricsPlaybackClock
@@ -537,9 +550,11 @@ struct SyncedLineView: View {
         ) { displayTimeMs in
             self.content(at: displayTimeMs, layout: layout, backgroundLayout: backgroundLayout)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: self.alignment)
         .opacity(self.opacity(for: self.status))
-        .scaleEffect(self.scale(for: self.status), anchor: .leading)
+        // Anchored to the edge the row sits on, so an other-singer line grows and shrinks
+        // from its own side rather than sliding across the panel.
+        .scaleEffect(self.scale(for: self.status), anchor: self.alignment == .trailing ? .trailing : .leading)
         .offset(y: self.drift(for: self.status))
         .padding(.vertical, 5)
         // Always animated, including the line that is leaving. A line change is the panel's
@@ -550,6 +565,11 @@ struct SyncedLineView: View {
         .onTapGesture {
             self.onTap()
         }
+    }
+
+    /// The edge this row is drawn against: a duet's second singer gets the trailing one.
+    private var alignment: Alignment {
+        self.isTrailingAligned ? .trailing : .leading
     }
 
     @ViewBuilder
@@ -570,7 +590,8 @@ struct SyncedLineView: View {
                         displayTimeMs: displayTimeMs,
                         color: .primary,
                         emphasis: self.emphasis,
-                        lineSpacing: 2
+                        lineSpacing: 2,
+                        isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }
@@ -585,7 +606,8 @@ struct SyncedLineView: View {
                         displayTimeMs: displayTimeMs,
                         color: .secondary,
                         emphasis: self.emphasis,
-                        lineSpacing: 2
+                        lineSpacing: 2,
+                        isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }

@@ -302,6 +302,9 @@ enum LyricsBackingParentheses {
             words: leadWords,
             backgroundWords: backing.isEmpty ? nil : backing,
             untimedBackgroundText: untimedBacking,
+            isOppositeTurn: line.isOppositeTurn,
+            // The pass reshapes a line's text and never its singer: a duet's second voice must
+            // keep the edge it was drawn against.
             id: line.id
         )
     }
