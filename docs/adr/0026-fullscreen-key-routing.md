@@ -62,6 +62,20 @@ runloop turn the event itself is holding is a window that stops responding until
 happens: reported as "pressing `Escape` or the button hangs, and then pressing play/pause with the
 mouse lets it go". One turn later none of it is re-entrant, and that turn is not visible.
 
+One thing does not survive that move: an **animation**. `withAnimation` around the dismissal's write
+was correct while the write happened inside the event — the update it belonged to was in flight. From
+the `Task` it is a transaction opened outside any SwiftUI update, and the write then left the window's
+own update — the overlay's opacity, the toolbar, the titlebar — unflushed: measured as
+`Fullscreen now playing dismissal applied` followed by `Main window saw the fullscreen player
+presented=false` 5 to 33 seconds later, with the player still covering the window and both of its
+controls inert for the whole of it, because the flag those routes guard on had already cleared. That is
+"leaving fullscreen is still not working sometimes", and the same exit taken by a route that does not
+animate the write (`⌘L`, which clears the flag through the lyrics panel's exclusivity) landed in 0.4s.
+The dismissal therefore writes the flag plainly; the fade is declared on the value (`MainWindow`'s
+overlay carries `.animation(.easeInOut(duration: 0.22), value: showFullscreenNowPlaying)`), so the
+transition is still a transition. After the change, five consecutive runs put the whole sequence — the
+dismissal, the window hearing it, the chrome coming back — 16–19 ms after the key or the click.
+
 It deliberately does **not** restate any shortcut. The event goes to the same menu the shortcuts are
 declared in, so there is still exactly one definition of what `Space` does, and the monitor cannot
 drift from it as shortcuts are added or changed.

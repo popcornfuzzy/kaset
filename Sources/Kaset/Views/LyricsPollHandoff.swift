@@ -36,17 +36,28 @@ enum LyricsPollHandoff {
         !(isLyricsSheetVisible && hasSyncedLyrics)
     }
 
-    /// Whether the reader has a lyrics sheet on screen, from either of the app's two lyric designs.
+    /// Whether the reader has lyrics on screen, from any of the app's lyric surfaces.
     ///
     /// The reader's right sidebar is a **column**, and a column that was open stays open behind the
     /// fullscreen player. So on the way out of the player it is the sidebar's own page that has to be asked,
     /// not just the classic panel's flag: asking only the flag stopped the poll while the lyrics it feeds
     /// were still on screen, which froze the sidebar's karaoke the moment the player was closed.
+    ///
+    /// **Both** of the sidebar's pages that show lyrics count. Its `lyrics` page is the full sheet; its
+    /// `overview` is the column itself, which carries the three-line lyric preview under the artwork. Asking
+    /// only for the full sheet stopped the poll on every exit from the player taken with the column on its
+    /// overview — which is the page the column opens on — so the preview froze on the line it had reached and
+    /// stayed there: nothing re-starts the poll while the column is never re-created. Its `queue` page shows
+    /// no lyrics, and neither does a column that is not open at all (`nil`).
     static func isLyricsSheetVisible(
         isClassicPanelVisible: Bool,
         nowPlayingSidebarPage: NowPlayingSidebarPage?
     ) -> Bool {
-        isClassicPanelVisible || nowPlayingSidebarPage == .lyrics
+        if isClassicPanelVisible { return true }
+        switch nowPlayingSidebarPage {
+        case .lyrics, .overview: return true
+        case .queue, nil: return false
+        }
     }
 
     /// Whether the loaded lyrics are synced *and* belong to the track on screen.

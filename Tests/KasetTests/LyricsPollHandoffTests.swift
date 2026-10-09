@@ -66,11 +66,17 @@ struct LyricsPollHandoffTests {
             nowPlayingSidebarPage: nil
         ))
 
-        // The sidebar's other pages, and a closed column, are not lyrics sheets.
+        // Both of the sidebar's lyric surfaces are sheets, and `overview` is the one the column opens on:
+        // it carries the three-line preview under the artwork. Counting only the full sheet stopped the
+        // poll on every exit from the player taken with the column on its overview, which froze that
+        // preview on the line it had reached — and nothing re-starts a poll for a column that was never
+        // closed.
         #expect(LyricsPollHandoff.isLyricsSheetVisible(
             isClassicPanelVisible: false,
             nowPlayingSidebarPage: .overview
-        ) == false)
+        ))
+
+        // The queue page replaces the overview, and a closed column shows nothing at all.
         #expect(LyricsPollHandoff.isLyricsSheetVisible(
             isClassicPanelVisible: false,
             nowPlayingSidebarPage: .queue

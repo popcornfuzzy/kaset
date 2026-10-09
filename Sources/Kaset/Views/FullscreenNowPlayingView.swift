@@ -521,7 +521,12 @@ struct FullscreenNowPlayingView: View {
         Task { @MainActor in
             guard self.playerService.showFullscreenNowPlaying else { return }
             MainThreadStallReporter.shared.note("the fullscreen dismissal is being applied")
-            withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false }
+            // Deliberately **no** `withAnimation` around this write: called from this `Task` it is a
+            // transaction belonging to no update, and the write then left the window's own update (the
+            // overlay's opacity, the toolbar, the titlebar) unflushed for 5 to 33 seconds, with the player
+            // still covering the window and both of its controls inert for the whole of it. The fade is
+            // declared on the value (`MainWindow`'s overlay), so nothing is lost. See ADR-0026.
+            self.playerService.showFullscreenNowPlaying = false
             DiagnosticsLogger.ui.notice("Fullscreen now playing dismissal applied")
         }
     }

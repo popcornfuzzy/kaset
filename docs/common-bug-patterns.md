@@ -324,6 +324,37 @@ subsystems with one global flag need an explicit hand-off. The WebView's high-fr
 one flag consumed by two views, so the sidebar panel and the fullscreen lyrics pass it over instead of
 stopping it (`LyricsPollHandoff`, covered by `LyricsPollHandoffTests`).
 
+## ❌ An Animation Around a Write That Happens Outside an Update
+
+`withAnimation` attaches an animation to the changes made in its closure — and it belongs to the update
+that is running when it is called. Called from a `Task`, where no update is running, it is a transaction
+with no update behind it, and the window's own update for that write is left unflushed.
+
+```swift
+// ❌ BAD: the write is animated from a Task, and the window's update for it is left pending
+Task { @MainActor in
+    withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false }
+}
+
+// ✅ GOOD: write the value; the fade is declared where the value is applied
+Task { @MainActor in
+    self.playerService.showFullscreenNowPlaying = false
+}
+// … on the view: .opacity(isPresented ? 1 : 0)
+//                  .animation(.easeInOut(duration: 0.22), value: isPresented)
+```
+
+This is what "leaving fullscreen is still not working sometimes" was. The fullscreen player's dismissal
+is a `Task` on purpose (see [adr/0026](adr/0026-fullscreen-key-routing.md)), and the `withAnimation` that
+came with that move left the write with no update to belong to: `dismissal applied` was logged, the
+presentation ended, and `Main window saw the fullscreen player presented=false` — the line that takes the
+overlay off the screen and gives the toolbar back — arrived **5 to 33 seconds later**, with the player
+covering the window and both of its controls inert for the whole of it (the flag they guard on had
+already cleared, and `Escape` had no key monitor left to reach). The same exit taken by a route that does
+not animate the write (`⌘L`) landed in 0.4 s; after removing the wrapper five consecutive runs landed in
+16–19 ms. `.animation(_:value:)` on the view that applies the value is the form that works from any
+context, because it is attached to the *value* rather than to the transaction that changed it.
+
 ## ❌ Doing a Page's Navigation from Somewhere Other Than the Page
 
 A view that is pushed onto a `NavigationStack` can be navigated *by value*, or by a path it is handed.
