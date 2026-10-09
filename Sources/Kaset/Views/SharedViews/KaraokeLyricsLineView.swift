@@ -173,12 +173,12 @@ final class KaraokeLayoutCache {
         }
     }
 
-    /// The backing vocal's layout, measured at its own smaller size against a line
-    /// whose `words` are the backing words — the same machinery the lead uses, fed
-    /// the backing timings. Cached apart from the lead (`Key.isBacking`), so a row that
-    /// draws both looks both up once and never again.
+    /// The backing vocal's layout, measured at its own smaller size against the line
+    /// `backingVocalLine` builds for it — the same machinery the lead uses, fed either the
+    /// backing words' own timings or the phrase as one line-synced text. Cached apart from the
+    /// lead (`Key.isBacking`), so a row that draws both looks both up once and never again.
     func backgroundLayout(for line: SyncedLyricLine, fontSize: CGFloat) -> KaraokeLineLayout? {
-        guard !(line.backgroundWords ?? []).isEmpty else { return nil }
+        guard line.hasBackingVocal else { return nil }
         return self.layout(for: line, fontSize: fontSize, isBacking: true) {
             KaraokeLineLayout(line: line.backingVocalLine, fontSize: fontSize)
         }

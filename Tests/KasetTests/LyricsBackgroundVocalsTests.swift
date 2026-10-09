@@ -174,8 +174,10 @@ struct LyricsBackgroundVocalsTests {
 
         #expect(converted?.text == "You smart 누가 You are")
         #expect(converted?.backgroundText == "you smart")
-        // A line-synced backing phrase fills over the line it was taken out of.
-        #expect(converted?.backgroundWords?.map(\.timeInMs) == [47_210])
+        // The source timed the line and nothing else, so the phrase carries no word timings at
+        // all: no onset was measured for it and none is invented for it.
+        #expect(converted?.backgroundWords == nil)
+        #expect(converted?.untimedBackgroundText == "you smart")
     }
 
     @Test("a line that is nothing but an ad-lib becomes a backing-only row")
@@ -185,6 +187,7 @@ struct LyricsBackgroundVocalsTests {
 
         #expect(converted?.text == "")
         #expect(converted?.backgroundText == "Oh-oh-oh-oh-oh")
+        #expect(converted?.untimedBackgroundText == "Oh-oh-oh-oh-oh")
         #expect(converted?.isBackgroundOnly == true)
         // It has something to sing, so the renderer must not draw the pause dots on it.
         let sheet = SyncedLyrics(lines: [converted ?? line], source: "LRCLib")
@@ -254,8 +257,9 @@ struct LyricsBackgroundVocalsTests {
     }
 
     /// An enhanced LRC can carry a phrase in the line's text that it never timed as a word;
-    /// the karaoke row draws the words, so they are the ones that must not mention it.
-    @Test("a phrase only the line's text carries goes to the backing row over the line's window")
+    /// the karaoke row draws the words, so they are the ones that must not mention it — and the
+    /// phrase is not given a word timing of its own on the way to the backing row either.
+    @Test("a phrase only the line's text carries goes to the backing row untimed")
     func phraseOnlyInTheLineText() {
         let line = SyncedLyricLine(
             timeInMs: 1_000,
@@ -270,7 +274,8 @@ struct LyricsBackgroundVocalsTests {
 
         #expect(converted?.text == "You smart")
         #expect(converted?.words?.map(\.word) == ["You", " smart"])
-        #expect(converted?.backgroundWords?.map(\.timeInMs) == [1_000])
+        #expect(converted?.backgroundWords == nil)
+        #expect(converted?.untimedBackgroundText == "you smart")
         #expect(converted?.backgroundText == "you smart")
     }
 
@@ -303,6 +308,10 @@ struct LyricsBackgroundVocalsTests {
         let converted = LyricsBackingParentheses.converted(line)
 
         #expect(converted?.text == "Nothing to see")
+        // One row can carry both readings: the provider's own timed backing word keeps its
+        // onset, and the phrase the pass read out of the text is kept untimed beside it.
+        #expect(converted?.backgroundWords?.map(\.word) == ["Ooh"])
+        #expect(converted?.untimedBackgroundText == "or not")
         #expect(converted?.backgroundText == "Ooh or not")
     }
 
@@ -559,6 +568,53 @@ struct LyricsBackgroundVocalsTests {
         let boundary = KaraokeFillModel.settleBoundaryMs(for: line)
         let declaredEnd = 5_000.0
         #expect(abs(boundary - declaredEnd) < 1)
+    }
+
+    /// A phrase the source never timed gets no fill window at all: a wipe needs onsets, and
+    /// there are none. The row is line-synced instead, so the phrase is revealed whole.
+    @Test("an untimed backing phrase has no fill windows and does not move the row's end")
+    func untimedBackingPhraseHasNoFillWindows() throws {
+        let line = try #require(LyricsBackingParentheses.converted(SyncedLyricLine(
+            timeInMs: 47_210,
+            duration: 2_790,
+            text: "You smart (you smart)",
+            words: nil
+        )))
+
+        #expect(KaraokeFillModel.backgroundWords(for: line).isEmpty)
+        // The row's end is its own: nothing was measured for the phrase, so nothing is claimed
+        // past the line's declared end either.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: line) == 50_000)
+
+        let row = line.backingVocalLine
+        #expect(row.words == nil)
+        #expect(row.text == "you smart")
+        let layout = KaraokeLineLayout(line: row, fontSize: 14)
+        #expect(layout.isLineSynced)
+        #expect(layout.words.map(\.text) == ["you smart"])
+    }
+
+    /// KuGo and LRCLib time the line and nothing else, so every backing phrase they spell in
+    /// parentheses is untimed — including one on a row that has nothing else to sing.
+    @Test("a line-synced sheet's backing rows are line-synced too")
+    func lineSyncedBackingRowsAreLineSynced() throws {
+        let sheet = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(timeInMs: 0, duration: 4_000, text: "You smart (you smart)", words: nil),
+                SyncedLyricLine(timeInMs: 4_000, duration: 4_000, text: "(Oh-oh-oh-oh-oh)", words: nil),
+            ],
+            source: "KuGo"
+        ).convertingParenthesizedBackingVocals()
+
+        for (index, line) in sheet.lines.enumerated() {
+            let backing = line.backingVocalLine
+            #expect(backing.words == nil)
+            #expect(!backing.text.isEmpty)
+            #expect(KaraokeLineLayout(line: backing, fontSize: 14).isLineSynced)
+            #expect(line.untimedBackgroundText != nil)
+            // And the phrase is something to sing: neither row is an interlude.
+            #expect(sheet.isPauseLine(at: index) == false)
+        }
     }
 
     @Test("backing vocals fill synchronously with the lead on a shared clock")

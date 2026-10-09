@@ -58,51 +58,99 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
     /// dragging the karaoke fill backwards and gluing the two together.
     let backgroundWords: [TimedWord]?
 
-    init(timeInMs: Int, duration: Int, text: String, words: [TimedWord]?, backgroundWords: [TimedWord]? = nil, id: UUID? = nil) {
+    /// Backing-vocal text the source never timed.
+    ///
+    /// A line-synced source spells its backing vocal in the line's own text and times the line
+    /// only as a whole — `You smart (you smart)` — so there is no onset to fill from and no
+    /// window to fill over. The phrase is therefore not a `TimedWord`: handing it one would
+    /// invent both, and the row would then be wiped word by word over a window nobody measured.
+    /// It is drawn as a line-synced row instead — revealed whole when the line begins, the way
+    /// the lead of a line-synced sheet is (see `backingVocalLine`).
+    let untimedBackgroundText: String?
+
+    init(
+        timeInMs: Int,
+        duration: Int,
+        text: String,
+        words: [TimedWord]?,
+        backgroundWords: [TimedWord]? = nil,
+        untimedBackgroundText: String? = nil,
+        id: UUID? = nil
+    ) {
         self.id = id ?? UUID()
         self.timeInMs = timeInMs
         self.duration = duration
         self.text = text
         self.words = words
         self.backgroundWords = backgroundWords
+        self.untimedBackgroundText = untimedBackgroundText
     }
 
     /// The line's backing-vocal text, or `nil` when it has none.
+    ///
+    /// Word-timed backing words come first, then a phrase the source left untimed: one row can
+    /// carry both readings, and both are part of what is sung over the line.
     var backgroundText: String? {
-        guard let backgroundWords, !backgroundWords.isEmpty else { return nil }
-        let joined = backgroundWords.map(\.word).joined().trimmingCharacters(in: .whitespacesAndNewlines)
-        return joined.isEmpty ? nil : joined
+        var parts: [String] = []
+        if let backgroundWords, !backgroundWords.isEmpty {
+            let joined = backgroundWords.map(\.word).joined().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !joined.isEmpty { parts.append(joined) }
+        }
+        if let untimed = self.untimedBackgroundText?.trimmingCharacters(in: .whitespacesAndNewlines), !untimed.isEmpty {
+            parts.append(untimed)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// Whether the line carries a backing vocal at all, word-timed or not.
+    ///
+    /// A source that timed the line only as a whole still has something sung over it, and a row
+    /// with something to sing must never be read as an interlude: this is what keeps a converted
+    /// backing-only line out of the pause dots.
+    var hasBackingVocal: Bool {
+        self.backgroundText != nil
     }
 
     /// Whether the line carries only backing vocals, with no lead text.
     var isBackgroundOnly: Bool {
-        self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(self.backgroundWords ?? []).isEmpty
+        self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && self.hasBackingVocal
     }
 
     /// The line as its own backing vocal, for rendering the backing words with the same
     /// karaoke machinery the lead line uses.
     ///
-    /// `KaraokeLineLayout` reads a line's `words`, so the backing words are handed to it
-    /// as the words of a line that is otherwise empty of lead text. The line's `id` is
-    /// kept — the renderer keys layouts and SwiftUI identity by it — and the empty `text`
-    /// is exactly what a backing-only line already looks like, so `isLineSynced` falls
-    /// out of the backing words themselves rather than needing a special case. The fill
-    /// windows come from `KaraokeFillModel.backgroundWords(for:)`, which reads
-    /// `backgroundWords` and never this view, so the synthetic shape exists only to fit
-    /// the layout's input.
+    /// `KaraokeLineLayout` reads a line's `words`, so a word-timed backing vocal is handed to it
+    /// as the words of a line that is otherwise empty of lead text. The empty `text` is exactly
+    /// what a backing-only line already looks like, so `isLineSynced` falls out of the backing
+    /// words themselves rather than needing a special case.
+    ///
+    /// A phrase the source never timed has no words to hand over: it goes on the line's `text`
+    /// instead, which makes the row **line-synced** — `isLineSynced` falls out of the absent
+    /// words — so it is revealed whole rather than wiped word by word over a window nobody
+    /// measured. The two readings are never mixed on one row: a phrase that is only partly timed
+    /// is read as untimed, because a wipe needs every one of its words to have an onset.
+    ///
+    /// The line's `id` is kept — the renderer keys layouts and SwiftUI identity by it — and the
+    /// fill windows of a word-timed row come from `KaraokeFillModel.backgroundWords(for:)`, which
+    /// reads `backgroundWords` and never this view, so the synthetic shapes exist only to fit the
+    /// layout's input.
     var backingVocalLine: SyncedLyricLine {
-        SyncedLyricLine(
+        let timedWords = (self.backgroundWords ?? []).isEmpty ? nil : self.backgroundWords
+        let untimed = self.untimedBackgroundText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isWordTimed = timedWords != nil && (untimed ?? "").isEmpty
+
+        return SyncedLyricLine(
             timeInMs: self.timeInMs,
             duration: self.duration,
-            text: "",
-            words: self.backgroundWords,
+            text: isWordTimed ? "" : self.backgroundText ?? "",
+            words: isWordTimed ? timedWords : nil,
             backgroundWords: nil,
             id: self.id
         )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, timeInMs, duration, text, words, backgroundWords
+        case id, timeInMs, duration, text, words, backgroundWords, untimedBackgroundText
     }
 
     init(from decoder: Decoder) throws {
@@ -114,6 +162,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         self.words = try container.decodeIfPresent([TimedWord].self, forKey: .words)
         // Absent in caches written before backing vocals were modelled.
         self.backgroundWords = try container.decodeIfPresent([TimedWord].self, forKey: .backgroundWords)
+        self.untimedBackgroundText = try container.decodeIfPresent(String.self, forKey: .untimedBackgroundText)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -124,6 +173,7 @@ struct SyncedLyricLine: Identifiable, Equatable, Codable, Sendable {
         try container.encode(self.text, forKey: .text)
         try container.encodeIfPresent(self.words, forKey: .words)
         try container.encodeIfPresent(self.backgroundWords, forKey: .backgroundWords)
+        try container.encodeIfPresent(self.untimedBackgroundText, forKey: .untimedBackgroundText)
     }
 }
 
@@ -158,7 +208,7 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
 
     /// Whether any line carries backing vocals.
     var hasBackgroundVocals: Bool {
-        self.lines.contains { !($0.backgroundWords ?? []).isEmpty }
+        self.lines.contains { $0.hasBackingVocal }
     }
 
 
@@ -258,7 +308,7 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
     /// when a provider spells it out instead of leaving it to the timeline.
     static func isSilent(_ line: SyncedLyricLine) -> Bool {
         line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (line.backgroundWords ?? []).isEmpty
+            && !line.hasBackingVocal
     }
 
     /// The sheet with a pause row inserted for every interlude the provider left implicit

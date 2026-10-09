@@ -575,10 +575,11 @@ struct SyncedLineView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 if let backgroundLayout {
-                    // The backing vocal runs the same per-character wipe as the lead,
-                    // driven by the same display clock position — it overlaps the line
-                    // in time, so synchrony is simply sharing the clock. It is dimmer
-                    // and smaller so it reads as accompaniment, nothing else differs.
+                    // The backing vocal is driven by the same display clock position as the
+                    // lead: a word-timed one runs the same per-character wipe, and a phrase
+                    // the source never timed is drawn as a line-synced row — revealed whole at
+                    // the line's start, with no invented word boundaries. It is dimmer and
+                    // smaller so it reads as accompaniment.
                     KaraokeLyricsLineView(
                         layout: backgroundLayout,
                         displayTimeMs: displayTimeMs,

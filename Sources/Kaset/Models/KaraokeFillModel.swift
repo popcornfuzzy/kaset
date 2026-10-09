@@ -186,25 +186,16 @@ enum KaraokeFillModel {
     /// The backing-vocal words to render alongside the lead line, each with its own
     /// fill window — the same windows the same machinery builds for the lead.
     ///
-    /// A backing vocal overlaps the lead line in time and carries its own word
-    /// timings, so it is derived from `backgroundWords` alone: the windows are the
-    /// backing words' own onsets, never interpolated from the lead. A provider that
-    /// timed only the line as a whole gets the whole backing text as one word over
-    /// the line's own window, so line-synced lyrics keep a synchronized backing
-    /// vocal rather than losing one.
+    /// A backing vocal overlaps the lead line in time and, when the source timed it as words,
+    /// carries its own onsets: the windows are those, never interpolated from the lead. A
+    /// backing phrase the source timed only as part of the line has no onsets at all, and gets
+    /// no windows here — inventing one over the line's own duration would put a word-by-word
+    /// wipe on a phrase nobody measured, which is exactly what a line-synced sheet must not
+    /// show. Such a phrase is drawn as a line-synced row instead
+    /// (`SyncedLyricLine.backingVocalLine`), revealed whole when the line begins.
     static func backgroundWords(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> [KaraokeWord] {
         let timedWords = (line.backgroundWords ?? []).filter { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard !timedWords.isEmpty else {
-            guard let text = line.backgroundText else { return [] }
-            return [self.word(
-                index: 0,
-                text: text,
-                isNewWord: true,
-                start: Double(line.timeInMs),
-                end: Double(line.timeInMs + max(line.duration, 1)),
-                timing: timing
-            )]
-        }
+        guard !timedWords.isEmpty else { return [] }
         return self.timedWords(timedWords, line: line, timing: timing)
     }
 

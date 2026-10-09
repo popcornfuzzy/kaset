@@ -83,8 +83,10 @@ struct SyncedLyricsServiceTests {
     }
 
     /// The same seam for a parenthesized backing vocal, whichever provider spelled it that
-    /// way: what the panel holds is the phrase on the backing row, not the parentheses.
-    @Test("a provider's parenthesized backing vocal reaches the display as a backing row")
+    /// way: what the panel holds is the phrase on the backing row, not the parentheses — and,
+    /// since a line-synced provider timed nothing but the line, without word timings the
+    /// renderer would have to invent.
+    @Test("a provider's parenthesized backing vocal reaches the display as an untimed backing row")
     func parenthesizedBackingVocalReachesTheDisplay() async {
         let sheet = SyncedLyrics(
             lines: [
@@ -111,6 +113,21 @@ struct SyncedLyricsServiceTests {
         #expect(displayed.lines[1].backgroundText == "Oh-oh-oh-oh-oh")
         #expect(displayed.isPauseLine(at: 1) == false)
         #expect(displayed.hasBackgroundVocals)
+
+        // Neither row is given a word timing for its phrase, and the layout the panel measures
+        // for a backing row is the line-synced one: revealed whole, never wiped word by word.
+        let layoutCache = KaraokeLayoutCache()
+        for (index, line) in displayed.lines.enumerated() {
+            let phrase = index == 0 ? "you smart" : "Oh-oh-oh-oh-oh"
+            #expect(line.backgroundWords == nil)
+            #expect(line.untimedBackgroundText == phrase)
+            guard let backing = layoutCache.backgroundLayout(for: line, fontSize: 14) else {
+                Issue.record("row \(index) has no backing layout")
+                return
+            }
+            #expect(backing.isLineSynced)
+            #expect(backing.words.map(\.text) == [phrase])
+        }
     }
 
     @Test("a variant provider's alternatives are listed and the first is selected")

@@ -14,9 +14,10 @@ import Foundation
 /// and put the phrase in the words of the line itself — `You smart (you smart) 누가 You are`
 /// — or give it a line of nothing else: `(Oh-oh-oh-oh-oh)`.
 ///
-/// Kaset has a place for a backing vocal (`SyncedLyricLine.backgroundWords`, drawn on the
-/// dimmed row under the lead), so a parenthesis is not something to display: it is the
-/// instruction. The phrase belongs on the backing row, without the parentheses. A phrase
+/// Kaset has a place for a backing vocal — `SyncedLyricLine.backgroundWords` when the source
+/// timed the phrase as words, `SyncedLyricLine.untimedBackgroundText` when it did not, both
+/// drawn on the dimmed row under the lead — so a parenthesis is not something to display: it is
+/// the instruction. The phrase belongs on the backing row, without the parentheses. A phrase
 /// that names part of the sheet instead ("(Chorus)", "(x2)") is not a vocal at all and is
 /// dropped, and a line left with nothing at all after both moves loses the line.
 ///
@@ -250,6 +251,11 @@ enum LyricsBackingParentheses {
         // needs the space that separates it from what came before.
         let declaredBacking = backing.count
 
+        // Phrases the source never timed, in the order it wrote them. A row that already has
+        // one keeps it: the pass is applied where a result is shown, and a sheet that reaches
+        // it twice must not lose text the second time.
+        var untimedPhrases = line.untimedBackgroundText.map { [$0] } ?? []
+
         var leadWords = line.words
         var leadText = line.text
         var sawPhrase = false
@@ -265,25 +271,28 @@ enum LyricsBackingParentheses {
                 leadText = fromWords.lead.map(\.word).joined()
                 backing += Self.backingWords(from: fromWords.phrases, after: declaredBacking)
             } else if let fromText = Self.textPhrases(of: line.text) {
-                // An enhanced LRC can write a phrase it never timed as a word: the words are
-                // left alone and the phrase goes on the backing row over the line's window.
+                // An enhanced LRC can write a phrase it never timed as a word. Nothing about
+                // when its words are sung is known, so the phrase is given no onsets: the words
+                // are left alone, and the phrase joins the row's untimed backing text.
                 sawPhrase = true
                 leadText = fromText.lead
-                backing += Self.lineBackingWords(fromText.phrases, at: line.timeInMs, after: declaredBacking)
+                untimedPhrases += fromText.phrases
             }
         } else if let fromText = Self.textPhrases(of: line.text) {
             sawPhrase = true
             leadText = fromText.lead
-            backing += Self.lineBackingWords(fromText.phrases, at: line.timeInMs, after: declaredBacking)
+            untimedPhrases += fromText.phrases
         }
 
         let trimmedLead = leadText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasBacking = !backing.isEmpty
+        let untimedBacking = untimedPhrases.isEmpty ? nil : untimedPhrases.joined(separator: " ")
+        let hasBacking = !backing.isEmpty || untimedBacking != nil
         // A line that is silent to begin with is an interlude, not an empty result: only a
         // line that had something to say and lost all of it to a label is dropped.
         let hadContent = !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !(line.words ?? []).isEmpty
             || !(line.backgroundWords ?? []).isEmpty
+            || !(line.untimedBackgroundText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if trimmedLead.isEmpty, !hasBacking, hadContent, sawPhrase { return nil }
 
         return SyncedLyricLine(
@@ -291,7 +300,8 @@ enum LyricsBackingParentheses {
             duration: line.duration,
             text: trimmedLead,
             words: leadWords,
-            backgroundWords: hasBacking ? backing : nil,
+            backgroundWords: backing.isEmpty ? nil : backing,
+            untimedBackgroundText: untimedBacking,
             id: line.id
         )
     }
@@ -307,20 +317,14 @@ enum LyricsBackingParentheses {
         return (split.lead, split.backing)
     }
 
-    /// The phrases a line-synced line's text gave up, as one backing word over the line's own
-    /// window: the words were never timed apart from the line, so nothing finer is known and
-    /// nothing finer is invented.
-    private static func lineBackingWords(_ phrases: [String], at timeInMs: Int, after preceding: Int) -> [TimedWord] {
-        guard !phrases.isEmpty else { return [] }
-        return Self.backingWords(
-            from: [Phrase(text: phrases.joined(separator: " "), timeInMs: timeInMs)],
-            after: preceding
-        )
-    }
-
     /// Phrases read out of the words, as the backing row's own words. Each after the row's
     /// first word carries the space that separates it — the same rule the providers' own
     /// backing words follow.
+    ///
+    /// Only a phrase read **out of the words** gets here: those words have onsets, so the phrase
+    /// has one, and the karaoke wipe it is drawn with is its own. A phrase read out of the line's
+    /// *text* has no onset and never becomes a `TimedWord` — it goes to the row's untimed
+    /// backing text instead.
     private static func backingWords(from phrases: [Phrase], after preceding: Int) -> [TimedWord] {
         phrases.enumerated().map { index, phrase in
             let needsSpace = preceding + index > 0

@@ -215,10 +215,10 @@ only a backing row has something to sing and is not an interlude.
   parentheses: `(Yes)` reads `Yes`, and `(Dancin'` … `own)` becomes `Dancin' on my
   own`. The words keep their own onsets, and a syllable continuation that
   legitimately has no leading space is not given one.
-- **A phrase in a line-synced line's text** becomes one backing word over that
-  line's own window. The words were never timed apart from the line, so nothing
-  finer is known and nothing finer is invented — the same reasoning
-  `KaraokeFillModel.backgroundWords(for:)` already uses for a line-level payload.
+- **A phrase in a line-synced line's text** goes on the backing row as **untimed
+  text**, and that row is drawn as a line-synced row (see the final amendment).
+  The words were never timed apart from the line, so nothing finer is known and,
+  since that first version, nothing finer is represented either.
 - **A phrase in a word-timed line** keeps the onset of the word that opened it, and
   the scan carries its depth across the whole word list: a phrase that opens in one
   word and closes in another (`(you` … `smart)`) is one phrase with one onset, and a
@@ -296,16 +296,74 @@ over every one of them, and no frame anywhere highlights a silent row while the
 row above it is still sounding (229 such frames before the change, in the one
 song that has the shape).
 
+## Amendment: a backing phrase with no word timing gets none
+
+The parentheses pass first handed a line-synced phrase to the backing row as **one
+`TimedWord` at the line's own onset**, on the reasoning that the fill model would
+then give it a window over the line — "so line-synced lyrics keep a synchronized
+backing vocal rather than losing one". That is a record of something never
+measured. The onset is the *line's*, not the phrase's, and the window was not
+measured at all; all the entry put on the row was an invented timing, which
+`KaraokeLayoutCache` then read as fidelity: `KaraokeLineLayout` decides
+`isLineSynced` from `(line.words ?? []).isEmpty`, so a phrase that had no words got
+the row's **word-timed** branch — a per-character wipe sweeping the whole phrase
+across the line, with the glow and the character lift that go with an edge the
+source never knew the position of. On a line-by-line sheet, where nothing else on
+screen wipes, the accompaniment was the one thing that did.
+
+The rule now is that a phrase the source never timed is **never given a timing**:
+
+- `SyncedLyricLine` gains `untimedBackgroundText`, alongside `backgroundWords`,
+  for a backing phrase written as words and as text respectively. `backgroundText`
+  reads both (word-timed first), and `hasBackingVocal` is what `isSilent`,
+  `isBackgroundOnly`, `hasBackgroundVocals` and the renderers' backing-layout
+  lookup consult, so a backing-only row stays a row with something to sing instead
+  of becoming a pause row.
+- `LyricsBackingParentheses` sends a phrase read out of a line's **text** to that
+  field, and only a phrase read out of the **words** to `backgroundWords` — those
+  words have onsets and those onsets are the phrase's own.
+- `KaraokeFillModel.backgroundWords(for:)` returns **no windows** for a phrase with
+  no onsets, instead of synthesizing one over the line's duration. Nothing that
+  reads fill windows (`settleBoundaryMs`, `armBoundaryMs`) therefore claims
+  anything about when the phrase is sung; the row's own declared end stays its end.
+- `backingVocalLine` puts such a phrase on the row's `text` with no `words`, which
+  makes the row **line-synced**: one `Text`, revealed whole when the line begins,
+  exactly the treatment the lead of a line-by-line sheet gets. A row whose backing
+  is **partly** timed is read as untimed as a whole, because a wipe needs every one
+  of its words to have an onset; no text is lost either way, since
+  `backgroundText` carries both readings.
+
+Genuine word-timed backing is untouched: Apple Music's `x-bg` spans and Paxsenix's
+`background` lines carry onsets of their own and keep their wipe, which is the
+whole point of having modelled them.
+
+Verified against the machine's real lyrics cache — 22 cached sheets through
+`LyricsCacheStore` → `SyncedLyricsService.fetchLyrics`: the 13 line-by-line sheets
+hold 28 parenthesized phrases, every one of them previously carried as a synthetic
+word and drawn with a wipe (`isLineSynced == false`, non-empty fill windows) and
+none of them any longer (all 28 are untimed text on line-synced rows), while the 34
+word-timed backing phrases still wipe. No untimed phrase became a pause row, and
+no row's settle boundary moved.
+
+This is a model change rather than a parse change, so `LyricsCacheStore` is
+untouched again: the cache holds what the provider returned and the conversion runs
+when the sheet is displayed, which is where the synthetic words were being created
+in the first place.
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
   timing backwards.
+- A backing phrase is animated according to what the source actually measured: a
+  word-timed one wipes per character like the lead, and one timed only as part of
+  its line is revealed whole with the line. No row claims an onset nobody timed.
 - The information is available to every provider that can express it, not only
   Unison (whose TTML, BetterLyrics' and Paxsenix's all route through the same
   parser).
-- Backing vocals animate with the same per-character wipe as the lead line,
-  synchronized through the shared display clock, while staying visually
-  subordinate (smaller, dimmer). They decide the highlight in exactly one place:
+- Backing vocals are synchronized through the shared display clock, while staying
+  visually subordinate (smaller, dimmer): word-timed ones animate with the same
+  per-character wipe as the lead line, and a phrase the source never timed is
+  revealed as one line-synced text instead of wiping. They decide the highlight in exactly one place:
   a row with nothing to sing — a pause, or a `♪` gap — cannot become the line
   being sung while the row above it is still sounding, which is what a backing
   vocal outlasting its own line used to make happen.
