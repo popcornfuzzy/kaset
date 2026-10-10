@@ -128,11 +128,12 @@ struct KaraokeWord: Equatable, Sendable, KaraokeFillUnit {
 /// One character of a karaoke word: the text to draw plus its own slice of the word's fill
 /// window.
 ///
-/// The character is the unit that lifts. A word's emphasis used to be one translation of
-/// the whole word; slicing the word's window per character turns it into a wave that follows
-/// the fill edge, so the character being sung rises and settles while the ones around it stay
-/// at rest. The slices tile the word's window exactly, so the word still fills over exactly
-/// the interval it always did.
+/// The character is the unit the emphasis is *built* from: a word's emphasis used to be one
+/// translation of the whole word, and slicing the word's window per character is what makes it
+/// a wave that follows the fill edge. The character is no longer what lifts, though — a crest is
+/// (`KaraokeCrest`), because a character's slice can be too short for a wave to rise and fall in.
+/// The slices tile the word's window exactly, so the word still fills over exactly the interval
+/// it always did.
 struct KaraokeCharacter: Equatable, Sendable, KaraokeFillUnit {
     /// Index of the character within its word.
     let index: Int
@@ -141,6 +142,31 @@ struct KaraokeCharacter: Equatable, Sendable, KaraokeFillUnit {
     /// Start of this character's slice of the word's fill ramp, in milliseconds.
     let fillStartMs: Double
     /// End of this character's slice of the word's fill ramp, in milliseconds.
+    let fillEndMs: Double
+}
+
+// MARK: - KaraokeCrest
+
+/// The stretch of one word the emphasis is on at a given moment: a run of characters that rises and
+/// settles together, and the window over which it does.
+///
+/// The emphasis used to ride a single character's own slice of the word's fill window, and that is a
+/// crest that has to fit inside the slice. On a fast line a slice is 60–90 ms, so a character went from
+/// rest to the top of its swell and back within two or three display frames, and the next character
+/// took over immediately: a character that *pops* ten to thirteen times a second rather than one that
+/// rises. A crest is now the shortest run of characters whose own fill lasts
+/// `KaraokeTiming.minimumCrestMs`, so the wave gets the time it needs to be a wave — its rise and fall
+/// are several frames each — and it carries the characters being sung together. Text that is already
+/// slow enough to give one character that much time is untouched: its crest is that character.
+///
+/// The crest is a **fill unit**, exactly as a word and a character are: it has a window and its own
+/// swell, so the emphasis is expressed in the same terms at every scale.
+struct KaraokeCrest: Equatable, Sendable, KaraokeFillUnit {
+    /// The characters the crest carries, in reading order.
+    let range: ClosedRange<Int>
+    /// Start of the crest's window, in milliseconds.
+    let fillStartMs: Double
+    /// End of the crest's window, in milliseconds.
     let fillEndMs: Double
 }
 
@@ -236,6 +262,81 @@ enum KaraokeFillModel {
                     : word.fillStartMs + word.durationMs * offset
             )
         }
+    }
+
+    /// The crests one word's characters are sung in, in reading order.
+    ///
+    /// The crests **tile** the word's characters: every character belongs to exactly one of them, and
+    /// no crest splits a character. So the wave touches every character of the word once, in order, and
+    /// a crest's window ends exactly where the next one's begins — which is what makes the hand-over
+    /// between two crests continuous: the crest that is landing has reached rest on the same frame the
+    /// next one leaves it.
+    ///
+    /// The count is the number of crests the word's *time* allows — one per `minimumDurationMs` of its
+    /// fill, **rounded down**, so that the crests are each at least that long rather than just under it —
+    /// and never more than its characters, since a crest is at least one character wide however long a
+    /// character lasts. The characters are then shared out between the crests as evenly in time as they
+    /// can be, so a word does not end in one crest carrying a stray character that flashes past in a
+    /// fraction of the time the crests before it took.
+    ///
+    /// A minimum of zero asks for a crest per character, which is the wave this used to be.
+    static func crests(of characters: [KaraokeCharacter], minimumDurationMs: Double) -> [KaraokeCrest] {
+        guard let first = characters.first, let last = characters.last else { return [] }
+        let total = max(0, last.fillEndMs - first.fillStartMs)
+        let count = min(
+            characters.count,
+            max(1, Int(total / max(1, minimumDurationMs)))
+        )
+
+        var crests: [KaraokeCrest] = []
+        var start = characters.startIndex
+        for position in 0 ..< count {
+            // How many characters the crests still to come need: at least one each.
+            let remaining = count - 1 - position
+            // Where this crest's share of the word's time ends.
+            let target = first.fillStartMs + total * Double(position + 1) / Double(count)
+            // The last character this crest may reach and still leave one for every crest to come.
+            let lastAllowed = characters.count - 1 - remaining
+            // The **character boundary nearest** that share: a crest can only end where one character
+            // ends and the next begins, and taking the boundary *before* the share every time would
+            // leave the crests before it short of their share and the last crest carrying whatever was
+            // left over — a crest a fraction of the length of the ones before it.
+            var end = start
+            var best = abs(characters[start].fillStartMs - target)
+            for candidate in start + 1 ... lastAllowed + 1 {
+                let splitMs = candidate < characters.count
+                    ? characters[candidate].fillStartMs
+                    : characters[characters.count - 1].fillEndMs
+                let distance = abs(splitMs - target)
+                if distance > best { break }
+                end = candidate - 1
+                best = distance
+            }
+            crests.append(
+                KaraokeCrest(
+                    range: start ... end,
+                    fillStartMs: characters[start].fillStartMs,
+                    fillEndMs: characters[end].fillEndMs
+                )
+            )
+            start = end + 1
+        }
+        return crests
+    }
+
+    /// The crest the fill edge is in at a playback position, or `nil` when nothing on the word is
+    /// moving — before its first crest opens, and once its last one has settled.
+    static func crest(
+        of characters: [KaraokeCharacter],
+        at timeMs: Double,
+        minimumDurationMs: Double
+    ) -> KaraokeCrest? {
+        guard let edge = characters.lastIndex(where: { $0.fill(at: timeMs) > 0 }),
+              let crest = self.crests(of: characters, minimumDurationMs: minimumDurationMs)
+                  .first(where: { $0.range.contains(edge) }),
+              crest.swell(at: timeMs) > 0
+        else { return nil }
+        return crest
     }
 
     /// The playback position to render a line at when it is not the line being sung.

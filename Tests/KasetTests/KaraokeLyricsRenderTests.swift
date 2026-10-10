@@ -243,9 +243,12 @@ struct KaraokeLyricsRenderTests {
     @Test("The lift travels across a word one character at a time")
     func liftTravelsAcrossTheWord() throws {
         let text = "MMMMMM"
+        // Slow enough that every character lasts longer than a crest needs, so the wave on this word is
+        // still one character at a time: the crest is what the emphasis rides, and it only gathers
+        // characters up when the text is sung faster than a wave can rise and fall in.
         let line = SyncedLyricLine(
             timeInMs: 0,
-            duration: 1200,
+            duration: 2400,
             text: text,
             words: [TimedWord(timeInMs: 0, word: text)]
         )
@@ -449,15 +452,15 @@ struct KaraokeLyricsRenderTests {
     /// opaque. Reading a band at this threshold reads glyphs rather than glows.
     private static let litAlpha: UInt8 = 170
 
-    /// One character moves at a time, and a word nothing is happening to is one layer.
+    /// One crest moves at a time, and a word nothing is happening to is one layer.
     ///
-    /// The structural half of the frame budget (`KaraokeLyricsPerformanceTests` prices it): the lift is
-    /// timed per character now, so "a settled word is one layer" is a property the code has to be held
-    /// to rather than one it can be trusted to keep by accident. A row is mostly settled words, and it is
+    /// The structural half of the frame budget (`KaraokeLyricsPerformanceTests` prices it): the lift
+    /// rides a crest now, so "a settled word is one layer" is a property the code has to be held to
+    /// rather than one it can be trusted to keep by accident. A row is mostly settled words, and it is
     /// those that set what a frame costs. A lift is `nil` exactly when nothing is moving, which is when
     /// the word is drawn as one layer with no mask over it.
-    @Test("A word lifts one character at a time, and is one layer at rest")
-    func theLiftMovesOneCharacterAtATime() throws {
+    @Test("A word lifts one crest at a time, and is one layer at rest")
+    func theLiftMovesOneCrestAtATime() throws {
         let line = SyncedLyricLine(
             timeInMs: 0,
             duration: 1200,
@@ -468,7 +471,7 @@ struct KaraokeLyricsRenderTests {
         #expect(layout.words.count == 2)
 
         for index in layout.words.indices {
-            var liftedInOrder: [Int] = []
+            var liftedInOrder: [ClosedRange<Int>] = []
             var atRest = 0
 
             for step in stride(from: -400, through: 1800, by: 10) {
@@ -486,26 +489,122 @@ struct KaraokeLyricsRenderTests {
                     continue
                 }
 
-                // One character, and only ever one, at a lift the font size can make room for.
+                // One crest, and only ever one, at a lift the font size can make room for.
                 #expect(lift.amount > 0 && lift.amount <= 1, "the lift was \(lift.amount) at \(step)ms")
-                // And it is a cell of this word: the mask can only cut a word where the word is drawn.
-                let start = word.cellStart(of: lift.index)
-                #expect(start >= -0.01, "the lifted cell of `\(layout.words[index].text)` started at \(start)")
+                // And it is made of cells of this word: the mask can only cut a word where the word is
+                // drawn, and it has to cover its own first character's cell.
+                let frame = word.crestFrame(of: lift.range)
                 #expect(
-                    start + layout.characterWidths[index][lift.index] <= layout.textWidths[index] + 0.01,
-                    "the lifted cell of `\(layout.words[index].text)` ran past its box"
+                    frame.x >= word.cellStart(of: lift.range.lowerBound) - 0.01,
+                    "the lifted crest \(lift.range) of `\(layout.words[index].text)` did not cover its own first cell"
+                )
+                #expect(frame.x >= -0.01, "the lifted crest \(lift.range) of `\(layout.words[index].text)` started at \(frame.x)")
+                #expect(
+                    frame.x + frame.width <= layout.textWidths[index] + 0.01,
+                    "the lifted crest \(lift.range) of `\(layout.words[index].text)` ran past its box"
                 )
 
-                if liftedInOrder.last != lift.index { liftedInOrder.append(lift.index) }
+                if liftedInOrder.last != lift.range { liftedInOrder.append(lift.range) }
             }
 
             // Before the fill arrives and after the word has settled, the word is one layer.
             #expect(atRest > 0)
-            // The wave crosses the word one character at a time, in reading order, and touches every
-            // character of it.
-            #expect(liftedInOrder == liftedInOrder.sorted(), "the wave went backwards through `\(layout.words[index].text)`")
-            #expect(Set(liftedInOrder) == Set(layout.characters[index].indices), "the wave skipped a character of `\(layout.words[index].text)`")
+            // The crests cross the word in reading order, one at a time, and between them they carry
+            // every character of it exactly once — so the wave still touches the whole word.
+            let carried = liftedInOrder.flatMap { Array($0) }
+            #expect(carried == carried.sorted(), "the wave went backwards through `\(layout.words[index].text)`")
+            #expect(Set(carried) == Set(layout.characters[index].indices), "the wave skipped a character of `\(layout.words[index].text)`")
         }
+    }
+
+    /// The wave moves gently enough to read as motion rather than as a flicker.
+    ///
+    /// The emphasis used to ride one character's own slice of the word's fill window, and on a fast line
+    /// that slice is 60–90 ms: the character reached the top of its swell and was back at rest within two
+    /// or three display frames, and the next one took over immediately — ten to thirteen of them a second,
+    /// with the size of each peak left to wherever a frame happened to land inside the slice. The emphasis
+    /// now rides a crest, which lasts at least `KaraokeTiming.minimumCrestMs`, so the wave keeps the time a
+    /// wave needs. Both halves of that are held here: the motion a frame carries, and the rate crests
+    /// arrive at. The wave as it was is measured beside the wave as it is, so the assertion cannot be
+    /// satisfied by a wave nobody drew.
+    @Test("The lift moves in slow crests rather than in a flicker")
+    func theLiftIsSlowEnoughToRead() throws {
+        // A fast line: twenty characters over 1.5 s — a dense lyric at the fullscreen size.
+        let text = "twentycharacterslong"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1500,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+        let fontSize: CGFloat = 36
+        let minimum = KaraokeTiming.standard.minimumCrestMs
+        let asItWas = try Self.wave(line: line, fontSize: fontSize, minimumCrestMs: 0)
+        let now = try Self.wave(line: line, fontSize: fontSize, minimumCrestMs: minimum)
+
+        // Half of the whole travel of a 36 pt line — a fifth of a point — is more than any one frame may
+        // carry now...
+        #expect(now.worstFramePt < 0.2, "the lift moved \(now.worstFramePt) pt in a single frame")
+        // ...where the per-character wave carried most of it in one frame: a character rose from rest to
+        // the top of its swell inside two of them.
+        #expect(asItWas.worstFramePt > 0.4, "the per-character wave only moved \(asItWas.worstFramePt) pt in a frame")
+
+        // And the crests arrive at a few hertz rather than a dozen: a wave crossing the word, not a
+        // character popping on each side of it.
+        #expect(now.crestsPerSecond <= 1000 / minimum + 0.5, "a crest every \(1 / now.crestsPerSecond) s")
+        #expect(asItWas.crestsPerSecond > 8, "the per-character wave arrived at only \(asItWas.crestsPerSecond) Hz")
+
+        // Every crest reaches full amplitude, so the emphasis is the same size wherever it is rather than
+        // a different one on each character, which is what reading a fast envelope off display frames cost.
+        #expect(now.peakSpreadPt < 0.02, "the crests peaked \(now.peakSpreadPt) pt apart")
+        #expect(asItWas.peakSpreadPt > 0.05, "the per-character peaks were only \(asItWas.peakSpreadPt) pt apart")
+    }
+
+    /// The lift a line is actually drawn with, sampled at display rate.
+    private struct Wave {
+        /// The most any single frame moved the emphasis, in points.
+        let worstFramePt: Double
+        /// How much smaller the quietest crest was than the tallest, in points.
+        let peakSpreadPt: Double
+        /// How many crests the word's own time is shared out between, per second.
+        let crestsPerSecond: Double
+    }
+
+    private static func wave(line: SyncedLyricLine, fontSize: CGFloat, minimumCrestMs: Double) throws -> Wave {
+        let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
+        let characters = try #require(layout.characters.first)
+        let amplitudePt = Double(fontSize) * 0.02
+        let startMs = characters[0].fillStartMs
+        let endMs = (characters.last?.fillEndMs ?? 0)
+
+        var drawn: [Double] = []
+        for frame in 0 ... Int((endMs - startMs + 400) / (1000.0 / 60.0)) {
+            let word = KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: layout.characterWidths[0],
+                isRightToLeft: false,
+                displayTimeMs: startMs - 200 + Double(frame) * 1000.0 / 60.0,
+                fontSize: fontSize,
+                emphasis: 1,
+                minimumCrestMs: minimumCrestMs
+            )
+            drawn.append((word.lift?.amount ?? 0) * amplitudePt)
+        }
+
+        var peaks: [Double] = []
+        for index in 1 ..< max(1, drawn.count - 1)
+            where drawn[index] >= drawn[index - 1] && drawn[index] > drawn[index + 1] {
+            peaks.append(drawn[index])
+        }
+
+        let steps = zip(drawn, drawn.dropFirst()).map { abs($1 - $0) }
+        let crests = KaraokeFillModel.crests(of: characters, minimumDurationMs: minimumCrestMs)
+        return Wave(
+            worstFramePt: steps.max() ?? 0,
+            peakSpreadPt: (peaks.max() ?? 0) - (peaks.min() ?? 0),
+            crestsPerSecond: Double(crests.count) / max(0.001, (endMs - startMs) / 1000)
+        )
     }
 
     /// The lift is drawn only where its movement can be seen.

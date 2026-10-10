@@ -729,31 +729,88 @@ struct KaraokeCharacterTests {
         #expect(characters.allSatisfy { $0.fill(at: word.fillEndMs) == 1 })
     }
 
-    @Test("The emphasis travels through a word one character at a time")
-    func emphasisTravelsCharacterByCharacter() {
+    @Test("The emphasis travels through a word one crest at a time")
+    func emphasisTravelsCrestByCrest() {
         let (word, characters) = Self.word(text: "four", widths: [20, 20, 20, 20])
+        let minimum = KaraokeTiming.standard.minimumCrestMs
+        let crests = KaraokeFillModel.crests(of: characters, minimumDurationMs: minimum)
 
-        // Each character owns its slice, so its lift is spent within that slice: it is not moving
-        // before its own window opens or after it closes, whatever the rest of the word is doing.
-        for character in characters {
-            #expect(character.swell(at: character.fillStartMs) == 0)
-            #expect(character.swell(at: character.fillEndMs) == 0)
-            #expect(character.swell(at: character.fillStartMs - 300) == 0)
-            #expect(character.swell(at: character.fillEndMs + 300) == 0)
+        // This word is slow enough that one character already lasts longer than a crest needs, so
+        // nothing about the wave changes on it: the crests are its characters, one apiece, and each
+        // takes its turn at the head of the wave in reading order — which a lift of the whole word
+        // could never produce.
+        #expect(crests.map(\.range) == characters.indices.map { $0 ... $0 })
+        #expect(characters.allSatisfy { $0.durationMs >= minimum })
+
+        // Each crest's lift is spent within its own window: it is not moving before the window opens
+        // or after it closes, whatever the rest of the word is doing.
+        for crest in crests {
+            #expect(crest.swell(at: crest.fillStartMs) == 0)
+            #expect(crest.swell(at: crest.fillEndMs) == 0)
+            #expect(crest.swell(at: crest.fillStartMs - 300) == 0)
+            #expect(crest.swell(at: crest.fillEndMs + 300) == 0)
         }
 
-        // Every character takes its turn at the head of the wave, in reading order — which is what
-        // a lift of the whole word could never produce.
-        var lifted: [Int] = []
-        var current: Int?
-        for step in stride(from: word.fillStartMs, through: word.fillEndMs, by: 5) {
-            let atEdge = characters.firstIndex { $0.swell(at: step) > 0.5 }
-            if let atEdge, atEdge != current {
-                lifted.append(atEdge)
-                current = atEdge
-            }
+        // And the crests are what the renderer follows: one at a time, in order, with nothing lifted
+        // before the first one opens or after the last one has settled.
+        var lifted: [ClosedRange<Int>] = []
+        for step in stride(from: word.fillStartMs - 300, through: word.fillEndMs + 300, by: 5) {
+            guard let crest = KaraokeFillModel.crest(of: characters, at: step, minimumDurationMs: minimum),
+                  crest.swell(at: step) > 0.5
+            else { continue }
+            if lifted.last != crest.range { lifted.append(crest.range) }
         }
-        #expect(lifted == Array(characters.indices))
+        #expect(lifted == crests.map(\.range))
+        #expect(KaraokeFillModel.crest(of: characters, at: word.fillStartMs - 200, minimumDurationMs: minimum) == nil)
+        #expect(KaraokeFillModel.crest(of: characters, at: word.fillEndMs + 200, minimumDurationMs: minimum) == nil)
+    }
+
+    /// The lift's crest is measured in *time*, not in characters, because what a lift needs to be a
+    /// wave is time: a character sung in 60–90 ms took the whole of its rise and fall inside two or
+    /// three display frames, and the next one took over immediately, so the emphasis read as a
+    /// character popping rather than as a wave crossing the word.
+    @Test("A fast word's emphasis is one crest across several characters")
+    func aFastWordRidesOneCrest() {
+        let text = "twentycharacterslong"
+        let (_, characters) = Self.word(text: text, widths: [CGFloat](repeating: 10, count: text.count))
+        let minimum = KaraokeTiming.standard.minimumCrestMs
+        let crests = KaraokeFillModel.crests(of: characters, minimumDurationMs: minimum)
+
+        // The fast case is the one the crest exists for: the characters are shared out between a
+        // handful of crests rather than one each.
+        #expect(characters.count > 12)
+        #expect(crests.count < characters.count)
+
+        // The crests tile the characters — every one of them belongs to exactly one crest, in reading
+        // order, and a crest never splits a character — so the wave still touches every character once.
+        #expect(crests.map(\.range).flatMap { Array($0) } == Array(characters.indices))
+        #expect(crests.allSatisfy { $0.range.lowerBound <= $0.range.upperBound })
+        for (crest, previous) in zip(crests.dropFirst(), crests) {
+            #expect(crest.range.lowerBound == previous.range.upperBound + 1)
+            // And the windows meet, which is what makes the hand-over continuous: the crest that is
+            // landing has reached rest on the frame the next one leaves it.
+            #expect(crest.fillStartMs == previous.fillEndMs)
+        }
+
+        // Every crest is given the time the minimum asks for: the word's time is shared out evenly
+        // between them, and a crest can only end where a character does, so one comes out within a
+        // character of its share.
+        let total = characters[characters.count - 1].fillEndMs - characters[0].fillStartMs
+        let share = total / Double(crests.count)
+        for crest in crests {
+            let longest = crest.range.map { characters[$0].durationMs }.max() ?? 0
+            #expect(
+                crest.durationMs >= share - longest,
+                "crest \(crest.range) lasted \(crest.durationMs) ms of a \(share) ms share"
+            )
+            // And a crest lasts several display frames, so its rise and fall are seen rather than
+            // aliased: half of one is at least four frames at 60 Hz, where a character's own slice was
+            // two or three frames for the whole of its rise and fall.
+            #expect(
+                crest.durationMs / 2 >= 4 * 1000 / 60,
+                "crest \(crest.range) rose and fell in fewer than eight frames"
+            )
+        }
     }
 
     @Test("A finished word has finished lifting, character by character")

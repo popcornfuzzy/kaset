@@ -329,8 +329,8 @@ struct KaraokeLyricsLineView: View {
 // MARK: - KaraokeWordView
 
 /// One word of a karaoke line: the word's text as a dim base with a bright copy masked to the
-/// word's fill edge, a halo blooming behind that edge, and — for the one character the edge is
-/// crossing — that character lifted above the text around it.
+/// word's fill edge, a halo blooming behind that edge, and — for the characters the edge is crossing —
+/// that crest of characters lifted above the text around it.
 ///
 /// The **fill, the mask and the halo are the word's**, exactly as they were when a word was a
 /// single text layer: the edge sweeps the word at the word's own pace, and the halo is the blurred
@@ -338,13 +338,14 @@ struct KaraokeLyricsLineView: View {
 /// character's slice of a word's window is far shorter than the halo's own 130 ms rise and 170 ms
 /// fade, so the bloom never gets going, and all it has to blur is one glyph's half-filled sliver.
 ///
-/// The **emphasis is per character**: the character the edge is crossing is the one that rises, so it
-/// has to be drawn apart from the text around it. It is cut out with a **mask**, not drawn as a run of
-/// its own. A word used to be drawn as up to three runs, each placed at the cell its first character
-/// is drawn in, and that is what made the characters at rest jiggle: a text layer's origin snaps to a
-/// whole pixel, so every time the boundary between two runs moved, all the text behind it stepped by a
-/// pixel. Masking one text layer leaves every glyph of the word exactly where the word draws it, in
-/// every frame: only the mask moves, and only the masked glyph is translated.
+/// The **emphasis rides one crest at a time**: the run of characters whose own fill lasts
+/// `KaraokeTiming.minimumCrestMs`, taken from `KaraokeFillModel.crests(of:minimumDurationMs:)`. It is
+/// cut out of the word with a **mask**, not drawn as a run of its own. A word used to be drawn as up to
+/// three runs, each placed at the cell its first character is drawn in, and that is what made the
+/// characters at rest jiggle: a text layer's origin snaps to a whole pixel, so every time the boundary
+/// between two runs moved, all the text behind it stepped by a pixel. Masking one text layer leaves
+/// every glyph of the word exactly where the word draws it, in every frame: only the mask moves, and
+/// only the masked run is translated.
 ///
 /// The masks cut on the cells the word's own text draws its characters in
 /// (`KaraokeLineLayout.characterWidths`), and the fill mask and the halo are applied over the word as
@@ -354,7 +355,7 @@ struct KaraokeWordView: View {
     /// The word: its text, and the window whose fill, mask and halo it is drawn with.
     let word: KaraokeWord
     /// The word's characters, in reading order, each with its own slice of the word's window. The
-    /// slice is what the lift is timed by: the character the edge is crossing is the one that rises.
+    /// slices are what the crests are built from: the crest the edge is in is the one that rises.
     let characters: [KaraokeCharacter]
     /// Measured advance width of each character, in the same order as `characters`.
     let characterWidths: [CGFloat]
@@ -367,26 +368,30 @@ struct KaraokeWordView: View {
     /// Opacity of the not-yet-sung text.
     var dimOpacity: Double = 0.32
     var fontSize: CGFloat
-    /// Strength of the decorative parts: the leading halo and the lift on the character being
+    /// Strength of the decorative parts: the leading halo and the lift on the crest being
     /// sung. `0` renders a plain wipe, which is what Reduce Motion uses.
     var emphasis: Double = 1.0
+    /// How long the crest carrying the emphasis is given to rise and settle, in milliseconds: the
+    /// shortest run of characters whose own fill lasts this long. See
+    /// `KaraokeTiming.minimumCrestMs` for why a crest is measured in time rather than in characters.
+    var minimumCrestMs: Double = KaraokeTiming.standard.minimumCrestMs
 
-    /// How far the character being sung rises at the peak of its own envelope, as a fraction of the
+    /// How far the crest being sung rises at the peak of its own envelope, as a fraction of the
     /// font size.
     ///
-    /// Deliberately a *fraction* of a pixel at typical text sizes: it is here to keep the character
+    /// Deliberately a *fraction* of a pixel at typical text sizes: it is here to keep the characters
     /// being sung from being perfectly static, not to be read as movement on its own. The halo is
     /// what marks the edge.
     private static let liftFraction: CGFloat = 0.02
 
-    /// How far the character being sung has to be able to rise, in points, for the lift to be drawn
+    /// How far the crest being sung has to be able to rise, in points, for the lift to be drawn
     /// at all.
     ///
-    /// The lift is the most expensive decoration a word carries: the character is cut out of the
+    /// The lift is the most expensive decoration a word carries: the crest is cut out of the
     /// word and drawn again above it, which is two masked layers and a compositing group on every
     /// frame the word is filling. It is also the one decoration that can be too small to see. The
-    /// halo and the feathered fill are what mark the edge; the lift is there so that the character
-    /// being sung is not perfectly static, *not* to be read as movement on its own.
+    /// halo and the feathered fill are what mark the edge; the lift is there so that the characters
+    /// being sung are not perfectly static, *not* to be read as movement on their own.
     ///
     /// Below this the whole wave is under half a device pixel of travel on any display. The lyrics
     /// panel is where that happens: a 16 pt line at the 0.55 emphasis the panel carries rises a
@@ -399,7 +404,7 @@ struct KaraokeWordView: View {
     /// How far a mask is drawn past the top and bottom of the text it cuts.
     ///
     /// A mask is laid out against the view it masks, never measured against the text inside it, and
-    /// the character being lifted is drawn above the box it was measured in, so a mask is drawn well
+    /// the crest being lifted is drawn above the box it was measured in, so a mask is drawn well
     /// past the text at both ends rather than to the edges of a line box nobody measures.
     private static let maskOverflow: CGFloat = 2000
 
@@ -450,48 +455,58 @@ struct KaraokeWordView: View {
         .frame(width: max(0, self.width), alignment: .leading)
     }
 
-    /// The character the fill edge is crossing and how far it is rising, or `nil` when nothing on the
-    /// word is moving — which is when the word is drawn as one layer with no cut in it.
+    /// The crest the fill edge is in and how far it has risen, or `nil` when nothing on the word is
+    /// moving — which is when the word is drawn as one layer with no cut in it.
     ///
     /// Internal rather than private so a test can hold the wipe to what its frame budget assumes: at
-    /// most one character is ever lifted, and a word at rest is one layer.
+    /// most one crest is ever lifted, and a word at rest is one layer.
     struct Lift: Equatable {
-        /// Index of the character the fill edge is crossing, in reading order.
-        let index: Int
-        /// How far it has risen, 0...1 of `liftFraction` of the font size.
+        /// The characters the crest carries, in reading order.
+        let range: ClosedRange<Int>
+        /// How far the crest has risen, 0...1 of `liftFraction` of the font size.
         let amount: Double
+        /// Index of the first character of the crest, in reading order.
+        var index: Int {
+            self.range.lowerBound
+        }
     }
 
-    /// The lift this frame draws, taken from the characters' own windows rather than from where the
-    /// edge is, so that the wave is timed by the model.
+    /// The lift this frame draws, taken from the crest's own window rather than from where the edge
+    /// is, so that the wave is timed by the model.
     ///
-    /// Exactly at a slice boundary the character before it has just finished (its envelope is zero)
-    /// and the one after it has not started, so nothing is lifted for that one frame — and since the
-    /// envelope leaves zero with zero slope, the lift is continuous across it.
+    /// Exactly at a crest boundary the crest before it has just finished (its envelope is zero) and
+    /// the one after it has not started, so nothing is lifted for that one frame — and since the
+    /// envelope leaves zero with zero slope, the lift is continuous across it. The crests tile the
+    /// word's characters, so that boundary is the only place the lifted run changes, and the run it
+    /// changes to is at rest when it does.
     ///
     /// `emphasis` scales the lift, so with the decorative parts off (Reduce Motion) nothing moves and
     /// the word stays one layer however far the fill has got.
     var lift: Lift? {
-        guard self.emphasis > 0, let moving = self.movingCharacterIndex else { return nil }
         // Nothing is cut out of the word for a wave this size: it cannot be seen, and cutting costs
         // two masked layers and a compositing group per frame.
-        guard self.maximumLiftPoints >= Self.visibleLiftPoints else { return nil }
-        let amount = self.characters[moving].swell(at: self.displayTimeMs) * self.emphasis
+        guard self.emphasis > 0, self.maximumLiftPoints >= Self.visibleLiftPoints else { return nil }
+        guard let crest = KaraokeFillModel.crest(
+            of: self.characters,
+            at: self.displayTimeMs,
+            minimumDurationMs: self.minimumCrestMs
+        ) else { return nil }
+        let amount = crest.swell(at: self.displayTimeMs) * self.emphasis
         guard amount > 0 else { return nil }
-        return Lift(index: moving, amount: amount)
+        return Lift(range: crest.range, amount: amount)
     }
 
-    /// How far this word's character can rise at the peak of its envelope, in points.
+    /// How far this word's crest can rise at the peak of its envelope, in points.
     ///
     /// The peak rather than the current amount: the decision has to hold for the whole wave. A lift
     /// that appeared only while its envelope was high enough would fade in and out within every
-    /// character's window, which is a movement the envelope itself never asked for.
+    /// crest's window, which is a movement the envelope itself never asked for.
     private var maximumLiftPoints: CGFloat {
         self.fontSize * Self.liftFraction * CGFloat(max(0, self.emphasis))
     }
 
     /// The word's text as **one run, one layer per mask**, drawn in the box the flow layout reserved
-    /// for it — with the character being sung cut out of it and drawn again above the rest.
+    /// for it — with the crest being sung cut out of it and drawn again above the rest.
     ///
     /// The whole word is drawn in both halves rather than the runs either side of the cut, because two
     /// runs are two layers at two origins and a text layer's origin snaps to a whole pixel: the text
@@ -512,11 +527,11 @@ struct KaraokeWordView: View {
 
         if let lift {
             ZStack(alignment: .leading) {
-                layer.mask(alignment: .leading) { self.cellRemoved(lift.index) }
+                layer.mask(alignment: .leading) { self.crestRemoved(lift.range) }
                 layer
-                    .mask(alignment: .leading) { self.cellOnly(lift.index) }
+                    .mask(alignment: .leading) { self.crestOnly(lift.range) }
                     // A translation alone: the box the fill mask and the halo are measured against
-                    // does not move with the glyph.
+                    // does not move with the glyphs.
                     .offset(y: -self.fontSize * Self.liftFraction * lift.amount)
             }
         } else {
@@ -524,30 +539,32 @@ struct KaraokeWordView: View {
         }
     }
 
-    /// The word's text with everything but one character's cell cut away.
-    private func cellOnly(_ index: Int) -> some View {
-        Rectangle()
+    /// The word's text with everything but one crest's cells cut away.
+    private func crestOnly(_ range: ClosedRange<Int>) -> some View {
+        let frame = self.crestFrame(of: range)
+        return Rectangle()
             .fill(.white)
-            .frame(width: max(0, self.width(of: index)), height: 2 * Self.maskOverflow)
-            .offset(x: self.cellStart(of: index))
+            .frame(width: max(0, frame.width), height: 2 * Self.maskOverflow)
+            .offset(x: frame.x)
     }
 
-    /// The word's text with one character's cell cut away from it.
+    /// The word's text with one crest's cells cut away from it.
     ///
-    /// The hole is the same cell as `cellOnly` cuts, so the two halves of the text meet exactly — no
-    /// hairline of background splitting the character at the fill edge. The base is drawn and the hole
+    /// The hole is the same rectangle as `crestOnly` cuts, so the two halves of the text meet exactly —
+    /// no hairline of background splitting a character at the fill edge. The base is drawn and the hole
     /// punched out of it inside one compositing group, so the cut is one drawing operation rather than
     /// two shapes that would each be snapped to the pixel grid on their own.
-    private func cellRemoved(_ index: Int) -> some View {
-        Rectangle()
+    private func crestRemoved(_ range: ClosedRange<Int>) -> some View {
+        let frame = self.crestFrame(of: range)
+        return Rectangle()
             .fill(.white)
-            // Leading-aligned, then offset to the cell: an overlay centres a fixed-width child, which
-            // would put the hole in the middle of the word however narrow the cell is.
+            // Leading-aligned, then offset to the run: an overlay centres a fixed-width child, which
+            // would put the hole in the middle of the word however narrow the run is.
             .overlay(alignment: .topLeading) {
                 Rectangle()
                     .fill(.white)
-                    .frame(width: max(0, self.width(of: index)), height: 2 * Self.maskOverflow)
-                    .offset(x: self.cellStart(of: index))
+                    .frame(width: max(0, frame.width), height: 2 * Self.maskOverflow)
+                    .offset(x: frame.x)
                     .blendMode(.destinationOut)
             }
             .compositingGroup()
@@ -557,19 +574,19 @@ struct KaraokeWordView: View {
     /// drawn from: a right-to-left word draws its first character at the right of its box, so its cells
     /// count in from the right.
     func cellStart(of index: Int) -> CGFloat {
-        guard index > 0 else { return self.isRightToLeft ? self.width - self.width(of: 0) : 0 }
-        let pen = self.characterWidths.prefix(index).reduce(0, +)
-        return self.isRightToLeft ? self.width - pen - self.width(of: index) : pen
+        self.crestFrame(of: index ... index).x
     }
 
-    /// Index of the character the fill edge is crossing: the last character whose slice of the word's
-    /// window has opened, and so the one whose lift envelope is the one running.
-    private var movingCharacterIndex: Int? {
-        self.characters.lastIndex { $0.fill(at: self.displayTimeMs) > 0 }
-    }
-
-    private func width(of index: Int) -> CGFloat {
-        self.characterWidths.indices.contains(index) ? self.characterWidths[index] : 0
+    /// Where a run of characters sits in the word's box and how wide it is, measured from the edge the
+    /// word's text is drawn from: a right-to-left word draws its first character at the right of its
+    /// box, so its runs count in from the right.
+    func crestFrame(of range: ClosedRange<Int>) -> (x: CGFloat, width: CGFloat) {
+        let upper = min(range.upperBound, self.characterWidths.count - 1)
+        guard range.lowerBound >= 0, upper >= range.lowerBound else { return (0, 0) }
+        let widths = self.characterWidths[range.lowerBound ... upper]
+        let width = widths.reduce(0, +)
+        let pen = self.characterWidths.prefix(range.lowerBound).reduce(0, +)
+        return (self.isRightToLeft ? self.width - pen - width : pen, width)
     }
 
     /// Alpha ramp whose edge sits at the word's fill position and whose feather leads it, over the

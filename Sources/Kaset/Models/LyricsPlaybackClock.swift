@@ -29,6 +29,19 @@ struct KaraokeTiming: Equatable, Sendable {
     /// Fill ramp for a whole line whose duration is unknown.
     var fallbackLineMs: Double = 3000
 
+    /// How long the emphasis on the line being sung is given to rise and settle, in
+    /// milliseconds.
+    ///
+    /// The lift rides one *crest* at a time: the shortest run of characters whose own fill
+    /// lasts this long (`KaraokeFillModel.crests(of:minimumDurationMs:)`), which is then
+    /// carried as one. It used to ride a single character's slice of the word's window,
+    /// and on a fast line that slice is 60–90 ms — so a character popped up and back down
+    /// within two or three display frames and the next one took over, ten to thirteen
+    /// times a second. A crest of this length rises and falls over several frames each,
+    /// which is slow enough to read as a wave rather than as a flicker. Text slow enough
+    /// to give one character this much time keeps lifting one character at a time.
+    var minimumCrestMs: Double = 250
+
     /// A new sample this far from the display clock is a seek or a track change,
     /// not sample jitter.
     var snapThresholdMs: Double = 400

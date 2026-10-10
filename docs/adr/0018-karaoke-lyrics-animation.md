@@ -163,9 +163,12 @@ envelope with the unit means a finished unit is a unit nothing is happening to, 
 lets the completed-unit layer reduction above be invisible — a word whose ramp is over drops its mask and
 its halo.
 
-The character being sung **lifts, and is never scaled**, by `fontSize × 0.02` at the peak — a fraction of
-a pixel at 16 pt, deliberately: it exists to keep the character being sung from being perfectly static,
-not to be read as movement. The glow is what marks it. (It was first written at `fontSize × 0.06`, which
+The characters being sung **lift, and are never scaled**, by `fontSize × 0.02` at the peak — a fraction of
+a pixel at 16 pt, deliberately: it exists to keep the characters being sung from being perfectly static,
+not to be read as movement. The glow is what marks it. What lifts is one **crest** at a time — the run of
+characters the fill edge is in whose own fill lasts `KaraokeTiming.minimumCrestMs` — which is a single
+character wherever the text is slow enough to give one that much time; see *the emphasis rides a crest,
+not a character* below. (It was first written at `fontSize × 0.06`, which
 was visible enough to be distracting.) That envelope is likewise measured in time
 (`KaraokeFillUnit.swell`, rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than
 in fill, so a short window no longer reaches full lift within its first few frames. Scaling was
@@ -181,10 +184,13 @@ rows of its own cell at full emphasis as it does with the emphasis off, and sits
 
 The lift is also the reason the emphasis had to become per *character* rather than per word: a lift is a
 translation of a raster, so one glyph of a text layer cannot move without being pulled out of that layer
-and cut out of the text around it. The effect is small on purpose — a lift is there so the character under the edge is
-not perfectly static — but it is the wave that follows the fill edge, and `liftTravelsAcrossTheWord`
-follows it through the pixels: the same character is a pixel or two higher on the frame the edge is on it
-than on the frame the edge has passed it.
+and cut out of the text around it. The unit that is pulled out is the **crest** (`KaraokeCrest`): the
+characters the fill edge is in, taken together, so that the run it cuts is one rectangle of the word and
+the movement has the time to be a movement. The effect is small on purpose — a lift is there so the
+characters under the edge are not perfectly static — but it is the wave that follows the fill edge, and
+`liftTravelsAcrossTheWord` follows it through the pixels, one character at a time on text slow enough for
+that: the same character is a pixel or two higher on the frame the edge is on it than on the frame the
+edge has passed it.
 
 A line a provider timed only as a whole takes the other path in the same view (`lineSyncedText`): the
 whole line is one `Text` under the dim layer, the lit copy's opacity is its appear progress, and the
@@ -506,6 +512,54 @@ body, so `LyricsClockReader` is now the leaf that reads it — the position, the
 fullscreen flag a sheet needs to know it is covered — and the invalidation stops there.
 `LyricsClockReaderTests` hosts the real reader beside a probe that reads no playback state, and holds
 that a stream of samples rebuilds the sheet and not the surface around it.
+
+## Amendment: the emphasis rides a crest, not a character
+
+The lift was always described as the character under the edge rising so that it is not perfectly
+static, and it was timed by that character's own slice of the word's fill window — one character's
+worth of time, the same slice the fill mask uses for it. On slow text that is a wave: a character
+holds the edge for 300 ms, so it rises over half of that and settles over the other half, and at 60 Hz
+that is nine frames up and nine down. On a fast line it is not a wave at all. A dense lyric is ten to
+thirteen characters a second, so a slice is 60–90 ms: measured at 36 pt, the character went from rest
+to the top of its swell and back inside **two or three display frames**, and the next character took
+the wave over immediately — a character *popping* at 11–13 Hz, which is the thing the lift exists to
+avoid. The peak itself was at the mercy of where a frame landed inside the slice: the crests came out
+between 0.63 and 1.00 of full amplitude, a different size on every character.
+
+What the emphasis needs is not a character, it is **time**. `KaraokeCrest` is the run of characters the
+edge is in whose own fill together lasts `KaraokeTiming.minimumCrestMs` (250 ms), and the lift now
+rides that:
+
+- The crests **tile** the word's characters — every character belongs to exactly one, in reading order,
+  and a crest never splits a character — so the wave still touches every character of the word once, and
+  the hand-over between two crests is continuous for the same reason it was between two characters: a
+  crest's envelope leaves zero with zero slope, and it is at rest exactly where the next one starts.
+- The crest is a **fill unit** like a word or a character (`fillStartMs`/`fillEndMs`/`swell`), so the
+  emphasis is expressed in the same terms at every scale, and the renderer asks the model for one crest
+  instead of deriving the rise itself.
+- The count is what the word's *time* allows — one crest per `minimumDurationMs`, rounded down so the
+  crests are each at least that long — capped by its characters, and the characters are shared out
+  between them as evenly in time as a character boundary can be (the split is the character boundary
+  nearest each crest's share of the word's window). A word whose characters already last longer than
+  the minimum is untouched: its crests are its characters, one apiece, and the wave is the wave it was.
+- The **cut follows the crest**, not a character: one rectangle spanning the crest's cells, so the masks
+  cost what they cost before — a wider rectangle is the same two layers and the same compositing group.
+  Measured on the harness's own line with the lift at full strength: **1.99 ms/frame** at 36 pt, against
+  1.33 ms/frame with the halo, the feather and the crest all off — unchanged from before the amendment.
+
+Measured with the model driven at 60 Hz on a dense line (twenty-four characters over 1.23 s, 36 pt):
+crests arrive at **2.0/s instead of 11.0/s**; the most any single frame moves the emphasis is
+**0.138 pt instead of 0.603 pt** (a third of a device pixel on a 2x display, against one and a fifth);
+and every crest reaches **full** amplitude where the peaks used to spread over 0.17 pt. On text slow
+enough to give one character the minimum, all of those numbers are identical to what they were.
+
+The trade-off is deliberate and is the point of the amendment: the wave now carries the characters
+being sung **together** rather than one at a time, so a fast line lifts a short run of two to six
+characters as one, and only a line slow enough for a character to hold the edge for a quarter of a
+second still lifts a single character. The old behaviour was not a wave on those lines — the motion was
+faster than the eye reads as motion and the amplitude varied crest to crest — so what was given up is a
+flicker. `KaraokeLyricsRenderTests.theLiftIsSlowEnoughToRead` holds both halves of this by measuring the
+real view's drawn lift at display rate, the crest rule and the wave it replaced side by side.
 
 ## Consequences
 
