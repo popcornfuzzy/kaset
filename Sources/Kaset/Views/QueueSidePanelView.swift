@@ -1210,10 +1210,11 @@ struct QueueFooterActions: View {
     /// is not. A narrower row is read as one line of icons rather than four broken words.
     ///
     /// The two versions measure 257pt and 94pt, so a row that holds all four names needs about 289pt of
-    /// panel width (the row's own 16pt insets included). The column's floor is 300pt, and its queue page
-    /// insets the panel by `NowPlayingSidebarLayout.padding` on each side, which leaves 272pt of panel —
-    /// under the threshold, so the narrowest column reads as four named glyphs with tooltips, and every
-    /// column wide enough to hold the names on one line shows them. Nothing in between can wrap:
+    /// panel width (the row's own 16pt insets included). The column's floor is 300pt, and the queue is the
+    /// one page the column does not inset (its rows are their own bands — see `NowPlayingSidebarQueuePage`),
+    /// so the
+    /// narrowest column has the 300pt the names need and shows them; the glyph version is the row's answer
+    /// to being squeezed below that, which the column itself cannot do. Nothing in between can wrap:
     /// `fixedSize` is on each button, so an over-long candidate overflows its row instead of breaking a
     /// word, and `ViewThatFits` never picks it in the first place (`QueueFooterLayoutTests` measures
     /// both versions and the switch).

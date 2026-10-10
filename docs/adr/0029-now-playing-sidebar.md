@@ -253,9 +253,12 @@ The column's chrome is deliberately the album art, not a panel:
   in the footer below its rows.
 - The queue's **footer is adaptive**: four actions whose names are shown while the row of them fits and
   whose glyphs (with tooltips and VoiceOver labels) are shown when it does not. The names need 289pt of
-  panel and the column's floor leaves 272pt, so the narrowest column reads as four icons rather than
-  four words — the wrapped "Undo" over two lines that the titled row used to break into cannot be
-  produced by either version (`QueueFooterLayoutTests` measures both).
+  panel and the column's floor is 300pt, so the column shows the names at every width it can have and the
+  glyph version is what a *squeezed* row falls back to — neither version can produce the wrapped "Undo"
+  over two lines the titled row used to break into (`QueueFooterLayoutTests` measures both).
+- The queue is the **one page the column does not inset**: its rows are their own bands (the playing row's
+  tint, and the row's hover), so a page inset put a grey gutter beside a coloured band instead of
+  breathing room. The rows carry the insets instead, in the cell (`queuePage`).
 - The queue's **playing row is locked**: a drop that would shift it shows no gap and is refused, and the
   model refuses the move as well (`PlayerService.reorderMovesPlayingRow`) — the row's index is what the
   highlight, the list's auto-scroll and the WebView's own alignment all read, so a reorder that changed it
@@ -264,6 +267,12 @@ The column's chrome is deliberately the album art, not a panel:
   unhide belongs to the drag session, and a session that never began never ends), so every row offers a
   drag and a release puts back any row a press left hidden
   (`DraggableTableView.restoreRowsAfterFailedDrag`, `QueueRowDragStrandTests`).
+- The queue's rows draw their greys — the artist, the track number, the duration and the waveform at rest —
+  in **literal colours picked by appearance**, not in `secondaryLabelColor`/`tertiaryLabelColor`: the
+  sidebar's vibrant appearance re-resolves those to lower-alpha ones (black @ 0.50 and @ 0.30 under
+  `VibrantLight`), which over the material left the row's secondary text at near-background greys. It is
+  the same escape `Sidebar.rowForeground(for:)` takes, and the waveform's bars are layers, so they are
+  re-resolved when the appearance changes (`QueueRowTextColor`, `QueueRowTextColorTests`).
 - The queue's rows carry their **right-click menu** (`DraggableTableView.menu(for:)`), which is the only
   place AppKit asks a table for a row's menu. It was built in a method named `menuForRow` that AppKit
   never calls — there is no such delegate hook — so the menu was dead code in the classic panel too, and

@@ -100,9 +100,6 @@ struct QueueFooterLayoutTests {
         )
     }
 
-    /// The queue page's own insets: `NowPlayingSidebarLayout.padding` on each side of the panel.
-    private static let sidebarPadding: CGFloat = 14
-
     private func queueFooter() -> some View {
         let playerService = PlayerService()
         playerService.queue = TestFixtures.makeSongs(count: 3)
@@ -111,8 +108,9 @@ struct QueueFooterLayoutTests {
 
     @Test("The queue's footer is one line of controls at every width the column can have")
     func queueFooterNeverWraps() {
-        // The narrowest panel the column can produce: its 300pt floor inside the queue page's insets.
-        for panel in [300 - 2 * Self.sidebarPadding, 400, 560] {
+        // The column's floor and up. The queue is the one page the column does not inset, so the panel's
+        // own width is the width the footer is given.
+        for panel in [CGFloat(300), 400, 560] {
             let rendered = self.render(self.queueFooter(), width: panel)
             // A row of names is one 12pt line plus the footer's 12pt insets (about 41pt). A wrapped row
             // measured around 70, because a two-line label is what sets the height.
@@ -122,21 +120,19 @@ struct QueueFooterLayoutTests {
 
     @Test("The names are shown while they fit, and only glyphs are left when they do not")
     func queueFooterKeepsNamesWhileTheyFit() {
-        // 289pt is what the named row needs (257pt of controls plus its own 16pt insets); the column's
-        // floor leaves 272pt of panel, which is under it.
-        let wide = self.render(self.queueFooter(), width: 400)
-        let narrow = self.render(
-            self.queueFooter(),
-            width: 300 - 2 * Self.sidebarPadding
-        )
+        // 289pt is what the named row needs (257pt of controls plus its own 16pt insets), and the column's
+        // floor of 300pt has it. The glyph version is the row's answer to being squeezed below the floor —
+        // a width the column itself cannot produce, so it is asked for directly.
+        let floorWidth = self.render(self.queueFooter(), width: 300)
+        let squeezed = self.render(self.queueFooter(), width: 240)
 
-        // Named: the row runs from its leading inset out past the width of four glyphs and their gaps.
-        #expect(wide.minX < 25)
-        #expect(wide.maxX > 240)
-        // Glyph-ed: the same four controls in about a third of the width, still starting at the inset.
-        #expect(narrow.minX < 25)
-        #expect(narrow.maxX < 170, "the narrow row is still showing names")
-        #expect(narrow.maxX > wide.maxX - 200)
+        // Named at the floor: the row runs from its leading inset out past the width of four glyphs.
+        #expect(floorWidth.minX < 25)
+        #expect(floorWidth.maxX > 240)
+        // Glyph-ed when squeezed: the same four controls in about a third of the width.
+        #expect(squeezed.minX < 25)
+        #expect(squeezed.maxX < 170, "the squeezed row is still showing names")
+        #expect(squeezed.maxX > floorWidth.maxX - 200)
     }
 
     @Test("The lyric sheet's footer carries the refresh control at the trailing edge of the source row")

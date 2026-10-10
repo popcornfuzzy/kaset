@@ -344,3 +344,34 @@ struct NowPlayingSidebarUpNext: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+// MARK: - NowPlayingSidebarQueuePage
+
+/// The sidebar's queue page: the classic queue with the panel's own chrome turned off, filling the column
+/// it is inside (`QueueSidePanelView`).
+///
+/// It is the one page the column does **not** inset with `NowPlayingSidebarLayout.padding`, and that is the
+/// point: a queue row is its own band — the playing row's tint, and the row's own hover — so an inset around
+/// the list draws a grey gutter beside a coloured band instead of giving the rows breathing room. What the
+/// rows need is the cell's own insets (`QueueTableCellView`), which is what keeps the artwork and the
+/// trailing controls off the column's edge.
+///
+/// No width is handed to the queue: a scalar width here could only ever be the column's width in a
+/// *previous* layout pass, which is what left the rows and their trailing controls a frame behind the
+/// column edge during a divider drag. Filling the width it is inside has no such copy to be stale, and the
+/// table sizes its column to that width in its own layout pass.
+///
+/// Internal rather than private so the width it gives its table can be measured offscreen
+/// (`NowPlayingSidebarQueuePageTests`).
+@available(macOS 26.0, *)
+struct NowPlayingSidebarQueuePage: View {
+    var body: some View {
+        QueueSidePanelView(
+            width: nil,
+            showsHeader: false,
+            usesMaterialBackground: false
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.queuePage)
+    }
+}

@@ -454,18 +454,10 @@ struct NowPlayingSidebarView: View {
             // chrome belongs to the floating panel — everything else (automix chips, reordering,
             // undo/redo, clear) is the same queue the classic panel shows.
             //
-            // No width is handed to it: a scalar width here was this page's own copy of the column's
-            // width, one layout pass behind the divider, so the queue's rows and their trailing controls
-            // moved a frame after the column edge did. The panel fills the width it is inside instead,
-            // and its table sizes its column to that width in its own layout pass.
-            QueueSidePanelView(
-                width: nil,
-                showsHeader: false,
-                usesMaterialBackground: false
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, NowPlayingSidebarLayout.padding)
-            .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.queuePage)
+            // The page is the column's one page with no `NowPlayingSidebarLayout.padding` around it, and
+            // the width it hands the queue is the width it was given: both are stated where they are
+            // decided, on `NowPlayingSidebarQueuePage`.
+            NowPlayingSidebarQueuePage()
         }
     }
 

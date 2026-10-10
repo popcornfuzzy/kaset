@@ -9,6 +9,58 @@ struct QueueCellActions {
     let onRevealRemove: () -> Void
 }
 
+// MARK: - Queue Row Colours
+
+extension NSAppearance {
+    /// Whether this appearance draws on a dark background, whichever of the four it is.
+    ///
+    /// `bestMatch(from:)` is the question AppKit asks a dynamic colour's own provider, so a vibrant
+    /// appearance answers with the scheme underneath it rather than falling through to `.aqua`.
+    var isDark: Bool {
+        self.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}
+
+/// The queue row's greys, in colours no appearance can re-resolve.
+///
+/// The rows are drawn inside the Now Playing sidebar's material, and its content lives in a **vibrant**
+/// appearance. The vibrant appearances re-resolve the system's label colours to lower-alpha ones — on this
+/// Mac `secondaryLabelColor` comes back as black @ 0.50 and `tertiaryLabelColor` as black @ 0.30 under
+/// `VibrantLight` — so the track number, the artist and the duration landed as greys near the panel's own
+/// colour (the system's tertiary grey at 0.70 of the way to white, where the row wants 0.29), which is the
+/// washed-out row they read as. Dark mode is the same story mirrored: 0.20 for the system's tertiary grey
+/// against the 0.73 the row wants.
+///
+/// A colour that carries its own literals is not re-resolved: the appearance picks *which* of the two
+/// stated values is drawn, and nothing dims them. This is the same escape `Sidebar.rowForeground(for:)`
+/// takes with literal colours, stated for the queue's own text (`EmphasizedMaterialView` has the measured
+/// table of what the system colours are worth in each appearance).
+///
+/// The literal each appearance draws, and what it lands as on the panel (measured on this Mac; asserted
+/// in `QueueRowTextColorTests`):
+///
+/// | element                            | light          | lands at | dark           | lands at |
+/// |------------------------------------|----------------|----------|----------------|----------|
+/// | artist (was `secondaryLabelColor`) | white 0.25     | 0.19     | white 0.85     | 0.82     |
+/// | number, duration, waveform at rest | white 0.36     | 0.29     | white 0.78     | 0.73     |
+@available(macOS 26.0, *)
+enum QueueRowTextColor {
+    /// The artist line — the row's most-read secondary text.
+    static let artist = NSColor(name: "QueueRowArtistText", dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(white: 0.85, alpha: 1)
+            : NSColor(white: 0.25, alpha: 1)
+    })
+
+    /// The track number, the duration, and the waveform when it is not animating: quieter than the
+    /// artist line, and still a colour rather than a haze.
+    static let detail = NSColor(name: "QueueRowDetailText", dynamicProvider: { appearance in
+        appearance.isDark
+            ? NSColor(white: 0.78, alpha: 1)
+            : NSColor(white: 0.36, alpha: 1)
+    })
+}
+
 // MARK: - QueueTableCellView
 
 @available(macOS 26.0, *)
@@ -98,7 +150,7 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.artistLabel.backgroundColor = .clear
         self.artistLabel.lineBreakMode = .byTruncatingTail
         self.artistLabel.font = NSFont.systemFont(ofSize: 11)
-        self.artistLabel.textColor = NSColor.secondaryLabelColor
+        self.artistLabel.textColor = QueueRowTextColor.artist
 
         infoStackView.addArrangedSubview(self.titleLabel)
         infoStackView.addArrangedSubview(self.artistLabel)
@@ -108,7 +160,7 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.durationLabel.backgroundColor = .clear
         self.durationLabel.alignment = .right
         self.durationLabel.font = NSFont.systemFont(ofSize: 11)
-        self.durationLabel.textColor = NSColor.tertiaryLabelColor
+        self.durationLabel.textColor = QueueRowTextColor.detail
         self.durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal) // Don't compress duration
 
         self.removeButton.title = ""
@@ -256,21 +308,40 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
             if let waveView = waveformView as? WaveformView {
                 waveView.isHidden = false
                 waveView.isAnimating = isPlaying
-                waveView.tintColor = isPlaying ? NSColor.systemRed : NSColor.tertiaryLabelColor
             }
-
-            layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.1).cgColor
         } else {
             // Show number for non-current tracks
             self.indicatorLabel.isHidden = false
             self.indicatorLabel.stringValue = "\(index + 1)"
-            self.indicatorLabel.textColor = NSColor.tertiaryLabelColor
+            self.indicatorLabel.textColor = QueueRowTextColor.detail
 
             // Hide waveform
             self.waveformView?.isHidden = true
-
-            layer?.backgroundColor = NSColor.clear.cgColor
         }
+
+        self.applyLayerColours()
+    }
+
+    /// Paints the parts of the row that are not text fields: the row's own tint and the waveform's bars.
+    ///
+    /// Both live as `CGColor`s in layers, and a layer holds a *resolved* colour — so each is handed a
+    /// fresh one whenever the row's state changes, and handed it inside the appearance the row actually
+    /// draws in, since `NSAppearance.current` is the drawing context's and not this view's. The text
+    /// fields need none of this: each re-resolves its own dynamic colour when the appearance changes.
+    private func applyLayerColours() {
+        self.effectiveAppearance.performAsCurrentDrawingAppearance {
+            self.layer?.backgroundColor = self.isCurrentTrack
+                ? NSColor.systemRed.withAlphaComponent(0.1).cgColor
+                : NSColor.clear.cgColor
+            if let waveView = self.waveformView as? WaveformView {
+                waveView.tintColor = self.isPlaying ? NSColor.systemRed : QueueRowTextColor.detail
+            }
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        self.applyLayerColours()
     }
 
     @objc private func handleRemoveClick() {
