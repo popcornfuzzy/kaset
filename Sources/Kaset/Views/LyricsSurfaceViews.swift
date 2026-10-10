@@ -1,5 +1,33 @@
 import SwiftUI
 
+// MARK: - LyricsClockReader
+
+/// Draws a lyric sheet against the live playback clock, and keeps the clock stream to itself.
+///
+/// The position arrives from the hidden WebView's lyrics poll ten times a second
+/// (`PlayerService.currentTimeMs`). A sheet needs it; the surface *around* a sheet does not — a
+/// panel's glass, a column's artwork and cards, the fullscreen player's backdrop do not change with
+/// playback — so the surface that read the stream itself was rebuilt ten times a second to hand a
+/// sheet a number only the sheet uses.
+///
+/// This is the leaf that reads it. `Observation` tracks a property per view body, so the
+/// invalidation stops here: the sheet is rebuilt with the position, and everything above it is left
+/// alone. The fullscreen flag is read here for the same reason — whether the player is presented is
+/// not a reason to rebuild the window behind it, and it is what tells a sheet it is covered.
+@available(macOS 26.0, *)
+struct LyricsClockReader<Content: View>: View {
+    @Environment(PlayerService.self) private var playerService
+    @ViewBuilder let content: (_ currentTimeMs: Int, _ isPlaying: Bool, _ isFullscreenPresented: Bool) -> Content
+
+    var body: some View {
+        self.content(
+            self.playerService.currentTimeMs,
+            self.playerService.isPlaying,
+            self.playerService.showFullscreenNowPlaying
+        )
+    }
+}
+
 // MARK: - LyricsStateView
 
 /// The state a lyric surface shows when it has no sheet to draw: loading, no track, or no lyrics.

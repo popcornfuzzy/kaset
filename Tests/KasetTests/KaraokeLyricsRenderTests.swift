@@ -508,6 +508,68 @@ struct KaraokeLyricsRenderTests {
         }
     }
 
+    /// The lift is drawn only where its movement can be seen.
+    ///
+    /// The lift is the most expensive decoration a word carries — the character is cut out of the word
+    /// and drawn again above it, which is two masked layers and a compositing group on every frame the
+    /// word is filling — and it is deliberately a fraction of a pixel at ordinary text sizes: what marks
+    /// the fill edge is the halo and the feathered fill, and the lift is there so the character being
+    /// sung is not perfectly static. Below a quarter point of travel the whole wave is under half a
+    /// device pixel, and the panel's line is where that happens: 16 pt at the 0.55 emphasis the panel
+    /// carries rises a fifth of a point. It used to pay for the cut anyway, on every word of every
+    /// frame; the fullscreen player's 36 pt line rises most of a point and keeps its wave.
+    @Test("The lift is drawn only where its movement can be seen")
+    func theLiftIsDrawnOnlyWhereItCanBeSeen() throws {
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1200,
+            text: "MMMM",
+            words: [TimedWord(timeInMs: 0, word: "MMMM")]
+        )
+
+        /// The lift at the peak of the second character's own swell: the character the fill edge is
+        /// crossing, and the moment the wave is at its highest.
+        func lift(fontSize: CGFloat, emphasis: Double) -> KaraokeWordView.Lift? {
+            let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
+            let characters = layout.characters[0]
+            let peak = (characters[1].fillStartMs + characters[1].fillEndMs) / 2
+            return KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: layout.characterWidths[0],
+                isRightToLeft: false,
+                displayTimeMs: peak,
+                fontSize: fontSize,
+                emphasis: emphasis
+            ).lift
+        }
+
+        // The panel: 16 pt at 0.55 — a fifth of a point of travel, so nothing is cut out of the word.
+        #expect(lift(fontSize: 16, emphasis: 0.55) == nil, "the panel's line paid for a lift it cannot show")
+
+        // The same line at full strength is over a quarter point of travel, so the wave is drawn...
+        #expect(lift(fontSize: 16, emphasis: 1) != nil, "the lift vanished where it is visible")
+        // ...and so is the fullscreen player's line, where it is most of a point.
+        #expect(lift(fontSize: 36, emphasis: 1) != nil, "the fullscreen line lost its wave")
+
+        // The wave is either drawn for the whole of a character's window or not at all: a lift that
+        // appeared only at the peak of its own envelope would fade in and out inside every character.
+        let layout = KaraokeLineLayout(line: line, fontSize: 16)
+        let characters = layout.characters[0]
+        for step in stride(from: -200.0, through: 1400.0, by: 25) {
+            let word = KaraokeWordView(
+                word: layout.words[0],
+                characters: characters,
+                characterWidths: layout.characterWidths[0],
+                isRightToLeft: false,
+                displayTimeMs: step,
+                fontSize: layout.fontSize,
+                emphasis: 0.55
+            )
+            #expect(word.lift == nil, "the panel's line lifted at \(step)ms against its own budget")
+        }
+    }
+
     /// The two halves of the cut word cover it exactly: what the lift takes out of the word is drawn
     /// again above it, and nothing is left behind.
     ///

@@ -335,6 +335,26 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         let lift: Double
 
         static let resting = PauseDots(statuses: [.notSung, .notSung, .notSung], lift: 0)
+
+        init(statuses: [PauseDotStatus], lift: Double) {
+            self.statuses = statuses
+            self.lift = lift
+        }
+
+        /// The dots at a playback position, for a pause row whose interlude is already resolved.
+        ///
+        /// A row that is drawing the dots already holds them (`pauseInterlude(forLineAt:)`), and it
+        /// holds them for as long as it is the row being sung: only the dots' *state* is a function of
+        /// the display position. Resolving the interlude per frame instead asked, on every frame of the
+        /// bounce, when the row above stopped sounding — which is measured from that line's own words
+        /// (`KaraokeFillModel.settleBoundaryMs`).
+        init(interlude: PauseInterlude?, at timeMs: Int) {
+            guard let interlude else {
+                self = .resting
+                return
+            }
+            self.init(statuses: interlude.dotStatuses(at: timeMs), lift: interlude.dotLift(at: timeMs))
+        }
     }
 
     func lineStatuses(at timeMs: Int) -> [LineStatus] {
@@ -501,12 +521,9 @@ struct SyncedLyrics: Equatable, Codable, Sendable {
         at timeMs: Int,
         minimumGapMs: Int = Self.defaultPauseGapThresholdMs
     ) -> PauseDots {
-        guard let interlude = self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs) else {
-            return .resting
-        }
-        return PauseDots(
-            statuses: interlude.dotStatuses(at: timeMs),
-            lift: interlude.dotLift(at: timeMs)
+        PauseDots(
+            interlude: self.pauseInterlude(forLineAt: lineIndex, minimumGapMs: minimumGapMs),
+            at: timeMs
         )
     }
 

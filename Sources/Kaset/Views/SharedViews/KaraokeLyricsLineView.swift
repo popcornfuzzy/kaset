@@ -379,6 +379,23 @@ struct KaraokeWordView: View {
     /// what marks the edge.
     private static let liftFraction: CGFloat = 0.02
 
+    /// How far the character being sung has to be able to rise, in points, for the lift to be drawn
+    /// at all.
+    ///
+    /// The lift is the most expensive decoration a word carries: the character is cut out of the
+    /// word and drawn again above it, which is two masked layers and a compositing group on every
+    /// frame the word is filling. It is also the one decoration that can be too small to see. The
+    /// halo and the feathered fill are what mark the edge; the lift is there so that the character
+    /// being sung is not perfectly static, *not* to be read as movement on its own.
+    ///
+    /// Below this the whole wave is under half a device pixel of travel on any display. The lyrics
+    /// panel is where that happens: a 16 pt line at the 0.55 emphasis the panel carries rises a
+    /// fifth of a point at the peak of its envelope, which is the bottom of the range the lift was
+    /// designed for, while the cost — two masks and an off-screen group per word per frame — is the
+    /// top of it. The fullscreen player's 36 pt line rises the better part of a point and keeps its
+    /// wave. Reduce Motion is unaffected either way: it passes no emphasis at all.
+    private static let visibleLiftPoints: CGFloat = 0.25
+
     /// How far a mask is drawn past the top and bottom of the text it cuts.
     ///
     /// A mask is laid out against the view it masks, never measured against the text inside it, and
@@ -456,9 +473,21 @@ struct KaraokeWordView: View {
     /// the word stays one layer however far the fill has got.
     var lift: Lift? {
         guard self.emphasis > 0, let moving = self.movingCharacterIndex else { return nil }
+        // Nothing is cut out of the word for a wave this size: it cannot be seen, and cutting costs
+        // two masked layers and a compositing group per frame.
+        guard self.maximumLiftPoints >= Self.visibleLiftPoints else { return nil }
         let amount = self.characters[moving].swell(at: self.displayTimeMs) * self.emphasis
         guard amount > 0 else { return nil }
         return Lift(index: moving, amount: amount)
+    }
+
+    /// How far this word's character can rise at the peak of its envelope, in points.
+    ///
+    /// The peak rather than the current amount: the decision has to hold for the whole wave. A lift
+    /// that appeared only while its envelope was high enough would fade in and out within every
+    /// character's window, which is a movement the envelope itself never asked for.
+    private var maximumLiftPoints: CGFloat {
+        self.fontSize * Self.liftFraction * CGFloat(max(0, self.emphasis))
     }
 
     /// The word's text as **one run, one layer per mask**, drawn in the box the flow layout reserved

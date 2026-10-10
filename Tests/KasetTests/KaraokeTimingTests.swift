@@ -617,18 +617,60 @@ struct KaraokeFillModelTests {
     func frameBudgetsAreOrderedForCost() {
         // The line being sung: the only row anybody is watching move.
         #expect(KaraokeFrameBudget.live < KaraokeFrameBudget.armed)
-        // The line after it: filled by the same clock, but nothing on it moves yet.
-        #expect(KaraokeFrameBudget.armed < KaraokeFrameBudget.covered)
-        // Covered by the fullscreen player: still advanced, just not drawn for anybody.
-        // Never slower than one frame per playback sample, or the clock would drift behind
-        // the samples it corrects against (a frame is capped at 100 ms of playback).
-        #expect(KaraokeFrameBudget.covered <= 0.1)
         // Reduce Motion keeps the fill but drops the decorative motion.
         #expect(KaraokeFrameBudget.reducedMotion > KaraokeFrameBudget.armed)
         // A paused song has a frozen fill: its frames only exist to take up a sample
         // correction or a seek, so they are far apart but never slower than 50 ms.
         #expect(KaraokeFrameBudget.paused > KaraokeFrameBudget.live)
         #expect(KaraokeFrameBudget.paused <= 0.05)
+    }
+
+    /// Which of those budgets a row gets, and which rows are handed no rate at all.
+    ///
+    /// Pinned here because every lyric surface takes this one decision (`KaraokeFrameBudget.plan`), so
+    /// a rule that drifts — a sheet animating where nobody can see it, a paused song redrawing at
+    /// display rate — would otherwise be a difference between the panel, the sidebar and the
+    /// fullscreen player rather than a failing test.
+    @Test("A row's draw plan follows what is on screen, not what is playing")
+    func rowPlansFollowWhatIsOnScreen() {
+        func plan(
+            isLive: Bool = true,
+            isCurrent: Bool = true,
+            isCovered: Bool = false,
+            reduceMotion: Bool = false,
+            isPlaying: Bool = true
+        ) -> KaraokeRowPlan {
+            KaraokeFrameBudget.plan(
+                isLive: isLive,
+                isCurrent: isCurrent,
+                isCovered: isCovered,
+                reduceMotion: reduceMotion,
+                isPlaying: isPlaying
+            )
+        }
+
+        // The line being sung draws at the live rate; a row that is on the clock but is not that
+        // line draws at half of it.
+        #expect(plan() == KaraokeRowPlan(isLive: true, minimumInterval: KaraokeFrameBudget.live))
+        #expect(plan(isCurrent: false).minimumInterval == KaraokeFrameBudget.armed)
+        // A row that is not on the clock is settled: no rate at all, because it draws nothing.
+        #expect(plan(isLive: false) == .settled)
+        #expect(plan(isLive: false).minimumInterval == nil)
+
+        // Reduce Motion and a paused song both keep the fill and drop the display-rate redraw.
+        #expect(plan(reduceMotion: true).minimumInterval == KaraokeFrameBudget.reducedMotion)
+        #expect(plan(isPlaying: false).minimumInterval == KaraokeFrameBudget.paused)
+
+        // A covered sheet draws no frames at all — whatever else is true of it, and including the
+        // line being sung. The panel behind the fullscreen player is out of sight for as long as the
+        // player is up, so its clock is advanced from the playback samples instead of a display link
+        // (`SyncedLyricsDisplayView.receiveClockSample`) and nothing on it is drawn for anybody.
+        for isPlaying in [true, false] {
+            for reduceMotion in [true, false] {
+                #expect(plan(isCovered: true, reduceMotion: reduceMotion, isPlaying: isPlaying) == .settled)
+                #expect(plan(isCovered: true, reduceMotion: reduceMotion, isPlaying: isPlaying).minimumInterval == nil)
+            }
+        }
     }
 
     @Test("The fill ease is monotone between 0 and 1")

@@ -292,14 +292,22 @@ struct NowPlayingSidebarView: View {
                 compact: true
             )
         case let .synced(synced):
-            SyncedLyricsDisplayView(
-                lyrics: synced,
-                currentTimeMs: self.playerService.currentTimeMs,
-                isPlaying: self.playerService.isPlaying,
-                isCovered: false,
-                allowsScrolling: false,
-                onSeek: { _ in self.expand(to: .lyrics) }
-            )
+            // The clock stream stops at the sheet (`LyricsClockReader`): this column's artwork,
+            // cards and wash do not change with playback, and rebuilding all of them ten times a
+            // second to hand the preview a position was the largest thing the column did.
+            LyricsClockReader { currentTimeMs, isPlaying, isFullscreenPresented in
+                SyncedLyricsDisplayView(
+                    lyrics: synced,
+                    currentTimeMs: currentTimeMs,
+                    isPlaying: isPlaying,
+                    // The fullscreen player covers the window and deliberately leaves this column
+                    // open behind it, so a preview behind the player is covered: it draws no frames
+                    // rather than a line being sung at full rate where nobody can see it.
+                    isCovered: isFullscreenPresented,
+                    allowsScrolling: false,
+                    onSeek: { _ in self.expand(to: .lyrics) }
+                )
+            }
             .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
         case .plain:
             LyricsStateView(
@@ -369,15 +377,18 @@ struct NowPlayingSidebarView: View {
                 )
             case let .synced(synced):
                 VStack(spacing: 0) {
-                    SyncedLyricsDisplayView(
-                        lyrics: synced,
-                        currentTimeMs: self.playerService.currentTimeMs,
-                        isPlaying: self.playerService.isPlaying,
-                        isCovered: false,
-                        onSeek: { timeMs in
-                            Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
-                        }
-                    )
+                    LyricsClockReader { currentTimeMs, isPlaying, isFullscreenPresented in
+                        SyncedLyricsDisplayView(
+                            lyrics: synced,
+                            currentTimeMs: currentTimeMs,
+                            isPlaying: isPlaying,
+                            // Covered while the fullscreen player is up: no frames at all.
+                            isCovered: isFullscreenPresented,
+                            onSeek: { timeMs in
+                                Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
+                            }
+                        )
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.lyricsPage)
 

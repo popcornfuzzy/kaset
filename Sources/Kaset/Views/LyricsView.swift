@@ -230,18 +230,23 @@ struct LyricsView: View {
             }
 
             VStack(spacing: 0) {
-                SyncedLyricsDisplayView(
+                // The clock stream is read by the sheet, not by this panel: nothing else in the
+                // panel changes with playback, and rebuilding its glass, header and footer ten
+                // times a second to hand the sheet a number was work nothing asked for.
+                LyricsClockReader { currentTimeMs, isPlaying, isFullscreenPresented in
+                    SyncedLyricsDisplayView(
                         lyrics: synced,
-                        currentTimeMs: self.playerService.currentTimeMs,
-                        isPlaying: self.playerService.isPlaying,
+                        currentTimeMs: currentTimeMs,
+                        isPlaying: isPlaying,
                         // The fullscreen player is an overlay over this panel, so the
-                        // karaoke animation is invisible while it is up. Keep the clock
-                        // ticking, but stop paying for display-rate frames nobody sees.
-                        isCovered: self.playerService.showFullscreenNowPlaying,
+                        // karaoke animation is invisible while it is up: a covered sheet
+                        // draws no frames at all, and keeps its clock from the samples.
+                        isCovered: isFullscreenPresented,
                         onSeek: { timeMs in
                             Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                         }
                     )
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.clear)
 

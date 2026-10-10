@@ -393,13 +393,12 @@ and only the word actually being sung carries a mask and the halo blur.
 
 **Rows redraw at the rate they need** (`KaraokeFrameBudget`): the line being sung at 60 Hz; the line
 after it at 30 Hz (nothing on it is moving — its transitions are Core Animation's, not redraws of its
-own); 10 Hz while the fullscreen player covers the panel, which is one frame per playback sample and
-keeps the clock correct without paying for frames nobody can see; and 20 Hz while playback is paused,
-where the fill is frozen and a frame only exists to take up a sample correction or a seek. Reduce Motion
-uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so 60 Hz is already smoother than the motion
-needs; on a 120 Hz display, halving the rate is the single largest saving. A row's rate is about how
-often it may redraw *while it is live*; when it is not, its timeline is paused entirely (see below),
-and the rate it would have had is not paid.
+own); and 20 Hz while playback is paused, where the fill is frozen and a frame only exists to take up a
+sample correction or a seek. Reduce Motion uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so
+60 Hz is already smoother than the motion needs; on a 120 Hz display, halving the rate is the single
+largest saving. A row's rate is about how often it may redraw *while it is live*; when it is not, its
+timeline is paused entirely (see below), and the rate it would have had is not paid. A row of a sheet
+the fullscreen player covers is not live at all, so it has no rate: see the second amendment.
 
 **A settled row draws nothing.** It is not merely throttled: its timeline is paused
 (`KaraokeTimeSource`), so it is handed its settled position once and then not drawn again until the
@@ -450,6 +449,64 @@ Reduce Motion (via the SwiftUI `accessibilityReduceMotion` environment, the reac
 the `NSWorkspace` check used elsewhere) keeps the fill — it is the information — and drops the
 decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw instead of display rate.
 
+## Amendment: a sheet nobody can see draws nothing, and a wave nobody can see is not drawn
+
+The amendments above removed the frames a sheet did not need. What was left was frames nobody could
+see — which is a different thing, and cheaper to fix.
+
+**A covered sheet draws no frames at all.** A sheet the fullscreen player is drawn over used to get a
+tenth of the live rate: one frame per playback sample, so the clock kept correcting "without paying for
+frames nobody can see". But a covered sheet is out of sight for as long as the player is up, and a tenth
+of the rate is still a whole row redrawn ten times a second, of a line being sung behind an opaque
+cover. Worse, the surfaces were not exclusive in practice: the sidebar is deliberately left open behind
+the player (`PlayerService.showFullscreenNowPlaying` does not close it, because closing it changed the
+reader's window layout from a view they had not touched), and the sidebar's two sheets were passing
+`isCovered: false` — so the player's sheet and the sidebar's sheet animated at the live rate together,
+the exact case the harness prices at a third of a core.
+
+The couple is now impossible. Both lyric surfaces — and the panel — take the same decision, in one
+place (`KaraokeFrameBudget.plan`): a covered row is never live, and a row that is not live has a paused
+timeline, so a covered sheet draws nothing at all. The clock is advanced from the playback samples
+instead (`SyncedLyricsDisplayView.receiveClockSample`), which is what keeps a revealed sheet already on
+the right line rather than slewing to it, or snapping back to a stale one, in front of the reader.
+`KaraokeRowPlan` makes "which rows draw, and how often" a value that is unit-tested
+(`KaraokeTimingTests`) instead of a pair of rules that can drift between three surfaces.
+
+**A hidden fullscreen player's sheet is covered too.** The overlay is mounted from its first
+presentation on and merely faded out between them, so its sheet kept running against a frozen playback
+position — a line being sung behind `opacity: 0`. It is covered by *not* being presented, which is the
+same rule read from the other side, and it draws nothing until the player is up again.
+
+**The lift is not drawn where it cannot be seen.** The lift is the most expensive decoration a word
+carries: the character is cut out of the word and drawn again above it, which is two masked layers and a
+compositing group on every frame the word is filling. It is also the one decoration that can be too
+small to see, and the panel is where that happens — a 16 pt line at the 0.55 emphasis the panel carries
+rises a *fifth of a point* at the peak of its envelope, under half a device pixel of travel on any
+display, while the cost is the top of the range that envelope was designed in. The halo and the
+feathered fill are what mark the edge; the lift is there so the character being sung is not perfectly
+static. It is now skipped below a quarter point of travel, so the panel stops paying for a movement it
+cannot show, and the fullscreen player's 36 pt line — most of a point of travel — keeps its wave.
+Measured on the harness's own line, run three times: **1.90/1.97/1.91 ms/frame** with the wave at full
+strength against **1.40/1.46/1.51 ms/frame** at the panel's own emphasis — about a quarter of a panel
+frame, which takes an animating panel surface from ~11% of a core at 60 Hz to ~9%.
+
+**A pause row's dots do not ask when the silence began on every frame.** The interlude — where the
+silence starts — is measured from the line *above* the row (`KaraokeFillModel.settleBoundaryMs`, which
+derives that line's fill windows from its words), and it is settled for as long as the row draws it;
+only the dots' state is a function of the display position. The row resolves one interlude and asks it
+for each frame, which the harness prices at 0.001 ms/frame against 0.009 re-derived per frame.
+
+**The playback stream stops at the sheet.** The position arrives from the WebView's lyrics poll ten
+times a second, and the surface *around* a sheet was reading it: the panel, the sidebar column and the
+fullscreen overlay each rebuilt themselves — glass, artwork, cards, the blurred backdrop, the transport
+controls — ten times a second to hand a sheet a number only the sheet uses. The fullscreen overlay is
+mounted for the whole session, so its share of that ran whether or not it was on screen; the sidebar's
+share was the largest single thing its column did per second. `Observation` tracks a property per view
+body, so `LyricsClockReader` is now the leaf that reads it — the position, the play state, and the
+fullscreen flag a sheet needs to know it is covered — and the invalidation stops there.
+`LyricsClockReaderTests` hosts the real reader beside a probe that reads no playback state, and holds
+that a stream of samples rebuilds the sheet and not the surface around it.
+
 ## Consequences
 
 ### Positive
@@ -471,14 +528,18 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
 
 ### Negative
 
-- **Per-frame cost is real, though bounded**: one animating line measures ~1.9 ms/frame in
-  `KaraokeLyricsPerformanceTests` (construction, layout, masking, blur and rasterization into a bitmap
-  — the part the app does on the GPU), which is roughly 11% of one core per surface at 60 Hz for a line
-  of ordinary length, and ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of
-  thirteen lead words plus ten backing words at the fullscreen size). It remains the most expensive
-  per-frame work in the app, and the frame budgets, the measured-layout cache, the row arming rule and
+- **Per-frame cost is real, though bounded**: one animating line measures ~1.45 ms/frame at the panel's
+  own size and emphasis and ~1.9 ms/frame at the fullscreen player's, in `KaraokeLyricsPerformanceTests`
+  (construction, layout, masking, blur and rasterization into a bitmap — the part the app does on the
+  GPU). That is roughly 9% and 11% of one core per surface at 60 Hz for a line of ordinary length, and
+  ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of thirteen lead words plus
+  ten backing words at the fullscreen size). It remains the most expensive per-frame work in the app,
+  and the frame budgets, the measured-layout cache, the row arming rule, the covered-sheet rule and
   the hit-testing prune are what keep it from growing; the harness test fails if a frame's cost
   regresses past its (loose) budget.
+- **The two animating surfaces cannot be priced together, because they can no longer run together**:
+  presenting the fullscreen player covers every other lyric sheet, and a covered sheet draws nothing.
+  The harness prints both numbers so the rule is visible if it ever stops holding.
 - **The clock is stateful and outside SwiftUI's model**: it must be reset on track change
   (`onChange(of: lyrics)`), and it must be fed on `isPlaying` changes as well as position samples.
 - **The highlight and the scroll are separate indices now** (`currentLineIndex`/`scrollLineId` on both
