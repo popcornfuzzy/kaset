@@ -498,6 +498,37 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrackLikeStatus == .like)
     }
 
+    @Test("Playing a Liked Music row keeps the liked thumb in the player bar")
+    func playingALikedMusicRowKeepsTheLikedThumb() async {
+        // What the Liked Music page hands to playback: the row's rating is *known* (the page is the
+        // list of liked songs) but the row carries no library feedback tokens, because playlist
+        // parsing does not read per-track menus.
+        let song = Song(
+            id: "liked-music-video",
+            title: "A Liked Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "liked-music-video",
+            likeStatus: .like
+        )
+        // The API's song metadata is the only other source and it reports no rating here, which is
+        // what left the player bar's thumb reading "not liked" for a song that is liked.
+        self.mockClient.songResponses[song.videoId] = Song(
+            id: song.videoId,
+            title: "A Liked Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            videoId: song.videoId,
+            likeStatus: nil
+        )
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+        #expect(SongLikeStatusManager.shared.status(for: song.videoId) == .like)
+    }
+
     // MARK: - Reset Track Status Tests
 
     @Test("resetTrackStatus resets all status properties")

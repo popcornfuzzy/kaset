@@ -97,10 +97,12 @@ struct LyricsSearchingCaption: View {
 
 // MARK: - LyricsSourceFooter
 
-/// The sticky footer under a lyric sheet: which provider supplied the lyrics, and the picker when it
-/// offers more than one community version.
+/// The sticky footer under a lyric sheet: which provider supplied the lyrics, the picker when it
+/// offers more than one community version, and — for a surface that has no header of its own — the
+/// control that re-runs the search.
 ///
-/// Shared by the classic panel and the sidebar's expanded lyric page.
+/// Shared by the classic panel and the sidebar's expanded lyric page. The classic panel passes no
+/// refresh action: its own header already carries one, and it is drawn by the panel it is in.
 @available(macOS 26.0, *)
 struct LyricsSourceFooter: View {
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
@@ -108,6 +110,11 @@ struct LyricsSourceFooter: View {
     let source: String?
     /// Horizontal inset of the row. The classic panel sits inside a 280pt card; the sidebar is wider.
     var horizontalPadding: CGFloat = 16
+    /// Re-runs the search that produced this sheet, or `nil` for a surface that keeps the control
+    /// somewhere else. It sits at the trailing edge of the source row — the sheet's own bottom-right
+    /// corner — rather than beside a title: refreshing means "search again for this song", which is
+    /// what the source line already says about.
+    var onRefresh: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -125,6 +132,20 @@ struct LyricsSourceFooter: View {
                 Spacer(minLength: 8)
 
                 self.variantPicker
+
+                if let onRefresh {
+                    Button(action: onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "Refresh lyrics"))
+                    .accessibilityLabel(String(localized: "Refresh lyrics"))
+                    .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.lyricsRefreshButton)
+                }
             }
             .padding(.horizontal, self.horizontalPadding)
             .padding(.vertical, 10)

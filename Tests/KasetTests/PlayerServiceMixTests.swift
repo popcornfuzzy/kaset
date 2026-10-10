@@ -277,17 +277,20 @@ struct PlayerServiceMixTests {
     @Test("reorderQueue(from:to:) moves item and maintains current track")
     func reorderQueueFromTo() async {
         let queue = TestFixtures.makeSongs(count: 4)
-        await self.playerService.playQueue(queue, startingAt: 1)
+        await self.playerService.playQueue(queue, startingAt: 2)
 
-        // [video-0, video-1*, video-2, video-3] - current is video-1 at index 1
-        self.playerService.reorderQueue(from: IndexSet(integer: 0), to: 3)
+        // [video-0, video-1, video-2*, video-3] - current is video-2 at index 2, and the move stays
+        // above it (a move that would shift the playing row is refused; see `QueueReorderLockTests`).
+        // Index 1 moves up to index 0: `move(fromOffsets:toOffset:)` inserts *before* `toOffset`, so
+        // dropping at 0 is a real move while dropping at 1 would be a no-op.
+        self.playerService.reorderQueue(from: IndexSet(integer: 1), to: 0)
 
-        // move(fromOffsets:toOffset:) inserts before toOffset: [video-1, video-2, video-0, video-3]
+        // move(fromOffsets:toOffset:) inserts before toOffset: [video-1, video-0, video-2, video-3]
         #expect(self.playerService.queue[0].videoId == "video-1")
-        #expect(self.playerService.queue[1].videoId == "video-2")
-        #expect(self.playerService.queue[2].videoId == "video-0")
+        #expect(self.playerService.queue[1].videoId == "video-0")
+        #expect(self.playerService.queue[2].videoId == "video-2")
         #expect(self.playerService.queue[3].videoId == "video-3")
-        #expect(self.playerService.currentIndex == 0)
+        #expect(self.playerService.currentIndex == 2)
     }
 
     @Test("reorderQueue(from:to:) from current index fails gracefully")

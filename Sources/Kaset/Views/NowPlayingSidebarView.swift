@@ -394,7 +394,8 @@ struct NowPlayingSidebarView: View {
 
                     LyricsSourceFooter(
                         source: synced.source,
-                        horizontalPadding: NowPlayingSidebarLayout.padding
+                        horizontalPadding: NowPlayingSidebarLayout.padding,
+                        onRefresh: { self.refreshLyrics() }
                     )
                 }
             case let .plain(plain):
@@ -418,15 +419,27 @@ struct NowPlayingSidebarView: View {
 
                     LyricsSourceFooter(
                         source: plain.source,
-                        horizontalPadding: NowPlayingSidebarLayout.padding
+                        horizontalPadding: NowPlayingSidebarLayout.padding,
+                        onRefresh: { self.refreshLyrics() }
                     )
                 }
             case let .unavailable(message):
-                LyricsStateView(
-                    icon: "quote.bubble",
-                    title: String(localized: "No Lyrics Available"),
-                    message: message ?? String(localized: "There aren't any lyrics available for this song.")
-                )
+                VStack(spacing: 0) {
+                    LyricsStateView(
+                        icon: "quote.bubble",
+                        title: String(localized: "No Lyrics Available"),
+                        message: message ?? String(localized: "There aren't any lyrics available for this song.")
+                    )
+
+                    // Nothing to credit, but the footer is still where the reader retries: a search that
+                    // failed (or ran against incomplete metadata) is exactly the one worth re-running, and
+                    // the classic panel's own control is available in this state too.
+                    LyricsSourceFooter(
+                        source: nil,
+                        horizontalPadding: NowPlayingSidebarLayout.padding,
+                        onRefresh: { self.refreshLyrics() }
+                    )
+                }
             }
         }
         .padding(.horizontal, NowPlayingSidebarLayout.padding)
@@ -615,6 +628,14 @@ struct NowPlayingSidebarView: View {
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
         }
+    }
+
+    /// Re-runs the search for the current track, from the sheet's own footer control — the classic
+    /// panel keeps that control in its header, and the footer beside the source is where the column's
+    /// sheet has room for it.
+    private func refreshLyrics() {
+        guard let videoId = self.playerService.currentTrack?.videoId else { return }
+        self.startLyricsLoad(for: videoId, forceRefresh: true)
     }
 
     @MainActor

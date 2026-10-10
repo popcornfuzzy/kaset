@@ -64,6 +64,8 @@ enum AccessibilityID {
         static let upNextSection = "nowPlayingSidebar.upNextSection"
         static let lyricsPage = "nowPlayingSidebar.lyricsPage"
         static let queuePage = "nowPlayingSidebar.queuePage"
+        /// The refresh control in the expanded lyric sheet's footer (its own bottom-trailing corner).
+        static let lyricsRefreshButton = "nowPlayingSidebar.lyricsRefresh"
     }
 
     // MARK: - Queue View

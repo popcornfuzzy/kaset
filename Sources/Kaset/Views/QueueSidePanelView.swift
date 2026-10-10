@@ -433,6 +433,11 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             if let draggableTableView = tableView as? DraggableTableView {
                 cellView.setInlineRemoveButtonHidden(draggableTableView.isDeleteActionRevealed(for: row))
             }
+            // The row that is playing cannot be reordered, and a row that looks like the others but
+            // refuses to land anywhere reads as broken: hovering it says why.
+            cellView.toolTip = row == self.currentIndex
+                ? String(localized: "Playing — this row stays where it is")
+                : nil
             return cellView
         }
 
@@ -449,8 +454,16 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         }
 
         /// Drag Source
+        ///
+        /// Every row offers a drag, the playing one included. A row silenced here is a row that
+        /// **disappears**: the table hides the pressed row as it prepares the drag and the drag session
+        /// is what shows it again, so a `nil` writer — a drag that never begins — leaves the row hidden
+        /// for good (see `DraggableTableView.restoreRowsAfterFailedDrag`).
+        ///
+        /// The playing row is locked at the *drop*, not at the drag: `dropIsAllowed` refuses every
+        /// position for it, so it can be lifted but has nowhere to land, and the model refuses the same
+        /// moves (`PlayerService.reorderMovesPlayingRow`).
         func tableView(_: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-            guard row != self.currentIndex else { return nil }
             let item = NSPasteboardItem()
             item.setString(String(row), forType: self.dragType)
             self.isDragging = true
@@ -473,24 +486,45 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             guard dropOperation == .above else { return [] }
             guard let str = info.draggingPasteboard.string(forType: dragType),
                   let srcRow = Int(str) else { return [] }
-            let destRow = row
-            guard destRow != self.currentIndex, srcRow != destRow else { return [] }
+            // Refused here as well as in `acceptDrop`, so a refused drop shows no gap either — the
+            // reader never sees the queue make room for something that is not going to happen.
+            guard self.dropIsAllowed(from: srcRow, to: row) else { return [] }
             return .move
         }
 
         func tableView(_: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation _: NSTableView.DropOperation) -> Bool {
             guard let str = info.draggingPasteboard.string(forType: dragType),
                   let srcRow = Int(str) else { return false }
-            let destRow = row
-            guard srcRow != self.currentIndex, destRow != self.currentIndex, srcRow != destRow else { return false }
-            self.onReorder(srcRow, destRow)
+            guard self.dropIsAllowed(from: srcRow, to: row) else { return false }
+            self.onReorder(srcRow, row)
             self.isDragging = false
             return true
         }
 
+        /// Whether a dragged row may be dropped where the pointer is.
+        ///
+        /// The row that is playing is locked: it can be neither the row dragged — every position under
+        /// it is refused, so a lifted playing row has nowhere to land — nor a row that moves as a
+        /// result. The second half is the rule the model states, so the table's feedback and the model
+        /// can never disagree (see `PlayerService.reorderMovesPlayingRow`).
+        /// Internal rather than private so the rule can be read off the coordinator itself, which is
+        /// where the table's feedback comes from (see `QueueRowDragStrandTests`).
+        func dropIsAllowed(from source: Int, to destination: Int) -> Bool {
+            guard source != self.currentIndex, destination != source else { return false }
+            return !PlayerService.reorderMovesPlayingRow(
+                from: source, to: destination, currentIndex: self.currentIndex
+            )
+        }
+
         // MARK: - Context Menu
 
-        func tableView(_: NSTableView, menuForRow row: Int, event _: NSEvent) -> NSMenu? {
+        /// The menu for the row under a right click, built by the table (`DraggableTableView.menu(for:)`).
+        ///
+        /// A plain method, not an `NSTableViewDelegate` hook: **there is no `menuForRow` in AppKit**, so
+        /// the delegate method this used to be was never called and a right click on a queue row opened
+        /// nothing at all — which is why the queue's context menu had to be brought back to the Now
+        /// Playing sidebar by hand.
+        func menu(forRow row: Int) -> NSMenu? {
             guard row >= 0, let song = queue[safe: row] else { return nil }
             let menu = NSMenu()
             let manager = self.favoritesManager
@@ -597,11 +631,27 @@ class DraggableTableView: NSTableView {
     private var revealedDeleteDirection: CGFloat = 0
     private var revealedDeleteInitialOriginX: CGFloat = 0
     private weak var revealedDeleteBackgroundView: NSView?
+    /// Set while the remove animation is playing. Its own row is hidden and slides out, so the repair in
+    /// `restoreRowsAfterFailedDrag` must leave it alone (see `handleRevealedDeleteButtonClick`).
+    private var isRemovingRow = false
     private var lastDragAutoScrollTimestamp: CFAbsoluteTime?
 
     /// Disable built-in autoscroll during drag (it is too aggressive and causes jump-to-end behavior).
     override func autoscroll(with _: NSEvent) -> Bool {
         false
+    }
+
+    /// The right-click menu for the row under the pointer.
+    ///
+    /// This is the only place AppKit asks a table for a row's menu: `NSTableViewDelegate` has no
+    /// `menuForRow` hook, so the menu the rows carry has to be resolved here from the event's own
+    /// location. Returning `nil` for a click that lands below the last row leaves the table's own
+    /// (empty) menu in place rather than opening an unrelated one.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = self.convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        guard row >= 0 else { return nil }
+        return self.coordinator?.menu(forRow: row)
     }
 
     /// Smooth drag autoscroll based on the live drag location from `validateDrop`.
@@ -843,6 +893,36 @@ class DraggableTableView: NSTableView {
         super.mouseDown(with: event)
     }
 
+    /// Puts back any row a press left hidden or shifted.
+    ///
+    /// A press hides the row under the pointer while the table prepares a drag — the drag session shows
+    /// it again when it ends. A press that never became a drag (no drag source, or a drag that was
+    /// abandoned before it began) therefore strands that row **invisible until relaunch**, since a
+    /// recycled row view keeps the hidden flag. The release is the one moment that can tell the press
+    /// apart from the drag: a live drag has the mouse, and this event is for the press that stayed a
+    /// press. A swipe's revealed action and the remove animation are the two states that hide or move a
+    /// row on purpose, and neither is touched.
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        self.restoreRowsAfterFailedDrag()
+    }
+
+    /// Shows the rows a press left hidden, and slides back the ones it left out of their slot.
+    private func restoreRowsAfterFailedDrag() {
+        guard self.revealedDeleteRow < 0, !self.isRemovingRow else { return }
+        for row in 0 ..< self.numberOfRows {
+            guard let rowView = self.rowView(atRow: row, makeIfNecessary: false) else { continue }
+            if rowView.isHidden { rowView.isHidden = false }
+            if rowView.alphaValue < 1 { rowView.alphaValue = 1 }
+            let slotX = self.rect(ofRow: row).origin.x
+            if rowView.frame.origin.x != slotX {
+                var frame = rowView.frame
+                frame.origin.x = slotX
+                rowView.frame = frame
+            }
+        }
+    }
+
     private func revealDeleteAction(for row: Int, direction: CGFloat, initialX _: CGFloat, song _: Song) {
         guard let coord = self.coordinator,
               let rowView = self.rowView(atRow: row, makeIfNecessary: false),
@@ -953,6 +1033,7 @@ class DraggableTableView: NSTableView {
 
         // Hide the real row during animation so text never overlaps with adjacent rows.
         rowView.isHidden = true
+        self.isRemovingRow = true
         self.addSubview(swipeSnapshot, positioned: .above, relativeTo: rowView)
 
         self.swipeRemoveCooldownUntil = CFAbsoluteTimeGetCurrent() + Self.swipeRemoveCooldown
@@ -975,6 +1056,7 @@ class DraggableTableView: NSTableView {
                 frame.origin.x = initialX
                 rowView.frame = frame
                 rowView.isHidden = false
+                self.isRemovingRow = false
                 swipeSnapshot.removeFromSuperview()
                 actionView?.removeFromSuperview()
                 self.revealedDeleteBackgroundView = nil
@@ -1110,54 +1192,131 @@ private struct QueueSidePanelHeader: View {
 
 // MARK: - QueueFooterActions
 
+/// The queue's own footer controls: undo, redo, shuffle and clear.
+///
+/// Internal rather than file-private so its layout can be measured offscreen at the widths the Now
+/// Playing column can be dragged to (see `QueueFooterLayoutTests`).
 @available(macOS 26.0, *)
-private struct QueueFooterActions: View {
+struct QueueFooterActions: View {
     @Environment(PlayerService.self) private var playerService
 
+    /// The actions, with or without their names.
+    ///
+    /// The names are what the reader wants, but this row is in the Now Playing column, which can be
+    /// dragged down to 300pt: with four titled controls in a row that narrow, SwiftUI keeps the labels
+    /// and *wraps* them — "Undo" over two lines, "Shuffle" cut in half, the row twice as tall as its
+    /// buttons. So the row states two versions of itself and `ViewThatFits` picks the first that fits:
+    /// names while there is room for them, glyphs (each with a tooltip and a VoiceOver label) when there
+    /// is not. A narrower row is read as one line of icons rather than four broken words.
+    ///
+    /// The two versions measure 257pt and 94pt, so a row that holds all four names needs about 289pt of
+    /// panel width (the row's own 16pt insets included). The column's floor is 300pt, and its queue page
+    /// insets the panel by `NowPlayingSidebarLayout.padding` on each side, which leaves 272pt of panel —
+    /// under the threshold, so the narrowest column reads as four named glyphs with tooltips, and every
+    /// column wide enough to hold the names on one line shows them. Nothing in between can wrap:
+    /// `fixedSize` is on each button, so an over-long candidate overflows its row instead of breaking a
+    /// word, and `ViewThatFits` never picks it in the first place (`QueueFooterLayoutTests` measures
+    /// both versions and the switch).
     var body: some View {
+        HStack(spacing: 0) {
+            ViewThatFits(in: .horizontal) {
+                self.actions(showsTitles: true)
+                self.actions(showsTitles: false)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func actions(showsTitles: Bool) -> some View {
         HStack(spacing: 12) {
-            Button {
+            self.button(
+                title: String(localized: "Undo"),
+                systemImage: "arrow.uturn.backward",
+                showsTitle: showsTitles,
+                isEnabled: self.playerService.canUndoQueue
+            ) {
                 self.playerService.undoQueue()
-            } label: {
-                Label("Undo", systemImage: "arrow.uturn.backward")
             }
-            .disabled(!self.playerService.canUndoQueue)
-            .buttonStyle(.plain)
 
-            Button {
+            self.button(
+                title: String(localized: "Redo"),
+                systemImage: "arrow.uturn.forward",
+                showsTitle: showsTitles,
+                isEnabled: self.playerService.canRedoQueue
+            ) {
                 self.playerService.redoQueue()
-            } label: {
-                Label("Redo", systemImage: "arrow.uturn.forward")
             }
-            .disabled(!self.playerService.canRedoQueue)
-            .buttonStyle(.plain)
 
-            Button {
+            self.button(
+                title: String(localized: "Shuffle"),
+                systemImage: "shuffle",
+                showsTitle: showsTitles,
+                isEnabled: !self.playerService.queue.isEmpty
+            ) {
                 self.playerService.shuffleQueue()
-            } label: {
-                Label("Shuffle", systemImage: "shuffle")
             }
-            .disabled(self.playerService.queue.isEmpty)
-            .buttonStyle(.plain)
 
-            Button {
+            self.button(
+                title: String(localized: "Clear"),
+                systemImage: "trash",
+                showsTitle: showsTitles,
+                isEnabled: !self.playerService.queue.isEmpty,
+                tint: .red
+            ) {
                 Task {
                     if self.playerService.isPlaying {
                         await self.playerService.stop()
                     }
                     self.playerService.clearQueueEntirely()
                 }
-            } label: {
-                Label("Clear", systemImage: "trash")
-                    .foregroundStyle(.red)
             }
-            .disabled(self.playerService.queue.isEmpty)
-            .buttonStyle(.plain)
-
-            Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+    }
+
+    private func button(
+        title: String,
+        systemImage: String,
+        showsTitle: Bool,
+        isEnabled: Bool,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            self.label(title: title, systemImage: systemImage, showsTitle: showsTitle)
+                .foregroundStyle(tint ?? .primary)
+                // No wrapping in either version, and no ambiguity about which one fits: an unwrapped
+                // label is what makes the titled row's width the sum of its words, so `ViewThatFits`
+                // compares real widths instead of two candidates that both "fit" by wrapping.
+                .fixedSize(horizontal: true, vertical: false)
+                .font(.system(size: 12))
+        }
+        .disabled(!isEnabled)
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+    }
+
+    /// The glyph, and the name when there is room for it.
+    ///
+    /// The glyph is in both versions so the row reads as the same four controls either way. Dropping
+    /// the name leaves the `Label`'s accessibility value alone — `.help` states it for the pointer — and
+    /// the button's own `accessibilityLabel` states it for VoiceOver.
+    @ViewBuilder
+    private func label(title: String, systemImage: String, showsTitle: Bool) -> some View {
+        if showsTitle {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                // One line, never two. `fixedSize` is what keeps the row from being *squeezed* at all,
+                // and this is the belt to its braces: even if the row were compressed by a future
+                // edit, the worst a name can do is truncate rather than break mid-word.
+                .lineLimit(1)
+        } else {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+        }
     }
 }
 

@@ -240,9 +240,34 @@ The column's chrome is deliberately the album art, not a panel:
   opening the full page rather than seeking.
 - **The next song** below it, also plain content on the sidebar background.
 - Each section's label and its content expand into the full page — the shared lyric sheet with the
-  provider/variant footer, and the classic queue (reorder, automix chips, undo/redo, clear) embedded
-  through `QueueSidePanelView(showsHeader: false, usesMaterialBackground: false)` at the column's
-  width, which also sizes the queue table's column to it.
+  provider/variant footer that carries the page's **refresh control**, and the classic queue (reorder,
+  automix chips, undo/redo/clear, and the row context menu) embedded through
+  `QueueSidePanelView(showsHeader: false, usesMaterialBackground: false)` at the column's width, which
+  also sizes the queue table's column to it.
+- The lyric page's refresh control sits at the **trailing edge of the sheet's source footer**
+  (`LyricsSourceFooter`'s `onRefresh`), not beside the header: the header is the toolbar band's, where a
+  refresh read as part of the back control's capsule, and refreshing means "search again for this song" —
+  which is what the line under the sheet, the one that names the provider, already says. It is drawn in
+  every lyric state, including "no lyrics", because a search that failed is the one worth re-running;
+  the classic panel keeps its own refresh in its own header. The queue's controls stay inside the queue,
+  in the footer below its rows.
+- The queue's **footer is adaptive**: four actions whose names are shown while the row of them fits and
+  whose glyphs (with tooltips and VoiceOver labels) are shown when it does not. The names need 289pt of
+  panel and the column's floor leaves 272pt, so the narrowest column reads as four icons rather than
+  four words — the wrapped "Undo" over two lines that the titled row used to break into cannot be
+  produced by either version (`QueueFooterLayoutTests` measures both).
+- The queue's **playing row is locked**: a drop that would shift it shows no gap and is refused, and the
+  model refuses the move as well (`PlayerService.reorderMovesPlayingRow`) — the row's index is what the
+  highlight, the list's auto-scroll and the WebView's own alignment all read, so a reorder that changed it
+  made the whole queue jump (`QueueReorderLockTests`). The lock is stated at the **drop**, not at the drag:
+  a row the table refuses as a drag source is a row it hides on the press and never shows again (the
+  unhide belongs to the drag session, and a session that never began never ends), so every row offers a
+  drag and a release puts back any row a press left hidden
+  (`DraggableTableView.restoreRowsAfterFailedDrag`, `QueueRowDragStrandTests`).
+- The queue's rows carry their **right-click menu** (`DraggableTableView.menu(for:)`), which is the only
+  place AppKit asks a table for a row's menu. It was built in a method named `menuForRow` that AppKit
+  never calls — there is no such delegate hook — so the menu was dead code in the classic panel too, and
+  the sidebar inherited the same silence.
 
 ### The album's own colors
 
@@ -294,5 +319,11 @@ looks like a new track.
   panel still has it.
 - The lyrics loader is still duplicated between `LyricsView` and the sidebar — the shared *views* are
   extracted, the loading state machine is not. Extracting that too is the natural next refactor.
-- The column's rendering is covered by unit tests only at the state-machine level
-  (`PlayerServiceTests`); the AppKit queue table inside it cannot be asserted from unit tests.
+- The column is covered by unit tests at the state-machine level (`PlayerServiceTests`), at the
+  toolbar-item level (`WindowToolbarTests`, including the hosted header's own size), and at the layout
+  level by hosting its views offscreen — the queue and lyric footers are rendered and their ink measured
+  (`QueueFooterLayoutTests`), the queue table's menu is driven with a synthetic right click
+  (`QueueSidePanelMenuTests`), the reorder rule is tabulated (`QueueReorderLockTests`), and the stranded
+  row a refused drag leaves behind is repaired and its repair is read off the table
+  (`QueueRowDragStrandTests`). What the
+  column *draws* as a whole still has to be seen by running the app.

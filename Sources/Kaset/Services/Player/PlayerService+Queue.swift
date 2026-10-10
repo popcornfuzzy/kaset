@@ -424,8 +424,30 @@ extension PlayerService {
         self.saveQueueForPersistence()
     }
 
+    /// Whether moving the queue's `source` row to `destination` would move the **playing** row.
+    ///
+    /// The playing row is locked. Its index is what the queue's highlight, its auto-scroll and the
+    /// WebView's own alignment all read, so a reorder that changes it makes the whole list jump — which
+    /// is the glitch a drag across the playing row left behind. A drag within one side of it is
+    /// unaffected, so a song can still be dropped directly under the playing one, and one above it can
+    /// still be moved around the songs above it.
+    ///
+    /// One function, so the table's own drop feedback refuses exactly what the model refuses. A
+    /// `currentIndex` below zero (no highlighted row — YouTube autoplay) locks nothing, and the row
+    /// being dragged is the caller's own guard (`source == currentIndex` moves nothing by itself).
+    nonisolated static func reorderMovesPlayingRow(from source: Int, to destination: Int, currentIndex: Int) -> Bool {
+        guard currentIndex >= 0, source != currentIndex else { return false }
+        // Dropping *above* the playing row inserts before it, which pushes it down one.
+        guard destination != currentIndex else { return true }
+        return (source < currentIndex && destination > currentIndex)
+            || (source > currentIndex && destination <= currentIndex)
+    }
+
     /// Reorders the queue by moving items from source indices to destination offset.
-    /// Used for drag-and-drop reordering; does not allow moving the current track.
+    ///
+    /// Used for drag-and-drop reordering. The row that is playing neither moves nor lets anything else
+    /// move it: the whole move is refused, so a drag across the playing row leaves the queue — and its
+    /// highlight — exactly as they were (see `reorderMovesPlayingRow`).
     /// - Parameters:
     ///   - source: Indices of items to move.
     ///   - destination: Index where items will be placed (after removal from source).
@@ -438,19 +460,32 @@ extension PlayerService {
             self.logger.warning("Cannot reorder: destination is current track")
             return
         }
-        self.clearForwardSkipNavigationStack()
-        self.recordQueueStateForUndo()
-
+        // A single-item move is the drag path; a move that would shift the playing row is refused here
+        // as well as in the table, so nothing can reorder around it by another route.
+        if source.count == 1,
+           let sourceRow = source.first,
+           Self.reorderMovesPlayingRow(from: sourceRow, to: destination, currentIndex: self.currentIndex)
+        {
+            self.logger.warning("Cannot reorder: the move would shift the playing row")
+            return
+        }
         var newQueue = self.queue
         newQueue.move(fromOffsets: source, toOffset: destination)
 
-        // Adjust currentIndex if needed (current track moved in the array)
-        if let oldCurrent = self.queue[safe: self.currentIndex],
-           let newCurrentIndex = newQueue.firstIndex(where: { $0.videoId == oldCurrent.videoId })
+        // The row that is playing is where it was, or the move does not happen.
+        //
+        // The rule above is the single-item drag the table asks about; this is the same invariant
+        // stated on the *result*, so no other shape of `source` can shift the row either — and it is
+        // why the playing row's index needs no adjustment after a move: it cannot have changed.
+        if let playing = self.queue[safe: self.currentIndex],
+           newQueue.firstIndex(where: { $0.videoId == playing.videoId }) != self.currentIndex
         {
-            self.currentIndex = newCurrentIndex
+            self.logger.warning("Cannot reorder: the move would shift the playing row")
+            return
         }
 
+        self.clearForwardSkipNavigationStack()
+        self.recordQueueStateForUndo()
         self.queue = newQueue
         self.logger.info("Queue reordered: moved from \(source) to \(destination)")
         self.saveQueueForPersistence()

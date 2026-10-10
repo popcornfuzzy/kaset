@@ -116,32 +116,42 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.showMiniPlayer == true)
     }
 
-    @Test("Reorder queue updates current index correctly when moving before current")
+    // The two moves below are the two directions a reorder used to be allowed to cross the playing row
+    // in, and they used to re-point `currentIndex` at the moved row. That is the reorder this app now
+    // refuses: the playing row's index is what the queue's highlight, its auto-scroll and the WebView's
+    // own alignment read, so a move that changes it makes the whole list jump. The rule itself is stated
+    // and tabulated in `QueueReorderLockTests`; these are its two crossings through the queue's own API.
+
+    @Test("Reorder queue refuses a move from below the playing row to above it")
     func reorderQueueUpdatesCurrentIndexBefore() async {
         // Arrange - Current index is 2
         let songs = TestFixtures.makeSongs(count: 5)
         await self.playerService.playQueue(songs, startingAt: 2)
         #expect(self.playerService.currentIndex == 2)
 
-        // Act - Move song at index 4 to index 0 (before current)
+        // Act - Move song at index 4 to index 0, across the playing row
         self.playerService.reorderQueue(from: IndexSet(integer: 4), to: 0)
 
-        // Assert - Current index should increment
-        #expect(self.playerService.currentIndex == 3)
+        // Assert - Nothing moved, and the playing row is still the one it was
+        #expect(self.playerService.queue.map(\.videoId) == songs.map(\.videoId))
+        #expect(self.playerService.currentIndex == 2)
+        #expect(self.playerService.currentTrack?.videoId == "video-2")
     }
 
-    @Test("Reorder queue updates current index correctly when moving after current")
+    @Test("Reorder queue refuses a move from above the playing row to below it")
     func reorderQueueUpdatesCurrentIndexAfter() async {
         // Arrange - Current index is 2
         let songs = TestFixtures.makeSongs(count: 5)
         await self.playerService.playQueue(songs, startingAt: 2)
         #expect(self.playerService.currentIndex == 2)
 
-        // Act - Move song at index 0 to index 4 (after current)
+        // Act - Move song at index 0 to index 5, past the playing row
         self.playerService.reorderQueue(from: IndexSet(integer: 0), to: 5)
 
-        // Assert - Current index should decrement
-        #expect(self.playerService.currentIndex == 1)
+        // Assert - Nothing moved, and the playing row is still the one it was
+        #expect(self.playerService.queue.map(\.videoId) == songs.map(\.videoId))
+        #expect(self.playerService.currentIndex == 2)
+        #expect(self.playerService.currentTrack?.videoId == "video-2")
     }
 
     // MARK: - Undo/Redo Tests
